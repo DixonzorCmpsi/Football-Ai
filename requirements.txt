@@ -1,0 +1,7 @@
+nflreadpy
+pandas
+numpy
+beautifulsoup
+requests
+tqdm
+lxml
