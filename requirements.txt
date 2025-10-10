@@ -5,3 +5,5 @@ beautifulsoup
 requests
 tqdm
 lxml
+thefuzz 
+python-Levenshtein

@@ -1,2 +1,7 @@
 *.venv
 venv
+# Ignore large raw data files
+dataPrep/data/*.csv
+
+# Ignore large generated datasets
+dataPrep/weekly_modeling_dataset.csv
