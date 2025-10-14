@@ -1,26 +1,29 @@
-# debug_columns.py (updated for enrichment script)
-import nflreadpy as nfl
+# list_columns.py
 import pandas as pd
+from pathlib import Path
 
-# We only need one season to check the columns
-SEASONS = [2023]
+# --- Configuration ---
+# Make sure this points to the latest dataset you created
+INPUT_DATASET_PATH = Path("point_range_labeled_dataset.csv")
 
-print("--- Loading SNAP COUNT data to inspect columns ---")
+# --- Main Execution ---
+print(f"--- Reading columns from: {INPUT_DATASET_PATH} ---")
+
 try:
-    df_snaps = nfl.load_snap_counts(seasons=SEASONS).to_pandas()
-    print("\n>>> Available columns in the SNAP COUNT data:")
-    print(list(df_snaps.columns))
+    # We only need to read the first row to get the headers, which is very fast.
+    df = pd.read_csv(INPUT_DATASET_PATH, nrows=1)
+    
+    # Get the list of all column names
+    all_columns = list(df.columns)
+    
+    print(f"Found {len(all_columns)} total columns.")
+    print("\n--- Complete Column List ---")
+    
+    # Print the list for easy copying
+    print(all_columns)
+
+except FileNotFoundError:
+    print(f"\n!!! ERROR: File not found at '{INPUT_DATASET_PATH}'.")
+    print("Please make sure you have successfully run 'create_point_range_labels.py' first.")
 except Exception as e:
-    print(f"Failed to load snap count data: {e}")
-
-
-print("\n" + "="*50 + "\n") # Separator
-
-
-print("--- Loading SCHEDULE data to inspect columns ---")
-try:
-    df_schedule = nfl.load_schedules(seasons=SEASONS).to_pandas()
-    print("\n>>> Available columns in the SCHEDULE data:")
-    print(list(df_schedule.columns))
-except Exception as e:
-    print(f"Failed to load schedule data: {e}")
+    print(f"An unexpected error occurred: {e}")

@@ -1,5 +1,4 @@
-# build_modeling_dataset.py
-
+# build_modeling_dataset.py (v2 - Keep All Features)
 import pandas as pd
 from pathlib import Path
 import logging
@@ -16,18 +15,15 @@ PATHS = {
 }
 
 ROLLING_WINDOW_SIZE = 4
-
-# Column name constants
 PLAYER_ID_COLS = ['player_id', 'season', 'week']
 TARGET_COL = 'fantasy_points_ppr'
 RENAMED_TARGET_COL = f'y_{TARGET_COL}'
-
 PLAYER_STATS_TO_ROLL = [TARGET_COL, 'targets', 'receptions', 'rushing_yards', 'receiving_yards']
 DEF_STATS_TO_ROLL = ['passing_yards_allowed', 'rushing_yards_allowed', 'points_allowed']
-
-# Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+# --- HELPER FUNCTIONS ---
 
 def load_data(paths: dict[str, Path]) -> dict[str, pd.DataFrame]:
     """Loads all required CSV files into a dictionary of DataFrames."""
@@ -103,10 +99,8 @@ def combine_datasets(dataframes: dict, opponents_df: pd.DataFrame, defense_featu
     
     master_df = dataframes['player_weekly']
     
-    # 1. Add opponent information. We merge without 'game_id' as it's missing from the player file.
     master_df = pd.merge(master_df, opponents_df, on=['season', 'week', 'team'], how='left')
     
-    # 2. Add the opponent's rolling defensive stats
     master_df = pd.merge(
         master_df,
         defense_features_df.rename(columns={'team': 'opponent'}),
@@ -114,28 +108,21 @@ def combine_datasets(dataframes: dict, opponents_df: pd.DataFrame, defense_featu
         how='left'
     )
     
-    # 3. NO LONGER NEEDED: The weekly player data already contains all required columns (including draft info).
-    # Merging from the yearly file was redundant and caused column name conflicts.
-    
     return master_df
 
 def finalize_dataset(master_df: pd.DataFrame) -> pd.DataFrame:
-    """Selects final features, renames target variable, and removes rows with missing data."""
-    logging.info("Finalizing dataset: selecting features and creating target variable...")
+    """Renames target, keeps all original features, and drops rows with missing rolling data."""
+    logging.info("Finalizing dataset: renaming target and cleaning rows...")
     
     master_df.rename(columns={TARGET_COL: RENAMED_TARGET_COL}, inplace=True)
     
-    # Define all feature columns to be used in the model.
-    feature_columns = [
-        'season', 'week', 'player_id', 'player_name', 'position', 'age', 'years_exp',
-        'draft_round', 'draft_ovr', 'opponent'
+    essential_rolling_features = [
+        f'rolling_avg_{s}_{ROLLING_WINDOW_SIZE}_weeks' for s in PLAYER_STATS_TO_ROLL
+    ] + [
+        f'rolling_avg_{s}_{ROLLING_WINDOW_SIZE}_weeks' for s in DEF_STATS_TO_ROLL
     ]
     
-    feature_columns += [f'rolling_avg_{s}_{ROLLING_WINDOW_SIZE}_weeks' for s in PLAYER_STATS_TO_ROLL]
-    feature_columns += [f'rolling_avg_{s}_{ROLLING_WINDOW_SIZE}_weeks' for s in DEF_STATS_TO_ROLL]
-
-    # Drop rows where rolling features couldn't be calculated or other data is missing.
-    final_df = master_df[feature_columns + [RENAMED_TARGET_COL]].dropna()
+    final_df = master_df.dropna(subset=essential_rolling_features)
     
     return final_df
 
@@ -145,24 +132,16 @@ def main():
     logging.info("--- Starting Master Dataset Construction ---")
     
     all_data = load_data(PATHS)
-    
     opponents = get_weekly_opponents(all_data['team_offense_weekly'])
-    
     rolling_def_feats = engineer_rolling_defense_features(all_data['team_offense_weekly'], opponents)
-    
     all_data['player_weekly'] = engineer_rolling_player_features(all_data['player_weekly'])
-    
     master_dataset = combine_datasets(all_data, opponents, rolling_def_feats)
-    
     final_dataset = finalize_dataset(master_dataset)
 
-    # Save the final dataset
     final_dataset.to_csv(OUTPUT_PATH, index=False)
     logging.info(f"--- Master Dataset Construction Complete ---")
     logging.info(f"Successfully saved '{OUTPUT_PATH}' with {len(final_dataset)} rows and {len(final_dataset.columns)} columns.")
-    logging.info("This dataset is now ready for model training.")
 
 
 if __name__ == "__main__":
     main()
-    
