@@ -1,4 +1,4 @@
-# build_modeling_dataset.py (v6 - Interceptions Feature)
+# build_modeling_dataset.py (v7 - Definitive Final Version)
 import pandas as pd
 from pathlib import Path
 import logging
@@ -28,7 +28,8 @@ def load_data(paths: dict[str, Path]) -> dict[str, pd.DataFrame]:
     """Loads all required CSV files into a dictionary of DataFrames."""
     logging.info("Loading all data sources...")
     try:
-        dataframes = {name: pd.read_csv(path) for name, path in paths.items()}
+        # Using low_memory=False to prevent dtype warnings on large, mixed-type files
+        dataframes = {name: pd.read_csv(path, low_memory=False) for name, path in paths.items()}
         logging.info("All files loaded successfully.")
         return dataframes
     except FileNotFoundError as e:
@@ -40,30 +41,27 @@ def get_weekly_opponents(team_offense_df: pd.DataFrame) -> pd.DataFrame:
     logging.info("Identifying weekly opponents...")
     team_map = team_offense_df[['game_id', 'season', 'week', 'team']].copy()
     
-    opponents_df = pd.merge(
-        team_map,
-        team_map.rename(columns={'team': 'opponent'}),
-        on=['game_id', 'season', 'week']
-    )
+    opponents_df = pd.merge(team_map, team_map.rename(columns={'team': 'opponent'}), on=['game_id', 'season', 'week'])
     opponents_df = opponents_df[opponents_df['team'] != opponents_df['opponent']].copy()
     
     assert 'opponent' in opponents_df.columns, "Failed to create opponent column."
     return opponents_df
 
 def engineer_rolling_defense_features(team_offense_df: pd.DataFrame, team_defense_df: pd.DataFrame, opponents_df: pd.DataFrame, player_weekly_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculates rolling averages for a comprehensive set of defensive stats.
-    """
+    """Calculates rolling averages for a comprehensive set of defensive stats."""
     logging.info("Engineering rolling features for opponent defenses...")
     
+    # Part A: General Offensive Stats Allowed
     off_stats_for_def = team_offense_df[['game_id', 'team', 'passing_yards', 'rushing_yards', 'total_off_points']].copy()
     def_merged_df = pd.merge(opponents_df, off_stats_for_def.rename(columns={'team': 'opponent'}), on=['game_id', 'opponent'])
     def_merged_df.rename(columns={'passing_yards': 'passing_yards_allowed', 'rushing_yards': 'rushing_yards_allowed', 'total_off_points': 'points_allowed'}, inplace=True)
 
-    logging.info("Incorporating direct defensive stats like sacks and interceptions...")
-    direct_def_stats = team_defense_df[['season', 'week', 'team', 'sack', 'interception']].copy() # ADDED INTERCEPTION
+    # Part B: Direct Defensive Stats (sacks, interceptions, qb_hits)
+    logging.info("Incorporating direct defensive stats (sacks, interceptions, QB hits)...")
+    direct_def_stats = team_defense_df[['season', 'week', 'team', 'sack', 'interception', 'qb_hit']].copy()
     def_merged_df = pd.merge(def_merged_df, direct_def_stats, on=['season', 'week', 'team'], how='left')
 
+    # Part C: Position-Specific Fantasy Points Allowed
     logging.info("Engineering position-specific fantasy points allowed...")
     pos_points_scored = player_weekly_df.groupby(['season', 'week', 'team', 'position'])['fantasy_points_ppr'].sum().reset_index()
     pos_points_allowed = pd.merge(pos_points_scored, opponents_df[['season', 'week', 'team', 'opponent']], on=['season', 'week', 'team'])
@@ -76,8 +74,9 @@ def engineer_rolling_defense_features(team_offense_df: pd.DataFrame, team_defens
     
     def_merged_df = pd.merge(def_merged_df, pivoted_pos_df.rename(columns={'defensive_team': 'team'}), on=['season', 'week', 'team'], how='left')
     
+    # Part D: Calculate Rolling Averages for ALL Defensive Stats
     def_merged_df.sort_values(by=['team', 'season', 'week'], inplace=True)
-    stats_to_roll = ['passing_yards_allowed', 'rushing_yards_allowed', 'points_allowed', 'sack', 'interception'] # ADDED INTERCEPTION
+    stats_to_roll = ['passing_yards_allowed', 'rushing_yards_allowed', 'points_allowed', 'sack', 'interception', 'qb_hit']
     for stat in stats_to_roll:
         def_merged_df[stat].fillna(0, inplace=True)
         def_merged_df[f'rolling_avg_{stat}_4_weeks'] = def_merged_df.groupby('team')[stat].shift(1).rolling(4, min_periods=1).mean()
@@ -97,22 +96,27 @@ def engineer_rolling_player_features(player_weekly_df: pd.DataFrame) -> pd.DataF
     return df
 
 def combine_datasets(dataframes: dict, opponents_df: pd.DataFrame, defense_features_df: pd.DataFrame) -> pd.DataFrame:
-    """Merges all player, team, and opponent data with corrected join logic."""
+    """Merges all player, team, and opponent data, including team offensive context."""
     logging.info("Merging all data into the master modeling dataset...")
     
     master_df = dataframes['player_weekly']
     master_df = pd.merge(master_df, opponents_df[['season', 'week', 'team', 'opponent']], on=['season', 'week', 'team'], how='left')
     
+    # Merge defensive stats for the opponent
     cols_to_merge = [col for col in defense_features_df.columns if 'rolling_avg' in col] + ['season', 'week', 'team']
-    def_stats_to_merge = defense_features_df[cols_to_merge].copy()
+    def_stats_to_merge = defense_features_df[cols_to_merge].drop_duplicates().copy()
     def_stats_to_merge.rename(columns={'team': 'opponent'}, inplace=True)
-    
     master_df = pd.merge(master_df, def_stats_to_merge, on=['season', 'week', 'opponent'], how='left')
+    
+    # Merge offensive context for the PLAYER'S OWN TEAM
+    logging.info("Adding player's team offensive context (pass pct, total yards)...")
+    team_off_context = dataframes['team_offense_weekly'][['season', 'week', 'team', 'pass_pct', 'total_off_yards']].copy()
+    master_df = pd.merge(master_df, team_off_context, on=['season', 'week', 'team'], how='left')
     
     return master_df
 
 def finalize_dataset(master_df: pd.DataFrame) -> pd.DataFrame:
-    """Renames target, keeps all original features, and drops rows with missing rolling data."""
+    """Renames target and drops rows with missing essential rolling data."""
     logging.info("Finalizing dataset: renaming target and cleaning rows...")
     
     master_df.rename(columns={TARGET_COL: RENAMED_TARGET_COL}, inplace=True)
