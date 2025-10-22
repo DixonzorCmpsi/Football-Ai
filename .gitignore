@@ -6,3 +6,4 @@ dataPrep/data/*.csv
 *.env
 # Ignore large generated datasets
 dataPrep/weekly_modeling_dataset.csv
+*/models/
