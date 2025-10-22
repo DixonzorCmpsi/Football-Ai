@@ -11,3 +11,6 @@ transformers
 datasets 
 torch 
 accelerate
+polars
+joblib
+scikit-learn

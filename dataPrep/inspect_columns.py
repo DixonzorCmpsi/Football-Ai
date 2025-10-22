@@ -4,7 +4,7 @@ from pathlib import Path
 
 # --- Configuration ---
 # The script is in dataPrep, and the file is in dataPrep.
-FILE_TO_INSPECT = Path("data\weekly_team_stats_offense.csv")
+FILE_TO_INSPECT = Path("featured_dataset.csv")
 
 # --- Main Execution ---
 print(f"--- Inspecting Columns from: {FILE_TO_INSPECT} ---")
