@@ -5,5 +5,8 @@ venv
 dataPrep/data/*.csv
 *.env
 # Ignore large generated datasets
-
+*__pycache__/
+*.pyc
+applications/__pycache__/predict_fantasy_points.cpython-311.pyc
+C:\Users\dixon\Desktop\football-Ai\Football-Ai\applications\__pycache__\predict_fantasy_points.cpython-311.pyc
 */models/

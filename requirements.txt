@@ -1,7 +1,6 @@
 nflreadpy
 pandas
 numpy
-beautifulsoup
 requests
 tqdm
 lxml
@@ -14,3 +13,8 @@ accelerate
 polars
 joblib
 scikit-learn
+xgboost
+FastAPI
+Flask
+uvicorn
+rapidfuzz
