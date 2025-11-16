@@ -18,3 +18,8 @@ FastAPI
 Flask
 uvicorn
 rapidfuzz
+matplotlib
+seaborn
+fastapi
+uvicorn[standard]
+rapidfuzz

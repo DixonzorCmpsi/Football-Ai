@@ -89,7 +89,7 @@ def tune_and_train_model(data_path, model_output_path):
     print("✅ Tuned baseline model saved.")
 
 if __name__ == "__main__":
-    featured_data_file = '../dataPrep/featured_dataset.csv'
+    featured_data_file = '../dataPrep/featured_dataset_QB.csv'
     # The final, tuned model will be saved here
-    final_model_path = 'tuned_xgboost_baseline.joblib'
+    final_model_path = 'tuned_xgboost_.joblib'
     tune_and_train_model(featured_data_file, final_model_path)

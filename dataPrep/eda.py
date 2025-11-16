@@ -159,5 +159,5 @@ def enhanced_data_inspection(file_path):
 
 if __name__ == "__main__":
     # Path relative to the script's location (assuming script is in rag_data folder)
-    dataset_filename = '../dataPrep/featured_dataset.csv' # Adjusted path if script is IN rag_data
+    dataset_filename = '../dataPrep/timeseries_training_data_QB.csv' # Adjusted path if script is IN rag_data
     enhanced_data_inspection(dataset_filename)

@@ -1,6 +1,7 @@
 import nflreadpy as nfl
 import polars as pl
 import sys
+from pathlib import Path # Import Path for checking file
 
 SEASON = 2025
 DEFENSE_FILE = 'weekly_defense_stats_2025.csv'
@@ -13,7 +14,7 @@ def create_team_stats_files(season):
     Creates TWO files:
     1. weekly_defense_stats_2025.csv: Defensive actions and allowed stats.
     2. weekly_offense_stats_2025.csv: Offensive production stats.
-    Simplified final column selection.
+    *** UPDATED to include def_qb_hits, attempts, receptions, and carries ***
     """
     print(f"Loading all {season} weekly TEAM stats from nflreadpy...")
     try:
@@ -22,18 +23,21 @@ def create_team_stats_files(season):
         if team_stats.is_empty():
             print(f"No weekly team stats found for {season}.")
             return
+            
+        print("\n[DEBUG] Columns found in nfl.load_team_stats():")
+        print(team_stats.columns)
 
         # 2. Load the schedule file
-        print(f"Loading {SCHEDULE_FILE} for points scored/allowed data...")
+        print(f"\nLoading {SCHEDULE_FILE} for points scored/allowed data...")
         try:
             schedule = pl.read_csv(SCHEDULE_FILE)
             schedule = schedule.with_columns(pl.col("week").cast(pl.Int64, strict=False))
             team_stats = team_stats.with_columns(pl.col("week").cast(pl.Int64, strict=False))
             if not team_stats.is_empty(): # Check again after potential cast
-                 schedule = schedule.filter(pl.col('week') <= team_stats['week'].max())
+                schedule = schedule.filter(pl.col('week') <= team_stats['week'].max())
             else:
-                 print("Warning: team_stats became empty after type casting, cannot filter schedule.")
-                 return # Cannot proceed without team stats
+                print("Warning: team_stats became empty after type casting, cannot filter schedule.")
+                return # Cannot proceed without team stats
         except Exception as e:
             print(f"Error: Could not read or process {SCHEDULE_FILE}. {e}", file=sys.stderr)
             return
@@ -62,9 +66,11 @@ def create_team_stats_files(season):
         )
         offense_stats_for_join = offense_stats_for_join.with_columns(pl.col("week").cast(pl.Int64, strict=False))
 
+        # --- MODIFIED: Added 'def_qb_hits' ---
         core_defense_stats = team_stats.select(
             'team', 'week', 'opponent_team',
-            'def_sacks', 'def_interceptions', 'def_fumbles_forced'
+            'def_sacks', 'def_interceptions', 'def_fumbles_forced',
+            'def_qb_hits' # ADDED
         )
         core_defense_stats = core_defense_stats.with_columns(pl.col("week").cast(pl.Int64, strict=False))
 
@@ -82,8 +88,7 @@ def create_team_stats_files(season):
             how='left'
         )
 
-        # Select and rename final defense columns (SIMPLIFIED)
-        # List the final desired columns including the aliased one
+        # --- MODIFIED: Added 'def_qb_hits' ---
         final_defense_cols_expr = [
             pl.col('team').alias('team_abbr'), # Use the alias directly
             pl.col('week'),
@@ -93,43 +98,56 @@ def create_team_stats_files(season):
             pl.col('rushing_yards_allowed'),
             pl.col('def_sacks'),
             pl.col('def_interceptions'),
-            pl.col('def_fumbles_forced')
+            pl.col('def_fumbles_forced'),
+            pl.col('def_qb_hits') # ADDED
         ]
+        
         # Get the source column names needed for these expressions
         source_cols_needed = set()
         for expr in final_defense_cols_expr:
-             source_cols_needed.update(expr.meta.root_names())
+             # Handle both string columns and expressions
+             if isinstance(expr, str):
+                 source_cols_needed.add(expr)
+             else:
+                 source_cols_needed.update(expr.meta.root_names())
 
         # Filter the DataFrame to only contain necessary source columns before applying final select/alias
         existing_source_cols = [col for col in source_cols_needed if col in defense_df.columns]
-        if len(existing_source_cols) != len(source_cols_needed):
-             missing = source_cols_needed - set(existing_source_cols)
-             print(f"[DEBUG Defense Select] Warning: Required source columns missing: {missing}")
-             # Filter expressions to only those whose source cols exist
-             final_defense_cols_expr = [
-                 expr for expr in final_defense_cols_expr
-                 if set(expr.meta.root_names()).issubset(set(existing_source_cols))
-             ]
+        
+        # Build the final list of expressions that can actually be run
+        final_defense_cols_to_run = []
+        for expr in final_defense_cols_expr:
+            if isinstance(expr, str):
+                if expr in existing_source_cols:
+                    final_defense_cols_to_run.append(expr)
+            else:
+                if set(expr.meta.root_names()).issubset(existing_source_cols):
+                    final_defense_cols_to_run.append(expr)
 
-        if not final_defense_cols_expr:
-             print("Error: No valid columns left to select for defense file.", file=sys.stderr)
-             return
+        if len(final_defense_cols_to_run) < len(final_defense_cols_expr):
+            print(f"[DEBUG Defense Select] Warning: Some columns were missing and dropped.")
 
-        defense_final_df = defense_df.select(final_defense_cols_expr).sort('team_abbr', 'week')
+        if not final_defense_cols_to_run:
+            print("Error: No valid columns left to select for defense file.", file=sys.stderr)
+            return
 
-
+        defense_final_df = defense_df.select(final_defense_cols_to_run).sort('team_abbr', 'week')
         defense_final_df.write_csv(DEFENSE_FILE)
         print(f"Successfully created/updated {DEFENSE_FILE} with {len(defense_final_df)} rows.")
         print(f"Defense File Columns: {defense_final_df.columns}") # Debug
 
         # --- 5. Create OFFENSE File ---
         print("\n--- Processing Offense File ---")
+        # --- MODIFIED: Added 'attempts', 'receptions', 'carries' ---
         core_offense_stats = team_stats.select(
             'team', 'week', 'opponent_team',
             'passing_yards', 'rushing_yards',
             'passing_tds', 'rushing_tds',
             'passing_interceptions', 'rushing_fumbles_lost',
             'passing_first_downs', 'rushing_first_downs',
+            'attempts',    # ADDED (for team pass attempts -> target share)
+            'receptions',  # ADDED (for team reception share)
+            'carries'      # ADDED (for team rush attempt share)
         )
         core_offense_stats = core_offense_stats.with_columns(pl.col("week").cast(pl.Int64, strict=False))
 
@@ -140,7 +158,7 @@ def create_team_stats_files(season):
             how='left'
         )
 
-        # Select and rename final offense columns (SIMPLIFIED)
+        # --- MODIFIED: Added new columns to final list ---
         final_offense_cols_expr = [
             pl.col('team').alias('team_abbr'), # Use the alias directly
             pl.col('week'),
@@ -154,38 +172,53 @@ def create_team_stats_files(season):
             pl.col('rushing_fumbles_lost'),
             pl.col('passing_first_downs'),
             pl.col('rushing_first_downs'),
+            pl.col('attempts'),   # ADDED
+            pl.col('receptions'), # ADDED
+            pl.col('carries')     # ADDED
         ]
+        
         # Get the source column names needed
         source_cols_needed_off = set()
         for expr in final_offense_cols_expr:
-             source_cols_needed_off.update(expr.meta.root_names())
+            if isinstance(expr, str):
+                source_cols_needed_off.add(expr)
+            else:
+                source_cols_needed_off.update(expr.meta.root_names())
 
         # Filter the DataFrame
         existing_source_cols_off = [col for col in source_cols_needed_off if col in offense_df.columns]
-        if len(existing_source_cols_off) != len(source_cols_needed_off):
-            missing_off = source_cols_needed_off - set(existing_source_cols_off)
-            print(f"[DEBUG Offense Select] Warning: Required source columns missing: {missing_off}")
-            final_offense_cols_expr = [
-                 expr for expr in final_offense_cols_expr
-                 if set(expr.meta.root_names()).issubset(set(existing_source_cols_off))
-             ]
+        
+        final_offense_cols_to_run = []
+        for expr in final_offense_cols_expr:
+            if isinstance(expr, str):
+                if expr in existing_source_cols_off:
+                    final_offense_cols_to_run.append(expr)
+            else:
+                if set(expr.meta.root_names()).issubset(existing_source_cols_off):
+                    final_offense_cols_to_run.append(expr)
 
-        if not final_offense_cols_expr:
-             print("Error: No valid columns left to select for offense file.", file=sys.stderr)
-             return
+        if len(final_offense_cols_to_run) < len(final_offense_cols_expr):
+            print(f"[DEBUG Offense Select] Warning: Some columns were missing and dropped.")
 
-        offense_final_df = offense_df.select(final_offense_cols_expr).sort('team_abbr', 'week')
+        if not final_offense_cols_to_run:
+            print("Error: No valid columns left to select for offense file.", file=sys.stderr)
+            return
 
-
+        offense_final_df = offense_df.select(final_offense_cols_to_run).sort('team_abbr', 'week')
         offense_final_df.write_csv(OFFENSE_FILE)
         print(f"Successfully created/updated {OFFENSE_FILE} with {len(offense_final_df)} rows.")
         print(f"Offense File Columns: {offense_final_df.columns}") # Debug
 
-
     except Exception as e:
         print(f"An error occurred: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         print("Failed to create team stats files.")
 
 if __name__ == "__main__":
-    create_team_stats_files(SEASON)
+    # Check if schedule file exists first
+    if not Path(SCHEDULE_FILE).exists():
+        print(f"Error: {SCHEDULE_FILE} not found. Please run '01_create_static_files.py' first.")
+    else:
+        create_team_stats_files(SEASON)
     print("\nTeam offense and defense files script finished.")
