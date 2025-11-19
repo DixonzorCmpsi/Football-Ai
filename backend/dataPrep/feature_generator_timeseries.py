@@ -6,8 +6,22 @@ from pathlib import Path
 
 # --- Configuration ---
 CURRENT_SEASON = 2025
-N_LAGS = 3 # Use 3 lags, just like in your training data
-OPP_ROLLING_WINDOW = 4 # Use 4 games for opponent averages
+N_LAGS = 3 
+OPP_ROLLING_WINDOW = 4 
+
+# --- Helper Function ---
+# This is the function that IS defined
+def calculate_rolling_avg(df: pl.DataFrame, col: str, window: int) -> float:
+    """Calculates rolling average for the last 'window' rows."""
+    if df is None or df.is_empty() or col not in df.columns or window <= 0: return 0.0
+    try:
+        numeric_col = pl.col(col).cast(pl.Float64, strict=False)
+        avg = df.head(window).select(
+            numeric_col.fill_null(0.0).cast(pl.Float64).mean()
+        ).item()
+        return avg if avg is not None and not np.isnan(avg) else 0.0
+    except Exception: return 0.0
+
 
 def get_lagged_value(df: pl.DataFrame, col: str, lag: int) -> float:
     """Retrieves the value from 'lag' games ago."""
@@ -20,19 +34,6 @@ def get_lagged_value(df: pl.DataFrame, col: str, lag: int) -> float:
     else:
         return 0.0 # Not enough history
 
-def calculate_live_rolling_avg(df_history: pl.DataFrame, col: str, window: int) -> float:
-    """
-    Calculates the rolling average from the raw historical data.
-    """
-    if df_history is None or df_history.is_empty() or col not in df_history.columns:
-        return 0.0
-    
-    avg = df_history.head(window).select(
-        pl.col(col).fill_null(0.0).cast(pl.Float64).mean()
-    ).item()
-    
-    return avg if avg is not None and not np.isnan(avg) else 0.0
-
 
 def generate_features_all(
     player_id: str, # gsis_id
@@ -44,7 +45,6 @@ def generate_features_all(
     df_defense: pl.DataFrame,
     df_offense: pl.DataFrame,
     df_snap_counts: pl.DataFrame
-    # --- FIX: 'df_players_map' is no longer needed ---
 ):
     """
     Generates a superset of time-series features for ANY position
@@ -60,10 +60,11 @@ def generate_features_all(
         player_position = player_info['position'].item()
         player_name = player_info['player_name'].item()
         # Static features
-        age = player_info.select(pl.col('age').fill_null(25)).item()
+        player_age = player_info.select(pl.col('age').fill_null(25)).item()
         years_exp = player_info.select(pl.col('years_exp').fill_null(0)).item() if 'years_exp' in player_info.columns else 0
         draft_ovr = player_info.select(pl.col('draft_number').fill_null(260)).item() if 'draft_number' in player_info.columns else 260
-        player_status = player_info['injury_status'].item()
+        
+        player_status = player_info.select(pl.col('injury_status')).item() if 'injury_status' in player_info.columns else 'ACT'
     except Exception as e: return None, f"Player Info Error: {e}"
 
     # --- 2. Get Opponent Info ---
@@ -75,12 +76,8 @@ def generate_features_all(
     # --- 3. Prepare History (Stats + Snaps) ---
     player_history_stats = df_player_stats.filter((pl.col('player_id') == player_id) & (pl.col('week') < target_week)).sort('week', descending=True)
     
-    # --- FIX: Remove pfr_id lookup ---
-    # pfr_player_id is no longer needed
-    
-    player_history = player_history_stats # Default
-    if df_snap_counts is not None:
-        # --- FIX: Join directly on player_id (gsis_id) ---
+    player_history = player_history_stats
+    if 'player_id' in df_snap_counts.columns: # Check for the correct join key (gsis_id)
         snaps = df_snap_counts.filter((pl.col('player_id') == player_id) & (pl.col('season') == CURRENT_SEASON) & (pl.col('week') < target_week))
         if not snaps.is_empty():
             try:
@@ -99,7 +96,7 @@ def generate_features_all(
     features = {}
     
     # --- A: Static & Context Features ---
-    features['age'] = age
+    features['age'] = player_age
     features['years_exp'] = years_exp
     features['draft_ovr'] = draft_ovr
     features['shotgun'] = 0.0 
@@ -123,13 +120,15 @@ def generate_features_all(
             features[f'{col}_lag_{lag}'] = get_lagged_value(player_history, col, lag)
 
     # --- C: Opponent Rolling Averages (FIXED) ---
-    features['rolling_avg_points_allowed_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'points_allowed', OPP_ROLLING_WINDOW)
-    features['rolling_avg_passing_yards_allowed_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'passing_yards_allowed', OPP_ROLLING_WINDOW)
-    features['rolling_avg_rushing_yards_allowed_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'rushing_yards_allowed', OPP_ROLLING_WINDOW)
-    features['rolling_avg_sack_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'def_sacks', OPP_ROLLING_WINDOW)
-    features['rolling_avg_interception_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'def_interceptions', OPP_ROLLING_WINDOW)
-    features['rolling_avg_qb_hit_4_weeks'] = calculate_live_rolling_avg(opponent_defense_history, 'def_qb_hits', OPP_ROLLING_WINDOW)
+    def_cols = [
+        'points_allowed', 'passing_yards_allowed', 'rushing_yards_allowed',
+        'def_sacks', 'def_interceptions', 'def_qb_hits'
+    ]
+    for col in def_cols:
+        # --- FIX: Corrected function name ---
+        features[f'rolling_avg_{col}_4_weeks'] = calculate_rolling_avg(opponent_defense_history, col, OPP_ROLLING_WINDOW)
     
+    # Impute the positional ones we can't get from RAG data
     features['rolling_avg_points_allowed_to_QB'] = 0.0
     features['rolling_avg_points_allowed_to_RB'] = 0.0
     features['rolling_avg_points_allowed_to_WR'] = 0.0

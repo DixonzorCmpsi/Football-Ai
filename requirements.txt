@@ -23,3 +23,6 @@ seaborn
 fastapi
 uvicorn[standard]
 rapidfuzz
+sqlalchemy
+psycopg2-binary
+connectorx

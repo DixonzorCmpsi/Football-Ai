@@ -11,7 +11,19 @@ import numpy as np
 import xgboost as xgb
 from contextlib import asynccontextmanager
 import nflreadpy as nfl
-from rapidfuzz import process, fuzz # Keep fuzz for name matching
+from rapidfuzz import process, fuzz
+from sqlalchemy import create_engine # Needed for DB connection setup
+from dotenv import load_dotenv # Needed to load password
+
+# --- Configuration ---
+load_dotenv()
+password = os.getenv('POSTGRE_PASSWORD')
+if not password:
+    print("Error: POSTGRE_PASSWORD not set in environment variables.")
+    sys.exit(1)
+
+DB_CONNECTION_STRING = f"postgresql://postgres:{password}@localhost:5432/fantasy_data"
+# --- End DB Configuration ---
 
 # --- Add dataPrep directory to Python path ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,11 +33,9 @@ if dataPrep_dir not in sys.path:
 
 # --- Import from the TimeSeries feature generator ---
 try:
-    # This file should NOT expect df_players_map
     from feature_generator_timeseries import generate_features_all
 except ImportError as e:
     print(f"Error: Could not import generate_features_all: {e}", file=sys.stderr)
-    print("Ensure 'feature_generator_timeseries.py' exists in '../dataPrep/'.", file=sys.stderr)
     sys.exit(1)
 
 # --- Define Constants ---
@@ -36,20 +46,20 @@ MAE_VALUES = {
 META_MAE_VALUES = {
     'QB': 4.79, 'RB': 3.66, 'WR': 2.88, 'TE': 2.41
 }
-FUZZY_MATCH_THRESHOLD = 80 # Using WRatio, this is reliable
+FUZZY_MATCH_THRESHOLD = 80
 
 # --- File Paths ---
 PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, '..'))
 RAG_DIR = os.path.join(PROJECT_ROOT, 'rag_data')
 MODEL_DIR = os.path.join(PROJECT_ROOT, 'model_training', 'models')
 
-# RAG Data
+# RAG Data paths (used for loading locally, but paths are ignored when reading from DB)
 PROFILE_PATH = os.path.join(RAG_DIR, 'player_profiles.csv')
 SCHEDULE_PATH = os.path.join(RAG_DIR, 'schedule_2025.csv')
 PLAYER_STATS_PATH = os.path.join(RAG_DIR, 'weekly_player_stats_2025.csv')
 DEFENSE_STATS_PATH = os.path.join(RAG_DIR, 'weekly_defense_stats_2025.csv')
 OFFENSE_STATS_PATH = os.path.join(RAG_DIR, 'weekly_offense_stats_2025.csv')
-SNAP_COUNTS_PATH = os.path.join(RAG_DIR, 'weekly_snap_counts_2025.csv') # This file now has 'player_id'
+SNAP_COUNTS_PATH = os.path.join(RAG_DIR, 'weekly_snap_counts_2025.csv')
 
 # --- Model Paths (Dictionary) ---
 MODELS_CONFIG = {
@@ -79,18 +89,20 @@ model_data = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Loading all RAG data and all 5 positional models...")
+    print("Loading data and models from PostgreSQL...")
     try:
-        # 1. Load RAG Data
-        model_data["df_profile"] = pl.read_csv(PROFILE_PATH)
-        model_data["df_schedule"] = pl.read_csv(SCHEDULE_PATH).with_columns(pl.col("week").cast(pl.Int64, strict=False))
-        model_data["df_player_stats"] = pl.read_csv(PLAYER_STATS_PATH).with_columns(pl.col("week").cast(pl.Int64, strict=False))
-        model_data["df_defense"] = pl.read_csv(DEFENSE_STATS_PATH).with_columns(pl.col("week").cast(pl.Int64, strict=False))
-        model_data["df_offense"] = pl.read_csv(OFFENSE_STATS_PATH).with_columns(pl.col("week").cast(pl.Int64, strict=False))
-        model_data["df_snap_counts"] = pl.read_csv(SNAP_COUNTS_PATH).with_columns(pl.col("week").cast(pl.Int64, strict=False))
+        # 1. Load Data from DB (all pl.read_csv replaced)
         
-        # --- FIX: Removed the df_players_map loading ---
-        print("All RAG data files loaded.")
+        # Load necessary tables
+        model_data["df_profile"] = pl.read_database_uri("SELECT * FROM player_profiles", DB_CONNECTION_STRING)
+        model_data["df_schedule"] = pl.read_database_uri("SELECT * FROM schedule", DB_CONNECTION_STRING)
+        model_data["df_player_stats"] = pl.read_database_uri("SELECT * FROM weekly_player_stats", DB_CONNECTION_STRING)
+        model_data["df_defense"] = pl.read_database_uri("SELECT * FROM weekly_defense_stats", DB_CONNECTION_STRING)
+        model_data["df_offense"] = pl.read_database_uri("SELECT * FROM weekly_offense_stats", DB_CONNECTION_STRING)
+        model_data["df_snap_counts"] = pl.read_database_uri("SELECT * FROM weekly_snap_counts", DB_CONNECTION_STRING)
+        
+        # --- FIX: df_players_map loading is now removed as the generator doesn't use it ---
+        print("All RAG data files loaded from DB.")
 
         # 2. Load Base (L0) Models
         model_data["models"] = {}
@@ -105,19 +117,19 @@ async def lifespan(app: FastAPI):
             else:
                 print(f"Warning: Model file missing for {pos}.")
 
-        # --- Load Meta (L1) Model ---
-        print(f"Loading META models from {META_MODEL_PATH}...")
+        # 3. Load Meta (L1) Model
+        print(f"Loading META models...")
         model_data["meta_models"] = joblib.load(META_MODEL_PATH)
         with open(META_FEATURES_PATH, 'r') as f:
             model_data["meta_features"] = json.load(f)
         print(f"Loaded {len(model_data['meta_models'])} meta-models.")
 
-        # 3. Fuzzy Match List
+        # 4. Fuzzy Match List
         relevant_positions = ['QB', 'RB', 'WR', 'TE']
         filtered_profile = model_data["df_profile"].filter(pl.col('position').is_in(relevant_positions))
         model_data["player_name_id_list"] = list(zip(filtered_profile["player_name"], filtered_profile["player_id"]))
         
-        # 4. Current Week
+        # 5. Current Week
         try: model_data["current_nfl_week"] = nfl.get_current_week()
         except Exception: model_data["current_nfl_week"] = 10 
             
@@ -147,7 +159,6 @@ class CompareRequest(BaseModel):
 
 def find_player(player_name_input: str):
     """Finds player with exact (case-insensitive) match."""
-    # --- FIX: Reverted to exact match to prevent bad fuzzy matches ---
     try:
         player_match = model_data["df_profile"].filter(
             pl.col('player_name').str.to_lowercase() == player_name_input.lower()
@@ -159,13 +170,36 @@ def find_player(player_name_input: str):
         return player_row['player_name'], player_row['player_id']
     except Exception:
         return None, None
+
+def predict_points(pos: str, features_dict: dict):
+    """Selects correct model based on position and predicts."""
+    if pos not in model_data["models"]:
+        return None, f"No model loaded for position: {pos}"
     
+    model_info = model_data["models"][pos]
+    model = model_info["model"]
+    trained_feature_names = model_info["features"]
+    
+    try:
+        feature_data = {}
+        for feature_name in trained_feature_names:
+            val = features_dict.get(feature_name, 0.0) 
+            feature_data[feature_name] = [val if val is not None and not np.isnan(val) else 0.0]
+            
+        df_pred = pl.DataFrame(feature_data).select(trained_feature_names)
+        preds = model.predict(df_pred.to_numpy())
+        return float(preds[0]), None
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, f"Prediction Error: {e}"
+
 def get_base_prediction(pid: str, pos: str, target_week: int):
     """Gets the Level 0 (Base) prediction for a single player."""
-    if pos not in model_data["models"]:
-        return None, f"No model for position: {pos}", None
     
-    # --- FIX: Removed df_players_map ---
+    # --- Generate Features (Only one call) ---
+    # FIX: df_players_map argument is removed to avoid TypeError
     features, err = generate_features_all(
         pid, target_week,
         df_profile=model_data["df_profile"], 
@@ -177,22 +211,12 @@ def get_base_prediction(pid: str, pos: str, target_week: int):
     )
     if not features: return None, err or "Feature gen failed", None
     
-    model_info = model_data["models"][pos]
-    model = model_info["model"]
-    trained_feature_names = model_info["features"]
+    # --- Prediction ---
+    l0_score, l0_err = predict_points(pos, features)
     
-    try:
-        feature_data = {}
-        for feature_name in trained_feature_names:
-            # --- FIX: The variable is 'features', not 'features_dict' ---
-            val = features.get(feature_name, 0.0) 
-            feature_data[feature_name] = [val if val is not None and not np.isnan(val) else 0.0]
-            
-        df_pred = pl.DataFrame(feature_data).select(trained_feature_names)
-        preds = model.predict(df_pred.to_numpy())
-        return float(preds[0]), None, features # Return score, no error, and the features
-    except Exception as e:
-        return None, f"L0 Prediction Error: {e}", None
+    # Return features along with score/error
+    return l0_score, l0_err, features 
+
 
 def find_teammate(team_abbr: str, pos: str, exclude_pid: str):
     """Finds the main player for a team/position."""
@@ -203,7 +227,6 @@ def find_teammate(team_abbr: str, pos: str, exclude_pid: str):
         (pl.col('player_id') != exclude_pid)
     )
     if candidates.is_empty(): return None, None
-    # Simple logic: return the first active player found
     return candidates.row(0, named=True)['player_name'], candidates.row(0, named=True)['player_id']
 
 # --- Endpoints ---
@@ -218,13 +241,15 @@ async def predict_single_player(request: PlayerRequest):
         player_row = model_data["df_profile"].filter(pl.col('player_id') == pid).row(0, named=True)
         pos = player_row['position']
         team_abbr = player_row['team_abbr']
-    except: pos = "UNK"; team_abbr = "UNK"
+    except Exception as e: 
+        print(f"Error extracting player position/team: {e}")
+        pos = "UNK"; team_abbr = "UNK"
     
     if pos not in model_data["models"]:
         raise HTTPException(404, f"No model available for position: {pos}")
 
     # --- Step 1: Get L0 Prediction for the main player ---
-    l0_score, l0_err, features = get_base_prediction(pid, pos, target_week) # <-- Get features back
+    l0_score, l0_err, features = get_base_prediction(pid, pos, target_week)
     if l0_err: raise HTTPException(500, f"L0 prediction failed: {l0_err}")
     
     # --- Step 2: Get L0 Predictions for Teammates (Ecosystem) ---
@@ -277,7 +302,7 @@ async def predict_single_player(request: PlayerRequest):
     
     response = {
         "player_name": actual_name, "position": pos, "week": target_week,
-        "opponent": features.get('opponent', 'N/A'), # <-- FIX: Use features dict
+        "opponent": features.get('opponent', 'N/A'),
         
         "position_specific_prediction": {
             "predicted_points": round(l0_score, 2),
@@ -303,6 +328,7 @@ async def compare_players(request: CompareRequest):
     
     for input_name in [request.player1_name, request.player2_name]:
         try:
+            # We can just call our /predict endpoint's logic
             response = await predict_single_player(PlayerRequest(player_name=input_name, week=target_week))
             results.append({"input_name": input_name, **response})
         except HTTPException as e:
@@ -311,7 +337,6 @@ async def compare_players(request: CompareRequest):
             results.append({"input_name": input_name, "error": str(e)})
         
     return {"week": target_week, "comparison": results}
-
 
 if __name__ == '__main__':
     import uvicorn
