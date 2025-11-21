@@ -12,17 +12,17 @@ import xgboost as xgb
 from contextlib import asynccontextmanager
 import nflreadpy as nfl
 from rapidfuzz import process, fuzz
-from sqlalchemy import create_engine # Needed for DB connection setup
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv # Needed to load password
 
 # --- Configuration ---
 load_dotenv()
-password = os.getenv('POSTGRE_PASSWORD')
-if not password:
-    print("Error: POSTGRE_PASSWORD not set in environment variables.")
-    sys.exit(1)
 
-DB_CONNECTION_STRING = f"postgresql://postgres:{password}@localhost:5432/fantasy_data"
+
+DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
+if not DB_CONNECTION_STRING:    
+    print("Error: DB_CONNECTION_STRING not found in environment variables.", file=sys.stderr)
+    sys.exit(1)
 # --- End DB Configuration ---
 
 # --- Add dataPrep directory to Python path ---
@@ -230,6 +230,52 @@ def find_teammate(team_abbr: str, pos: str, exclude_pid: str):
     return candidates.row(0, named=True)['player_name'], candidates.row(0, named=True)['player_id']
 
 # --- Endpoints ---
+# --- NEW: Ranking Endpoints ---
+@app.get("/rankings/past/{week}")
+async def get_past_rankings(week: int):
+    """Returns top 10 performers (Actual vs Predicted) for a past week."""
+    try:
+        query = f"""
+            SELECT player_name, position, team, opponent, predicted_points, actual_points 
+            FROM weekly_rankings 
+            WHERE week = {week} AND actual_points IS NOT NULL
+            ORDER BY actual_points DESC 
+            LIMIT 10
+        """
+        df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+        return df.to_dicts()
+    except Exception as e:
+        print(f"Error fetching rankings: {e}")
+        return []
+
+@app.get("/rankings/future/{week}")
+async def get_future_rankings(week: int):
+    """Returns top 10 projected performers for an upcoming week."""
+    try:
+        query = f"""
+            SELECT player_name, position, team, opponent, predicted_points 
+            FROM weekly_rankings 
+            WHERE week = {week} 
+            ORDER BY predicted_points DESC 
+            LIMIT 10
+        """
+        df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+        return df.to_dicts()
+    except Exception as e:
+        print(f"Error fetching future rankings: {e}")
+        return []
+
+@app.get("/players/all")
+async def get_all_players():
+    """Returns a lightweight list of all players for Auto-Complete."""
+    try:
+        df = model_data["df_profile"].filter(
+            pl.col('position').is_in(['QB', 'RB', 'WR', 'TE'])
+        ).select(['player_name', 'position', 'team_abbr'])
+        return df.to_dicts()
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching player list: {e}")
+    
 @app.post("/predict")
 async def predict_single_player(request: PlayerRequest):
     target_week = request.week if request.week is not None else model_data["current_nfl_week"]
