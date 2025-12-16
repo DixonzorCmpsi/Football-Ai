@@ -2,11 +2,21 @@ import nflreadpy as nfl
 import polars as pl
 from pathlib import Path
 import sys
+from datetime import datetime
 
 # --- Configuration ---
-SEASON = 2025
-PLAYER_STATS_FILE = Path("weekly_player_stats_2025.csv")
-OFFENSE_STATS_FILE = Path("weekly_offense_stats_2025.csv")
+# --- Dynamic Season Logic ---
+def get_current_season():
+    now = datetime.now()
+    if now.month >= 3: 
+        return now.year
+    else: 
+        return now.year - 1
+
+SEASON = get_current_season()
+
+PLAYER_STATS_FILE = Path(f"weekly_player_stats_{SEASON}.csv")
+OFFENSE_STATS_FILE = Path(f"weekly_offense_stats_{SEASON}.csv")
 PROFILES_FILE = Path("player_profiles.csv")
 
 # Define fantasy positions

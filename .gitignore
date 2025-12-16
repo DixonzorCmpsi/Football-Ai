@@ -10,3 +10,19 @@ dataPrep/data/*.csv
 applications/__pycache__/predict_fantasy_points.cpython-311.pyc
 C:\Users\dixon\Desktop\football-Ai\Football-Ai\applications\__pycache__\predict_fantasy_points.cpython-311.pyc
 */models/
+*.db
+*.sqlite
+*.sqlite3
+# Ignore logs
+*.log
+logs/
+# Ignore IDE specific files
+.vscode/
+.idea/
+*.iml
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+node_modules/
+

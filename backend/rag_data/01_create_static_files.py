@@ -2,9 +2,16 @@ import nflreadpy as nfl
 import polars as pl
 import sys
 from datetime import datetime
+# --- Dynamic Season Logic ---
+def get_current_season():
+    now = datetime.now()
+    if now.month >= 3: 
+        return now.year
+    else: 
+        return now.year - 1
 
-# Define the current season
-SEASON = 2025
+SEASON = get_current_season()
+print(f"Dynamic Season Detected: {SEASON}")
 # Flag to print date format debug info only once
 printed_date_format_debug = False
 

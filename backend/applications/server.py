@@ -1,151 +1,346 @@
-# applications/server.py
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import polars as pl
 import joblib
 import json
 import sys
 import os
+import asyncio
+import requests
 import numpy as np
-import xgboost as xgb
 from contextlib import asynccontextmanager
 import nflreadpy as nfl
-from rapidfuzz import process, fuzz
-from sqlalchemy import create_engine, text
-from dotenv import load_dotenv # Needed to load password
+from dotenv import load_dotenv
 
-# --- Configuration ---
+# --- 1. CONFIGURATION ---
 load_dotenv()
-
-
 DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
 if not DB_CONNECTION_STRING:    
-    print("Error: DB_CONNECTION_STRING not found in environment variables.", file=sys.stderr)
-    sys.exit(1)
-# --- End DB Configuration ---
+    sys.exit("Error: DB_CONNECTION_STRING not found.")
 
-# --- Add dataPrep directory to Python path ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
-dataPrep_dir = os.path.abspath(os.path.join(current_dir, '..', 'dataPrep'))
-if dataPrep_dir not in sys.path:
-    sys.path.insert(0, dataPrep_dir)
-
-# --- Import from the TimeSeries feature generator ---
-try:
-    from feature_generator_timeseries import generate_features_all
-except ImportError as e:
-    print(f"Error: Could not import generate_features_all: {e}", file=sys.stderr)
-    sys.exit(1)
-
-# --- Define Constants ---
-CURRENT_SEASON = 2025
-MAE_VALUES = {
-    'QB': 4.30, 'RB': 5.19, 'WR': 4.33, 'TE': 4.34
-}
-META_MAE_VALUES = {
-    'QB': 4.79, 'RB': 3.66, 'WR': 2.88, 'TE': 2.41
-}
-FUZZY_MATCH_THRESHOLD = 80
-
-# --- File Paths ---
 PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, '..'))
+dataPrep_dir = os.path.abspath(os.path.join(current_dir, '..', 'dataPrep'))
 RAG_DIR = os.path.join(PROJECT_ROOT, 'rag_data')
 MODEL_DIR = os.path.join(PROJECT_ROOT, 'model_training', 'models')
 
-# RAG Data paths (used for loading locally, but paths are ignored when reading from DB)
-PROFILE_PATH = os.path.join(RAG_DIR, 'player_profiles.csv')
-SCHEDULE_PATH = os.path.join(RAG_DIR, 'schedule_2025.csv')
-PLAYER_STATS_PATH = os.path.join(RAG_DIR, 'weekly_player_stats_2025.csv')
-DEFENSE_STATS_PATH = os.path.join(RAG_DIR, 'weekly_defense_stats_2025.csv')
-OFFENSE_STATS_PATH = os.path.join(RAG_DIR, 'weekly_offense_stats_2025.csv')
-SNAP_COUNTS_PATH = os.path.join(RAG_DIR, 'weekly_snap_counts_2025.csv')
+if dataPrep_dir not in sys.path: sys.path.insert(0, dataPrep_dir)
 
-# --- Model Paths (Dictionary) ---
+try:
+    from feature_generator_timeseries import generate_features_all
+except ImportError:
+    print("Warning: feature_generator_timeseries not found.")
+
+# --- 2. CONSTANTS ---
+CURRENT_SEASON = 2025
+MAE_VALUES = {'QB': 4.30, 'RB': 5.19, 'WR': 4.33, 'TE': 4.34}
+META_MAE_VALUES = {'QB': 4.79, 'RB': 3.66, 'WR': 2.88, 'TE': 2.41}
+WATCHLIST_FILE = os.path.join(RAG_DIR, 'watchlist.json')
+
 MODELS_CONFIG = {
-    'QB': {
-        'model': os.path.join(MODEL_DIR, 'xgboost_QB_sliding_window_v1(TimeSeries).joblib'),
-        'features': os.path.join(MODEL_DIR, 'feature_names_QB_sliding_window_v1(TimeSeries).json')
-    },
-    'RB': {
-        'model': os.path.join(MODEL_DIR, 'xgboost_RB_sliding_window_v1(TimeSeries).joblib'),
-        'features': os.path.join(MODEL_DIR, 'feature_names_RB_sliding_window_v1(TimeSeries).json')
-    },
-    'WR': {
-        'model': os.path.join(MODEL_DIR, 'xgboost_WR_sliding_window_v1(TimeSeries).joblib'),
-        'features': os.path.join(MODEL_DIR, 'feature_names_WR_sliding_window_v1(TimeSeries).json')
-    },
-    'TE': {
-        'model': os.path.join(MODEL_DIR, 'xgboost_TE_sliding_window_v1(TimeSeries).joblib'),
-        'features': os.path.join(MODEL_DIR, 'feature_names_TE_sliding_window_v1(TimeSeries).json')
-    }
+    'QB': {'model': os.path.join(MODEL_DIR, 'xgboost_QB_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_QB_sliding_window_v1(TimeSeries).json')},
+    'RB': {'model': os.path.join(MODEL_DIR, 'xgboost_RB_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_RB_sliding_window_v1(TimeSeries).json')},
+    'WR': {'model': os.path.join(MODEL_DIR, 'xgboost_WR_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_WR_sliding_window_v1(TimeSeries).json')},
+    'TE': {'model': os.path.join(MODEL_DIR, 'xgboost_TE_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_TE_sliding_window_v1(TimeSeries).json')}
 }
-# --- Meta Model Paths ---
 META_MODEL_PATH = os.path.join(MODEL_DIR, 'xgboost_META_model_v1.joblib')
 META_FEATURES_PATH = os.path.join(MODEL_DIR, 'feature_names_META_model_v1.json')
 
-
 model_data = {}
 
+# --- HELPER: Load ID Map Only (Injuries now in DB) ---
+def refresh_id_map():
+    print("📥 Downloading/Refreshing Player ID Map...")
+    try:
+        players_df = nfl.load_ff_playerids()
+        if "sleeper_id" not in players_df.columns or "gsis_id" not in players_df.columns:
+            return False
+
+        map_df = players_df.drop_nulls(subset=['sleeper_id', 'gsis_id'])
+        sleeper_ids = map_df['sleeper_id'].cast(pl.Utf8).to_list()
+        gsis_ids = map_df['gsis_id'].to_list()
+        
+        model_data["sleeper_map"] = dict(zip(sleeper_ids, gsis_ids))
+        print(f"✅ ID Map Ready ({len(model_data['sleeper_map'])} players mapped)")
+        return True
+    except Exception as e:
+        print(f"⚠️ ID Map Download Failed: {e}")
+        model_data["sleeper_map"] = {}
+        return False
+
+# --- 3. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Loading data and models from PostgreSQL...")
+    print("--- 🚀 Server Startup ---")
     try:
-        # 1. Load Data from DB (all pl.read_csv replaced)
-        
-        # Load necessary tables
-        model_data["df_profile"] = pl.read_database_uri("SELECT * FROM player_profiles", DB_CONNECTION_STRING)
-        model_data["df_schedule"] = pl.read_database_uri("SELECT * FROM schedule", DB_CONNECTION_STRING)
-        model_data["df_player_stats"] = pl.read_database_uri("SELECT * FROM weekly_player_stats", DB_CONNECTION_STRING)
-        model_data["df_defense"] = pl.read_database_uri("SELECT * FROM weekly_defense_stats", DB_CONNECTION_STRING)
-        model_data["df_offense"] = pl.read_database_uri("SELECT * FROM weekly_offense_stats", DB_CONNECTION_STRING)
-        model_data["df_snap_counts"] = pl.read_database_uri("SELECT * FROM weekly_snap_counts", DB_CONNECTION_STRING)
-        
-        # --- FIX: df_players_map loading is now removed as the generator doesn't use it ---
-        print("All RAG data files loaded from DB.")
+        # Load Dataframes from DB
+        # NOTE: df_injuries now targets the specific season table created by your generator
+        queries = {
+            "df_profile": "SELECT * FROM player_profiles",
+            "df_schedule": "SELECT * FROM schedule",
+            "df_player_stats": "SELECT * FROM weekly_player_stats",
+            "df_snap_counts": "SELECT * FROM weekly_snap_counts",
+            "df_odds": "SELECT * FROM weekly_player_odds",
+            "df_defense": "SELECT * FROM weekly_defense_stats",
+            "df_offense": "SELECT * FROM weekly_offense_stats",
+            "df_overunder": "SELECT * FROM schedule",
+            "df_injuries": f"SELECT * FROM weekly_injuries_{CURRENT_SEASON}", # <--- FIXED TABLE NAME
+            "df_game_spreads": "SELECT week, home_team, away_team, over_under FROM schedule WHERE over_under IS NOT NULL"
+        }
+        for key, query in queries.items():
+            try:
+                model_data[key] = pl.read_database_uri(query, DB_CONNECTION_STRING)
+            except Exception as e:
+                print(f"⚠️ {key} load failed: {e}")
+                model_data[key] = pl.DataFrame()
 
-        # 2. Load Base (L0) Models
+        # Build Injury Lookup Dict
+        try:
+            if not model_data["df_injuries"].is_empty():
+                print("✅ Injuries Loaded from DB")
+                # Map gsis_id -> report_status
+                inj = model_data["df_injuries"].select(['gsis_id', 'report_status']).drop_nulls()
+                model_data["injury_map"] = dict(zip(inj['gsis_id'], inj['report_status']))
+            else:
+                model_data["injury_map"] = {}
+        except:
+            model_data["injury_map"] = {}
+
+        # Load Models
         model_data["models"] = {}
         for pos, paths in MODELS_CONFIG.items():
-            if os.path.exists(paths['model']) and os.path.exists(paths['features']):
-                print(f"Loading {pos} model from {paths['model']}...")
-                model = joblib.load(paths['model'])
-                with open(paths['features'], 'r') as f:
-                    features = json.load(f)
-                model_data["models"][pos] = {"model": model, "features": features}
-                print(f"Loaded {pos} model and {len(features)} top features.")
-            else:
-                print(f"Warning: Model file missing for {pos}.")
-
-        # 3. Load Meta (L1) Model
-        print(f"Loading META models...")
-        model_data["meta_models"] = joblib.load(META_MODEL_PATH)
-        with open(META_FEATURES_PATH, 'r') as f:
-            model_data["meta_features"] = json.load(f)
-        print(f"Loaded {len(model_data['meta_models'])} meta-models.")
-
-        # 4. Fuzzy Match List
-        relevant_positions = ['QB', 'RB', 'WR', 'TE']
-        filtered_profile = model_data["df_profile"].filter(pl.col('position').is_in(relevant_positions))
-        model_data["player_name_id_list"] = list(zip(filtered_profile["player_name"], filtered_profile["player_id"]))
+            if os.path.exists(paths['model']):
+                model_data["models"][pos] = {
+                    "model": joblib.load(paths['model']),
+                    "features": json.load(open(paths['features']))
+                }
         
-        # 5. Current Week
+        if os.path.exists(META_MODEL_PATH):
+            model_data["meta_models"] = joblib.load(META_MODEL_PATH)
+            model_data["meta_features"] = json.load(open(META_FEATURES_PATH))
+
+        refresh_id_map()
+
         try: model_data["current_nfl_week"] = nfl.get_current_week()
-        except Exception: model_data["current_nfl_week"] = 10 
-            
-        print(f"Server Ready. Current NFL week is: {model_data['current_nfl_week']}")
+        except: model_data["current_nfl_week"] = 1
+        print(f"✅ Ready. Week: {model_data['current_nfl_week']}")
 
     except Exception as e:
-        print(f"FATAL ERROR during server startup: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Startup Error: {e}")
         sys.exit(1)
+    
     yield
     model_data.clear()
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- Pydantic Models ---
+# --- 4. CORE LOGIC ---
+
+def get_headshot_url(player_id: str):
+    try:
+        row = model_data["df_profile"].filter(pl.col("player_id") == player_id)
+        if not row.is_empty():
+            db_url = row.row(0, named=True).get("headshot")
+            if db_url: return db_url
+    except: pass
+    return f"https://sleepercdn.com/content/nfl/players/{player_id}.jpg"
+
+def format_draft_info(year, number):
+    if year and number and not np.isnan(number):
+        return f"Pick {int(number)} ({int(year)})"
+    return "Undrafted"
+
+def calculate_fantasy_points(row):
+    try:
+        if row.get('y_fantasy_points_ppr') is not None: return float(row['y_fantasy_points_ppr'])
+        if row.get('fantasy_points_ppr') is not None: return float(row['fantasy_points_ppr'])
+        if row.get('fantasy_points') is not None: return float(row['fantasy_points'])
+        
+        p_yds = row.get('passing_yards') or row.get('pass_yds') or 0
+        p_tds = row.get('passing_tds') or 0
+        r_yds = row.get('rushing_yards') or row.get('rush_yds') or 0
+        r_tds = row.get('rushing_tds') or 0
+        rec_yds = row.get('receiving_yards') or row.get('rec_yds') or 0
+        rec_tds = row.get('receiving_tds') or 0
+        receptions = row.get('receptions') or 0
+        ints = row.get('interceptions') or 0
+        fumbles = row.get('fumbles_lost') or 0
+        
+        return (
+            (p_yds * 0.04) + (p_tds * 4.0) + (r_yds * 0.1) + (r_tds * 6.0) + 
+            (rec_yds * 0.1) + (rec_tds * 6.0) + (receptions * 1.0) - 
+            (ints * 2.0) - (fumbles * 2.0)
+        )
+    except: return 0.0
+
+def run_base_prediction(pid, pos, week):
+    features, err = generate_features_all(
+        pid, week, model_data["df_profile"], model_data["df_schedule"],
+        model_data["df_player_stats"], model_data["df_defense"],
+        model_data["df_offense"], model_data["df_snap_counts"]
+    )
+    if not features: return None, err, None
+    
+    if pos not in model_data["models"]: return None, "No Model", None
+    m_info = model_data["models"][pos]
+    feats = {k: [features.get(k, 0.0)] for k in m_info["features"]}
+    pred = m_info["model"].predict(pl.DataFrame(feats).to_numpy())[0]
+    return float(pred), None, features
+
+async def get_player_card(player_id: str, week: int):
+    profile = model_data["df_profile"].filter(pl.col('player_id') == player_id)
+    if profile.is_empty(): return None
+    p_row = profile.row(0, named=True)
+    pos, team = p_row['position'], p_row['team_abbr']
+
+    l0_score, err, feats = run_base_prediction(player_id, pos, week)
+    if err: l0_score = 0.0
+
+    try:
+        teammates = {'QB': 0.0, 'RB': 0.0, 'WR': 0.0, 'TE': 0.0}
+        teammates[pos] = l0_score or 0.0
+        roster = model_data["df_profile"].filter((pl.col('team_abbr') == team) & (pl.col('status') == 'ACT') & (pl.col('player_id') != player_id))
+        for p_pos in ['QB', 'RB', 'WR', 'TE']:
+            if p_pos == pos: continue
+            mate = roster.filter(pl.col('position') == p_pos).head(1)
+            if not mate.is_empty():
+                m_id = mate.row(0, named=True)['player_id']
+                s, _, _ = run_base_prediction(m_id, p_pos, week)
+                if s: teammates[p_pos] = s
+
+        if pos == 'QB': meta_score = l0_score
+        elif pos in model_data["meta_models"]:
+            meta_in = {f"L0_pred_{k}": [v] for k, v in teammates.items()}
+            meta_input = pl.DataFrame(meta_in).select(model_data["meta_features"]).to_numpy()
+            meta_score = float(model_data["meta_models"][pos].predict(meta_input)[0])
+        else: meta_score = l0_score 
+    except: meta_score = l0_score 
+    
+    mae = META_MAE_VALUES.get(pos, 5.0)
+    
+    avg_points = 0.0
+    try:
+        stats_history = model_data['df_player_stats'].filter((pl.col('player_id') == player_id) & (pl.col('week') < week))
+        if not stats_history.is_empty():
+            total_points, game_count = 0.0, 0
+            for row in stats_history.iter_rows(named=True):
+                pts = calculate_fantasy_points(row)
+                if pts > 0 or row.get('offense_snaps', 0) > 0:
+                    total_points += pts
+                    game_count += 1
+            if game_count > 0: avg_points = total_points / game_count
+    except: pass
+
+    snap_count, snap_pct = 0, 0.0
+    try:
+        row = model_data["df_snap_counts"].filter((pl.col("player_id") == player_id) & (pl.col("week") == week))
+        if not row.is_empty(): d = row.row(0, named=True); snap_count, snap_pct = int(d.get("offense_snaps", 0)), float(d.get("offense_pct", 0.0))
+    except: pass
+
+    # --- OVER/UNDER (TOTAL LINE) LOGIC ---
+    total_line = None
+    try:
+        spread_df = model_data["df_game_spreads"].filter(pl.col("week") == week)
+        
+        # Check if the player's team is in the game
+        game_row = spread_df.filter((pl.col("home_team") == team) | (pl.col("away_team") == team))
+        
+        if not game_row.is_empty():
+            # The over_under value (total line) is the same regardless of which team the player is on
+            total_line = game_row.row(0, named=True).get("over_under")
+            if total_line is not None:
+                total_line = float(total_line)
+
+    except Exception as e:
+        print(f"Over/Under lookup error: {e}")
+        total_line = None
+    
+    # Opponent Lookup
+    opponent = "BYE"
+    try:
+        game = model_data["df_schedule"].filter((pl.col("week") == week) & ((pl.col("home_team") == team) | (pl.col("away_team") == team)))
+        if not game.is_empty(): row = game.row(0, named=True); opponent = row['away_team'] if row['home_team'] == team else row['home_team']
+    except: pass
+
+    # --- INJURY STATUS (FROM DB) ---
+    injury_status = model_data.get("injury_map", {}).get(player_id, "Active")
+
+    return {
+        "player_name": p_row['player_name'],
+        "player_id": player_id,
+        "position": pos,
+        "week": week,
+        "team": team,
+        "opponent": opponent,
+        "draft_position": format_draft_info(p_row.get('draft_year'), p_row.get('draft_number')),
+        "snap_count": snap_count,
+        "snap_percentage": snap_pct,
+        "overunder": total_line,
+        "spread": total_line, # <--- FIXED: Passing OVER/UNDER value using the 'spread' key for frontend compatibility
+        "image": get_headshot_url(player_id),
+        "prediction": round(meta_score + mae, 2),  
+        "floor_prediction": round(meta_score, 2),
+        "average_points": round(avg_points, 1),
+        "injury_status": injury_status
+    }
+async def get_team_roster_cards(team_abbr: str, week: int):
+    composition = {"QB": 5, "RB": 5, "WR": 5, "TE": 5}
+    roster_result = []
+    try:
+        q = f"SELECT player_id, position FROM weekly_rankings WHERE week={week} AND team_abbr='{team_abbr}' ORDER BY predicted_points DESC"
+        ranked = pl.read_database_uri(q, DB_CONNECTION_STRING)
+    except: ranked = pl.DataFrame()
+    if ranked.is_empty():
+        ranked = model_data["df_profile"].filter((pl.col("team_abbr") == team_abbr) & (pl.col("status") == "ACT")).select(["player_id", "position"])
+    for pos, limit in composition.items():
+        candidates = ranked.filter(pl.col("position") == pos).head(limit)
+        for row in candidates.iter_rows(named=True):
+            card = await get_player_card(row['player_id'], week)
+            if card: roster_result.append(card)
+    order = {"QB": 1, "RB": 2, "WR": 3, "TE": 4}
+    roster_result.sort(key=lambda x: order.get(x["position"], 99))
+    return roster_result
+
+async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
+    if not model_data.get("sleeper_map"):
+        if not refresh_id_map(): return []
+
+    try:
+        url = f"https://api.sleeper.app/v1/players/nfl/trending/{trend_type}?lookback_hours=24&limit={limit+10}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        
+        response = requests.get(url, headers=headers, timeout=3)
+        if response.status_code != 200: return []
+        
+        data = response.json()
+        
+        cards = []
+        for item in data:
+            sleeper_id = str(item.get("player_id"))
+            count = item.get("count", 0)
+            our_id = model_data["sleeper_map"].get(sleeper_id)
+            
+            if our_id:
+                card = await get_player_card(our_id, week)
+                if card:
+                    card["trending_count"] = count 
+                    cards.append(card)
+            
+            if len(cards) >= limit: break
+            
+        return cards
+    except: return []
+
+# --- 5. ENDPOINTS ---
 class PlayerRequest(BaseModel):
     player_name: str
     week: Optional[int] = None
@@ -155,246 +350,141 @@ class CompareRequest(BaseModel):
     player2_name: str
     week: Optional[int] = None
 
-# --- Helper Functions ---
-
-def find_player(player_name_input: str):
-    """Finds player with exact (case-insensitive) match."""
+@app.get("/player/{player_id}")
+async def get_player_by_id(player_id: str, week: Optional[int] = None):
     try:
-        player_match = model_data["df_profile"].filter(
-            pl.col('player_name').str.to_lowercase() == player_name_input.lower()
-        )
-        if player_match.is_empty():
-            return None, None
-        
-        player_row = player_match.row(0, named=True)
-        return player_row['player_name'], player_row['player_id']
-    except Exception:
-        return None, None
+        wk = week if week else model_data["current_nfl_week"]
+        card = await get_player_card(player_id, wk)
+        if not card: raise HTTPException(404, "Player not found")
+        return card
+    except Exception as e: raise HTTPException(500, str(e))
 
-def predict_points(pos: str, features_dict: dict):
-    """Selects correct model based on position and predicts."""
-    if pos not in model_data["models"]:
-        return None, f"No model loaded for position: {pos}"
-    
-    model_info = model_data["models"][pos]
-    model = model_info["model"]
-    trained_feature_names = model_info["features"]
-    
+@app.get("/current_week")
+async def get_current_week(): return {"week": model_data.get("current_nfl_week", 1)}
+
+@app.get("/schedule/{week}")
+async def get_schedule(week: int):
+    try: return model_data["df_schedule"].filter(pl.col("week") == week).to_dicts()
+    except: return []
+
+@app.get("/matchup/{week}/{home_team}/{away_team}")
+async def get_matchup_rosters(week: int, home_team: str, away_team: str):
     try:
-        feature_data = {}
-        for feature_name in trained_feature_names:
-            val = features_dict.get(feature_name, 0.0) 
-            feature_data[feature_name] = [val if val is not None and not np.isnan(val) else 0.0]
-            
-        df_pred = pl.DataFrame(feature_data).select(trained_feature_names)
-        preds = model.predict(df_pred.to_numpy())
-        return float(preds[0]), None
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        import traceback
-        traceback.print_exc()
-        return None, f"Prediction Error: {e}"
+        home_cards = await get_team_roster_cards(home_team, week)
+        away_cards = await get_team_roster_cards(away_team, week)
+        return {"matchup": f"{away_team} @ {home_team}", "week": week, "home_roster": home_cards, "away_roster": away_cards}
+    except Exception as e: raise HTTPException(status_code=500, detail="Failed to load matchup")
 
-def get_base_prediction(pid: str, pos: str, target_week: int):
-    """Gets the Level 0 (Base) prediction for a single player."""
-    
-    # --- Generate Features (Only one call) ---
-    # FIX: df_players_map argument is removed to avoid TypeError
-    features, err = generate_features_all(
-        pid, target_week,
-        df_profile=model_data["df_profile"], 
-        df_schedule=model_data["df_schedule"],
-        df_player_stats=model_data["df_player_stats"], 
-        df_defense=model_data["df_defense"],
-        df_offense=model_data["df_offense"],
-        df_snap_counts=model_data["df_snap_counts"]
-    )
-    if not features: return None, err or "Feature gen failed", None
-    
-    # --- Prediction ---
-    l0_score, l0_err = predict_points(pos, features)
-    
-    # Return features along with score/error
-    return l0_score, l0_err, features 
-
-
-def find_teammate(team_abbr: str, pos: str, exclude_pid: str):
-    """Finds the main player for a team/position."""
-    candidates = model_data["df_profile"].filter(
-        (pl.col('team_abbr') == team_abbr) &
-        (pl.col('position') == pos) &
-        (pl.col('status') == 'ACT') &
-        (pl.col('player_id') != exclude_pid)
-    )
-    if candidates.is_empty(): return None, None
-    return candidates.row(0, named=True)['player_name'], candidates.row(0, named=True)['player_id']
-
-# --- Endpoints ---
-# --- NEW: Ranking Endpoints ---
-@app.get("/rankings/past/{week}")
-async def get_past_rankings(week: int):
-    """Returns top 10 performers (Actual vs Predicted) for a past week."""
-    try:
-        query = f"""
-            SELECT player_name, position, team, opponent, predicted_points, actual_points 
-            FROM weekly_rankings 
-            WHERE week = {week} AND actual_points IS NOT NULL
-            ORDER BY actual_points DESC 
-            LIMIT 10
-        """
-        df = pl.read_database_uri(query, DB_CONNECTION_STRING)
-        return df.to_dicts()
-    except Exception as e:
-        print(f"Error fetching rankings: {e}")
-        return []
-
-@app.get("/rankings/future/{week}")
-async def get_future_rankings(week: int):
-    """Returns top 10 projected performers for an upcoming week."""
-    try:
-        query = f"""
-            SELECT player_name, position, team, opponent, predicted_points 
-            FROM weekly_rankings 
-            WHERE week = {week} 
-            ORDER BY predicted_points DESC 
-            LIMIT 10
-        """
-        df = pl.read_database_uri(query, DB_CONNECTION_STRING)
-        return df.to_dicts()
-    except Exception as e:
-        print(f"Error fetching future rankings: {e}")
-        return []
-
-@app.get("/players/all")
-async def get_all_players():
-    """Returns a lightweight list of all players for Auto-Complete."""
-    try:
-        df = model_data["df_profile"].filter(
-            pl.col('position').is_in(['QB', 'RB', 'WR', 'TE'])
-        ).select(['player_name', 'position', 'team_abbr'])
-        return df.to_dicts()
-    except Exception as e:
-        raise HTTPException(500, f"Error fetching player list: {e}")
-    
 @app.post("/predict")
-async def predict_single_player(request: PlayerRequest):
-    target_week = request.week if request.week is not None else model_data["current_nfl_week"]
-    
-    actual_name, pid = find_player(request.player_name)
-    if not pid: raise HTTPException(404, f"Player '{request.player_name}' not found (exact match).")
-    
+async def predict(req: PlayerRequest):
     try:
-        player_row = model_data["df_profile"].filter(pl.col('player_id') == pid).row(0, named=True)
-        pos = player_row['position']
-        team_abbr = player_row['team_abbr']
-    except Exception as e: 
-        print(f"Error extracting player position/team: {e}")
-        pos = "UNK"; team_abbr = "UNK"
-    
-    if pos not in model_data["models"]:
-        raise HTTPException(404, f"No model available for position: {pos}")
-
-    # --- Step 1: Get L0 Prediction for the main player ---
-    l0_score, l0_err, features = get_base_prediction(pid, pos, target_week)
-    if l0_err: raise HTTPException(500, f"L0 prediction failed: {l0_err}")
-    
-    # --- Step 2: Get L0 Predictions for Teammates (Ecosystem) ---
-    qb_name, qb_pid = find_teammate(team_abbr, 'QB', pid)
-    if pos == 'QB': l0_pred_qb = l0_score
-    elif qb_pid: l0_pred_qb, _, _ = get_base_prediction(qb_pid, 'QB', target_week)
-    else: l0_pred_qb = 0.0
-
-    rb_name, rb_pid = find_teammate(team_abbr, 'RB', pid)
-    if pos == 'RB': l0_pred_rb = l0_score
-    elif rb_pid: l0_pred_rb, _, _ = get_base_prediction(rb_pid, 'RB', target_week)
-    else: l0_pred_rb = 0.0
-        
-    wr_name, wr_pid = find_teammate(team_abbr, 'WR', pid)
-    if pos == 'WR': l0_pred_wr = l0_score
-    elif wr_pid: l0_pred_wr, _, _ = get_base_prediction(wr_pid, 'WR', target_week)
-    else: l0_pred_wr = 0.0
-
-    te_name, te_pid = find_teammate(team_abbr, 'TE', pid)
-    if pos == 'TE': l0_pred_te = l0_score
-    elif te_pid: l0_pred_te, _, _ = get_base_prediction(te_pid, 'TE', target_week)
-    else: l0_pred_te = 0.0
-        
-    l0_pred_qb = l0_pred_qb or 0.0
-    l0_pred_rb = l0_pred_rb or 0.0
-    l0_pred_wr = l0_pred_wr or 0.0
-    l0_pred_te = l0_pred_te or 0.0
-        
-    # --- Step 3: Get L1 Meta-Model Prediction ---
-    try:
-        meta_model = model_data["meta_models"][pos]
-        meta_features = model_data["meta_features"]
-        
-        meta_input_data = {
-            'L0_pred_QB': [l0_pred_qb],
-            'L0_pred_RB': [l0_pred_rb],
-            'L0_pred_WR': [l0_pred_wr],
-            'L0_pred_TE': [l0_pred_te]
-        }
-        
-        meta_df = pl.DataFrame(meta_input_data).select(meta_features)
-        meta_score = meta_model.predict(meta_df.to_numpy())[0]
-        
-    except Exception as e:
-        print(f"Meta-model prediction failed: {e}")
-        meta_score = None 
-
-    # --- Step 4: Format Response ---
-    l0_mae = MAE_VALUES.get(pos, 5.0)
-    
-    response = {
-        "player_name": actual_name, "position": pos, "week": target_week,
-        "opponent": features.get('opponent', 'N/A'),
-        
-        "position_specific_prediction": {
-            "predicted_points": round(l0_score, 2),
-            "expected_range": f"{max(0, l0_score-l0_mae):.2f} - {l0_score+l0_mae:.2f} (+/- {l0_mae:.2f})"
-        }
-    }
-    
-    if meta_score is not None:
-        l1_mae = META_MAE_VALUES.get(pos, 5.0)
-        response["ecosystem_aware_prediction"] = {
-            "predicted_points": round(float(meta_score), 2),
-            "expected_range": f"{max(0, meta_score-l1_mae):.2f} - {meta_score+l1_mae:.2f} (+/- {l1_mae:.2f})",
-            "context_message": "This prediction is adjusted based on the predicted performance of the player's teammates."
-        }
-        
-    print(f"Prediction successful for {actual_name}.")
-    return response
+        match = model_data["df_profile"].filter(pl.col('player_name').str.to_lowercase() == req.player_name.lower())
+        if match.is_empty(): raise HTTPException(404, "Player not found")
+        pid = match.row(0, named=True)['player_id']
+        wk = req.week if req.week else model_data["current_nfl_week"]
+        return await get_player_card(pid, wk)
+    except Exception as e: raise HTTPException(500, str(e))
 
 @app.post("/compare")
-async def compare_players(request: CompareRequest):
-    target_week = request.week if request.week is not None else model_data["current_nfl_week"]
-    results = []
-    
-    for input_name in [request.player1_name, request.player2_name]:
+async def compare(req: CompareRequest):
+    wk = req.week if req.week else model_data["current_nfl_week"]
+    res = []
+    for name in [req.player1_name, req.player2_name]:
         try:
-            # We can just call our /predict endpoint's logic
-            response = await predict_single_player(PlayerRequest(player_name=input_name, week=target_week))
-            results.append({"input_name": input_name, **response})
-        except HTTPException as e:
-            results.append({"input_name": input_name, "error": e.detail})
-        except Exception as e:
-            results.append({"input_name": input_name, "error": str(e)})
-        
-    return {"week": target_week, "comparison": results}
+            match = model_data["df_profile"].filter(pl.col('player_name').str.to_lowercase() == name.lower())
+            if not match.is_empty():
+                pid = match.row(0, named=True)['player_id']
+                res.append(await get_player_card(pid, wk))
+            else: res.append({"error": f"Player {name} not found"})
+        except: res.append({"error": "Lookup failed"})
+    return {"week": wk, "comparison": res}
+
+@app.get('/players/search')
+async def search_players(q: str):
+    if not q: return []
+    try:
+        # REMOVED the 'ACT' status filter so you can find everyone
+        expr = (
+            pl.col('player_name').str.to_lowercase().str.contains(q.lower()) &
+            (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE']))
+        )
+        return model_data["df_profile"].filter(expr).select([
+            'player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'
+        ]).head(20).to_dicts()
+    except: return []
+@app.get("/rankings/past/{week}")
+async def get_trending_down(week: int):
+    return await fetch_sleeper_trends("drop", limit=30, week=week)
+
+@app.get("/rankings/future/{week}")
+async def get_trending_up(week: int):
+    return await fetch_sleeper_trends("add", limit=30, week=week)
+
+@app.get("/player/history/{player_id}")
+async def get_player_history(player_id: str):
+    try:
+        stats = model_data['df_player_stats'].filter(pl.col('player_id') == player_id).unique(subset=['week']).sort('week')
+        player_snaps = model_data['df_snap_counts'].filter(pl.col('player_id') == player_id)
+        if stats.is_empty(): return []
+
+        history = []
+        for row in stats.iter_rows(named=True):
+            wk = row['week']
+            snap_count, snap_pct = 0, 0.0
+            s_row = player_snaps.filter(pl.col('week') == wk)
+            if not s_row.is_empty():
+                s_data = s_row.row(0, named=True)
+                snap_count, snap_pct = int(s_data.get('offense_snaps', 0)), float(s_data.get('offense_pct', 0.0))
+
+            p_yds = row.get('passing_yards') or row.get('pass_yds') or 0
+            r_yds = row.get('rushing_yards') or row.get('rush_yds') or 0
+            rec_yds = row.get('receiving_yards') or row.get('rec_yds') or 0
+            p_tds = row.get('passing_tds') or 0
+            r_tds = row.get('rushing_tds') or 0
+            rec_tds = row.get('receiving_tds') or 0
+            receptions = int(row.get('receptions') or 0)
+            targets = int(row.get('targets') or row.get('tgt') or 0)
+
+            pts = calculate_fantasy_points(row)
+
+            history.append({
+                "week": wk,
+                "opponent": row.get('opponent_team') or row.get('opponent') or "N/A",
+                "points": round(float(pts), 2),
+                "passing_yds": int(p_yds),
+                "rushing_yds": int(r_yds),
+                "receiving_yds": int(rec_yds),
+                "touchdowns": int(p_tds + r_tds + rec_tds),
+                "snap_count": snap_count,
+                "snap_percentage": snap_pct,
+                "receptions": receptions,
+                "targets": targets
+            })
+        return history
+    except: return []
+
+# --- WATCHLIST ---
+def load_wl(): return json.load(open(WATCHLIST_FILE)) if os.path.exists(WATCHLIST_FILE) else []
+@app.get('/watchlist')
+async def get_watchlist():
+    ids = load_wl()
+    if not ids: return []
+    return model_data["df_profile"].filter(pl.col("player_id").is_in(ids)).select(['player_id', 'player_name', 'team_abbr', 'position']).to_dicts()
+@app.post('/watchlist')
+async def add_watchlist(item: dict):
+    ids = load_wl()
+    if item['player_id'] not in ids:
+        ids.append(item['player_id'])
+        with open(WATCHLIST_FILE, 'w') as f: json.dump(ids, f)
+    return ids
+@app.delete('/watchlist/{player_id}')
+async def remove_watchlist(player_id: str):
+    ids = load_wl()
+    if player_id in ids:
+        ids.remove(player_id)
+        with open(WATCHLIST_FILE, 'w') as f: json.dump(ids, f)
+    return ids
 
 if __name__ == '__main__':
     import uvicorn
-    print("Starting Multi-Model Time-Series Server (Exact Match)...")
-    current_dir_main = os.path.dirname(os.path.abspath(__file__))
-    dataPrep_dir_main = os.path.abspath(os.path.join(current_dir_main, '..', 'dataPrep'))
-    rag_data_dir = os.path.abspath(os.path.join(current_dir_main, '..', 'rag_data'))
-    
-    uvicorn.run(
-        "server:app", 
-        host="127.0.0.1", 
-        port=8000, 
-        reload=True,
-        reload_dirs=[current_dir_main, dataPrep_dir_main, rag_data_dir]
-    )
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)

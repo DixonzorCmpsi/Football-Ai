@@ -1,14 +1,11 @@
-# rag_data/06_generate_rankings.py
 import polars as pl
 import joblib
 import json
 import os
 import sys
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine
 from dotenv import load_dotenv
 from tqdm import tqdm
-import xgboost as xgb
-from urllib.parse import quote_plus
 from datetime import datetime
 
 # --- Setup Paths ---
@@ -33,11 +30,9 @@ def get_current_nfl_season():
 SEASON = get_current_nfl_season()
 print(f"Auto-detected NFL Season for Rankings: {SEASON}")
 
-
-
 DB_CONNECTION_STRING = os.getenv('DB_CONNECTION_STRING')
-
 MODEL_DIR = os.path.join(project_root, 'model_training', 'models')
+
 MODELS_CONFIG = {
     'QB': {'model': 'xgboost_QB_sliding_window_v1(TimeSeries).joblib', 'feat': 'feature_names_QB_sliding_window_v1(TimeSeries).json'},
     'RB': {'model': 'xgboost_RB_sliding_window_v1(TimeSeries).joblib', 'feat': 'feature_names_RB_sliding_window_v1(TimeSeries).json'},
@@ -55,7 +50,6 @@ def main():
     # 1. Load Data
     print("Loading data from Postgres...")
     try:
-        # Load profile with injury info
         df_profile = pl.read_database_uri("SELECT * FROM player_profiles", DB_CONNECTION_STRING)
         df_schedule = pl.read_database_uri("SELECT * FROM schedule", DB_CONNECTION_STRING)
         df_stats = pl.read_database_uri("SELECT * FROM weekly_player_stats", DB_CONNECTION_STRING)
@@ -87,16 +81,14 @@ def main():
     all_predictions = []
     active_players = df_profile.filter(pl.col('position').is_in(['QB', 'RB', 'WR', 'TE']))
 
+    # 4. Generate Predictions
     for week in target_weeks:
         for row in tqdm(active_players.iter_rows(named=True), total=len(active_players), desc=f"Processing Week {week}"):
             pid = row['player_id']
             pos = row['position']
             name = row['player_name']
             
-            # --- NEW: Injury Logic ---
-            # 'injury_status' might be null (healthy), 'Q', 'D', 'O', 'IR', etc.
             injury_status = row.get('injury_status')
-            # Simple check: if status exists and is NOT 'None' or empty string, they are 'injured'
             is_injured = 1 if injury_status and injury_status.strip() else 0
             
             if pos not in loaded_models: continue
@@ -133,18 +125,39 @@ def main():
                     'week': week,
                     'predicted_points': round(pred, 2),
                     'actual_points': actual,
-                    # --- Add Injury Columns to DB ---
                     'is_injured': is_injured,
                     'injury_status': injury_status if injury_status else "Healthy"
                 })
 
             except Exception: continue
 
-    # 5. Save to Postgres
+    # 5. Save to CSV (Instead of DB)
     if all_predictions:
-        print(f"Saving {len(all_predictions)} predictions to DB...")
-        df_final = pl.DataFrame(all_predictions)
+        print(f"Generated {len(all_predictions)} predictions.")
         
+        # --- FIX: Define Strict Schema ---
+        # Prevents crash when mixing None (null) and floats (0.0) in 'actual_points'
+        schema_overrides = {
+            "player_id": pl.Utf8,
+            "player_name": pl.Utf8,
+            "position": pl.Utf8,
+            "team": pl.Utf8,
+            "opponent": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Float64,        
+            "predicted_points": pl.Float64,
+            "actual_points": pl.Float64,
+            "is_injured": pl.Int64,
+            "injury_status": pl.Utf8
+        }
+        
+        try:
+            df_final = pl.DataFrame(all_predictions, schema=schema_overrides)
+        except Exception as e:
+            print(f"⚠️ Strict schema failed ({e}), using inference with high limit...")
+            df_final = pl.DataFrame(all_predictions, infer_schema_length=10000)
+
+        # Sort and Rank
         df_final = df_final.sort(['week', 'position', 'predicted_points'], descending=[False, False, True])
         df_final = df_final.with_columns(
             pl.col("predicted_points").rank(method="min", descending=True)
@@ -152,20 +165,15 @@ def main():
             .alias("position_rank")
         )
         
+        # Output to CSV
+        output_file = os.path.join(current_dir, 'weekly_rankings.csv')
         try:
-            inspector = inspect(engine)
-            if inspector.has_table('weekly_rankings'):
-                with engine.connect() as conn:
-                    weeks_str = ",".join(map(str, target_weeks))
-                    delete_query = text(f"DELETE FROM weekly_rankings WHERE season = {SEASON} AND week IN ({weeks_str})")
-                    conn.execute(delete_query)
-                    conn.commit()
-                    print(f"Cleaned old data for weeks {target_weeks}.")
-            
-            df_final.to_pandas().to_sql('weekly_rankings', engine, if_exists='append', index=False)
-            print("Rankings updated (with injury status).")
+            df_final.write_csv(output_file)
+            print(f"✅ Rankings saved to {output_file}")
         except Exception as e:
-            print(f"Error saving to DB: {e}")
+            print(f"❌ Error saving CSV: {e}")
+    else:
+        print("No predictions generated.")
 
 if __name__ == "__main__":
     main()
