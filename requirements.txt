@@ -27,3 +27,4 @@ sqlalchemy
 psycopg2-binary
 connectorx
 sentence-transformers
+apscheduler

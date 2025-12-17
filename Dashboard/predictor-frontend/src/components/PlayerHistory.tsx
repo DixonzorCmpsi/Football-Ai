@@ -78,7 +78,19 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
           <div className="overflow-x-auto scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             <table className="w-full text-sm text-left whitespace-nowrap">
               <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 font-bold uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-700">
-                  <tr><th className="px-6 py-4 sticky left-0 bg-slate-50 dark:bg-slate-900 z-10">Week</th><th className="px-6 py-4">Opponent</th><th className="px-6 py-4 text-center">Snaps</th><th className="px-6 py-4 text-center">Rec / Tgt</th><th className="px-6 py-4 text-right">Pass Yds</th><th className="px-6 py-4 text-right">Rush Yds</th><th className="px-6 py-4 text-right">Rec Yds</th><th className="px-6 py-4 text-right">TDs</th><th className="px-6 py-4 text-right bg-slate-50/50 dark:bg-slate-800/50">Pts</th></tr>
+                  <tr>
+                      <th className="px-6 py-4 sticky left-0 bg-slate-50 dark:bg-slate-900 z-10">Week</th>
+                      <th className="px-6 py-4">Opponent</th>
+                      <th className="px-6 py-4 text-center">Snaps</th>
+                      <th className="px-6 py-4 text-center">Rec / Tgt</th>
+                      {/* ADDED HEADER: RUSH ATTEMPTS */}
+                      <th className="px-6 py-4 text-right">Rush Att</th> 
+                      <th className="px-6 py-4 text-right">Rush Yds</th>
+                      <th className="px-6 py-4 text-right">Pass Yds</th>
+                      <th className="px-6 py-4 text-right">Rec Yds</th>
+                      <th className="px-6 py-4 text-right">TDs</th>
+                      <th className="px-6 py-4 text-right bg-slate-50/50 dark:bg-slate-800/50">Pts</th>
+                  </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
                   {history.map((game) => (
@@ -87,8 +99,12 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
                       <td className="px-6 py-4"><span className="px-2 py-1 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-300 font-bold text-xs border border-slate-200 dark:border-slate-600">{game.opponent}</span></td>
                       <td className="px-6 py-4 text-center"><span className="font-bold text-slate-700 dark:text-slate-300">{(game.snap_percentage * 100).toFixed(0)}%</span></td>
                       <td className="px-6 py-4 text-center font-medium text-slate-600 dark:text-slate-400">{game.receptions} <span className="text-slate-300 dark:text-slate-600 mx-1">/</span> {game.targets}</td>
-                      <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.passing_yds || "-"}</td>
+                      
+                      {/* ADDED COLUMN: RUSH ATTEMPTS (Mapped from 'carries') */}
+                      <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.carries !== undefined ? game.carries : "-"}</td> 
+                      
                       <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.rushing_yds || "-"}</td>
+                      <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.passing_yds || "-"}</td>
                       <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.receiving_yds || "-"}</td>
                       <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.touchdowns > 0 ? game.touchdowns : "-"}</td>
                       <td className="px-6 py-4 text-right bg-slate-50/30 dark:bg-slate-900/30"><span className={`font-black text-base ${game.points >= 15 ? 'text-green-600 dark:text-green-400' : 'text-slate-700 dark:text-slate-300'}`}>{game.points?.toFixed(1) || "0.0"}</span></td>

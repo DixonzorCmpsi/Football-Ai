@@ -40,7 +40,7 @@ const SidebarPlayerItem = ({ player, type, onClick }: { player: Player, type: 'u
   return (
     <div 
       onClick={() => onClick && onClick(player.player_id)}
-      className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-center gap-3 mb-2 transition-all hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer relative group"
+      className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-start gap-3 mb-2 transition-all hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer relative group"
     >
       {/* Player Image */}
       <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden border border-slate-200 dark:border-slate-600 shrink-0 relative">
@@ -64,7 +64,7 @@ const SidebarPlayerItem = ({ player, type, onClick }: { player: Player, type: 'u
       </div>
 
       {/* Trend or Score */}
-      <div className="text-right shrink-0">
+      <div className="text-right shrink-0 mt-0.5">
         {player.trending_count !== undefined ? (
           <div className={`text-xs font-black px-2 py-1 rounded-full ${type === 'up' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
              {type === 'up' ? '+' : '-'}{Math.abs(player.trending_count)}
@@ -89,7 +89,12 @@ export default function App() {
   const [rosterFilter, setRosterFilter] = useState<'ALL' | 'QB' | 'RB' | 'WR' | 'TE'>('ALL'); 
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  
+  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE'>('SCHEDULE');
+
+  // --- LIFTED STATE FOR COMPARE VIEW ---
+  const [compareP1, setCompareP1] = useState<string | null>(null);
+  const [compareP2, setCompareP2] = useState<string | null>(null);
+
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -98,7 +103,6 @@ export default function App() {
     return false;
   });
 
-  // Apply theme class to html element
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -113,11 +117,15 @@ export default function App() {
   const { pastRankings: trendingDown, loadingPast: loadingDown } = usePastRankings(currentWeek > 1 ? currentWeek - 1 : 1);
   const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(currentWeek);
   const { games, loadingSchedule } = useSchedule(currentWeek);
-  const { matchupData, loadingMatchup } = useMatchupDeepDive(currentWeek, selectedGame?.home || '', selectedGame?.away || '');
+  const { matchupData } = useMatchupDeepDive(currentWeek, selectedGame?.home || '', selectedGame?.away || '');
 
   if (loadingWeek) return <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold animate-pulse">Connecting...</div>;
 
-  const filterRoster = (list: any[]) => rosterFilter === 'ALL' ? list : list.filter(p => p.position === rosterFilter);
+  // --- Sort by Average Points ---
+  const filterRoster = (list: any[]) => {
+    const filtered = rosterFilter === 'ALL' ? list : list.filter(p => p.position === rosterFilter);
+    return filtered.sort((a, b) => (b.stats?.average || 0) - (a.stats?.average || 0));
+  };
 
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
@@ -134,7 +142,18 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             {loadingDown ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
-              trendingDown.map(p => <SidebarPlayerItem key={p.player_id} player={p} type="down" onClick={(id) => { setSelectedHistoryId(id); setViewMode('HISTORY'); }} />)
+              trendingDown.map(p => (
+                <SidebarPlayerItem 
+                    key={p.player_id} 
+                    player={p} 
+                    type="down" 
+                    onClick={(id) => { 
+                        setSelectedHistoryId(id); 
+                        setHistoryFrom('SCHEDULE'); 
+                        setViewMode('HISTORY'); 
+                    }} 
+                />
+              ))
             }
           </div>
         </aside>
@@ -145,12 +164,15 @@ export default function App() {
         
         {/* HEADER */}
         <header className="h-16 bg-slate-100/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
-          <div className="flex items-center gap-4">
+          
+          {/* FIX: Reduced gap-2 to gap-1 AND added pr-8 to force separation between logo and nav buttons */}
+          <div className="flex items-center gap-1 pr-8">
              <button onClick={() => setShowSidebars(!showSidebars)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-white dark:hover:bg-slate-800 rounded-lg transition-colors">
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
-             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:block" onClick={() => setViewMode('SCHEDULE')}>
-                FANTASY<span className="text-blue-600 dark:text-blue-400">AI</span>
+             
+             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:block z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
+                The Spot <span className="text-blue-600 dark:text-blue-400">Ai</span>
              </div>
           </div>
           
@@ -214,7 +236,16 @@ export default function App() {
                         <h3 className="text-center font-black text-xl mb-6 text-white py-2 rounded-t-lg shadow-sm" style={{ backgroundColor: getTeamColor((matchupData as any)[`${side}_roster`][0]?.team || 'ARI') }}>{side === 'away' ? 'AWAY' : 'HOME'} ROSTER</h3>
                         <div className="space-y-4">
                           {filterRoster((matchupData as any)[`${side}_roster`]).map((player: any) => (
-                             <BroadcastCard key={player.id} data={player} mini={true} onClick={(id) => { setSelectedHistoryId(id); setViewMode('HISTORY'); }} />
+                             <BroadcastCard 
+                                key={player.id} 
+                                data={player} 
+                                mini={true} 
+                                onClick={(id) => { 
+                                    setSelectedHistoryId(id); 
+                                    setHistoryFrom('GAME'); 
+                                    setViewMode('HISTORY'); 
+                                }} 
+                             />
                           ))}
                         </div>
                      </div>
@@ -223,14 +254,28 @@ export default function App() {
             </div>
           )}
 
-          {viewMode === 'LOOKUP' && <PlayerLookupView onViewHistory={(id) => { setSelectedHistoryId(id); setViewMode('HISTORY'); }} />}
+          {/* VIEW: LOOKUP */}
+          {viewMode === 'LOOKUP' && <PlayerLookupView onViewHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('LOOKUP'); setViewMode('HISTORY'); }} />}
           
-          {viewMode === 'COMPARE' && <CompareView />}
+          {/* VIEW: COMPARE (UPDATED with State Lifting) */}
+          {viewMode === 'COMPARE' && (
+            <CompareView 
+                p1={compareP1}
+                p2={compareP2}
+                setP1={setCompareP1}
+                setP2={setCompareP2}
+                onViewHistory={(id) => { 
+                    setSelectedHistoryId(id); 
+                    setHistoryFrom('COMPARE'); 
+                    setViewMode('HISTORY'); 
+                }} 
+            />
+          )}
           
-          {/* VIEW: HISTORY (Fixed Layout) */}
+          {/* VIEW: HISTORY */}
           {viewMode === 'HISTORY' && selectedHistoryId && (
             <div className="w-full max-w-5xl mx-auto">
-                <PlayerHistory playerId={selectedHistoryId} onBack={() => setViewMode('SCHEDULE')} />
+                <PlayerHistory playerId={selectedHistoryId} onBack={() => setViewMode(historyFrom)} />
             </div>
           )}
 
@@ -249,7 +294,18 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             {loadingUp ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
-              trendingUp.map(p => <SidebarPlayerItem key={p.player_id} player={p} type="up" onClick={(id) => { setSelectedHistoryId(id); setViewMode('HISTORY'); }} />)
+              trendingUp.map(p => (
+                <SidebarPlayerItem 
+                    key={p.player_id} 
+                    player={p} 
+                    type="up" 
+                    onClick={(id) => { 
+                        setSelectedHistoryId(id); 
+                        setHistoryFrom('SCHEDULE'); 
+                        setViewMode('HISTORY'); 
+                    }} 
+                />
+              ))
             }
           </div>
         </aside>

@@ -48,6 +48,7 @@ export interface HistoryEntry {
   snap_percentage: number;
   receptions: number;
   targets: number;
+  carries: number;
 }
 
 export interface MatchupData {

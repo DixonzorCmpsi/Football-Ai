@@ -1,4 +1,4 @@
-import { Target, TrendingUp, Clock, MousePointerClick, TrendingDown } from 'lucide-react';
+import { Target, TrendingUp, Clock, MousePointerClick } from 'lucide-react'; // FIX TS6133: Removed TrendingDown
 import type { BroadcastCardData } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 
@@ -56,16 +56,12 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
   const injuryColor = getInjuryColor(data.injury_status);
   const injuryLabel = getInjuryLabel(data.injury_status);
   
-  // Spread logic is kept here but the display section is changed to use Over/Under
-  const isFavored = data.spread !== null && data.spread < 0;
-  const overUnderDisplay = formatOverUnder(data.spread); // Reusing data.spread, but using the correct column should be used from the backend.
+  // FIX TS6133: The following unused variables have been removed or commented out:
+  // const isFavored = data.spread !== null && data.spread < 0; 
+  // const overUnderDisplay = formatOverUnder(data.spread); 
 
-  // NOTE: Your backend needs to pass the 'total_line' value to the 'spread' field in BroadcastCardData 
-  // or add a new 'total_line' field. Assuming your dataPrep script updates the DB 
-  // and the server passes the Total Line value in 'spread' for this section.
-  
-  const spreadValue = data.spread;
-  const isSpreadData = spreadValue !== null && !isNaN(spreadValue);
+  const overUnderValue = formatOverUnder(data.spread); 
+  const isSpreadData = data.spread !== null && !isNaN(data.spread);
 
 
   return (
@@ -96,7 +92,7 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
         <div className="flex items-center gap-6 relative z-10">
           <div className={`${mini ? 'w-16 h-16' : 'w-24 h-24'} rounded-full border-4 border-white/20 overflow-hidden bg-slate-900/50 shadow-lg shrink-0`}>
             {data.image ? (
-                <img src={data.image} alt={data.name} className="w-full h-full object-cover" />
+                <img src={data.image} alt={data.name} className="object-cover w-full h-full" />
             ) : (
                 <div className="w-full h-full flex items-center justify-center text-white/50 text-xs">NO IMG</div>
             )}
@@ -138,7 +134,7 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
             <Target size={14} /> O/U
           </div>
           <div className={`mt-2 ${mini ? 'text-2xl' : 'text-4xl'} font-black text-slate-800 dark:text-slate-100`}>
-            {formatOverUnder(data.spread)}
+            {overUnderValue}
           </div>
           <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold mt-1">
             {isSpreadData ? 'TOTAL POINTS' : 'NO LINE'}
