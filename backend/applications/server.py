@@ -10,9 +10,13 @@ import os
 import asyncio
 import requests
 import numpy as np
+import subprocess
+import threading
 from contextlib import asynccontextmanager
 import nflreadpy as nfl
 from dotenv import load_dotenv
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 # --- 1. CONFIGURATION ---
 load_dotenv()
@@ -25,6 +29,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, '..'))
 dataPrep_dir = os.path.abspath(os.path.join(current_dir, '..', 'dataPrep'))
 RAG_DIR = os.path.join(PROJECT_ROOT, 'rag_data')
 MODEL_DIR = os.path.join(PROJECT_ROOT, 'model_training', 'models')
+
+# Correctly locate the ETL script
+ETL_SCRIPT_PATH = os.path.abspath(os.path.join(current_dir, '..', 'rag_data', '05_etl_to_postgres.py'))
 
 if dataPrep_dir not in sys.path: sys.path.insert(0, dataPrep_dir)
 
@@ -50,65 +57,126 @@ META_FEATURES_PATH = os.path.join(MODEL_DIR, 'feature_names_META_model_v1.json')
 
 model_data = {}
 
-# --- HELPER: Load ID Map Only (Injuries now in DB) ---
-def refresh_id_map():
+# --- HELPER: Refresh Database Data (Crucial for Startup) ---
+def refresh_db_data():
+    """Reloads all dataframes from Postgres. Runs ONCE at startup and after ETL."""
+    print("🔄 [System] Loading Dataframes from Database...")
+    queries = {
+        "df_profile": "SELECT * FROM player_profiles",
+        "df_schedule": "SELECT * FROM schedule",
+        "df_player_stats": "SELECT * FROM weekly_player_stats",
+        "df_snap_counts": "SELECT * FROM weekly_snap_counts",
+        "df_odds": "SELECT * FROM weekly_player_odds",
+        "df_defense": "SELECT * FROM weekly_defense_stats",
+        "df_offense": "SELECT * FROM weekly_offense_stats",
+        "df_overunder": "SELECT * FROM schedule",
+        "df_injuries": f"SELECT * FROM weekly_injuries_{CURRENT_SEASON}",
+        "df_game_spreads": "SELECT week, home_team, away_team, over_under FROM schedule WHERE over_under IS NOT NULL"
+    }
+    
+    for key, query in queries.items():
+        try:
+            model_data[key] = pl.read_database_uri(query, DB_CONNECTION_STRING)
+        except Exception as e:
+            print(f"⚠️ {key} load failed: {e}")
+            model_data[key] = pl.DataFrame()
+
+    # DEBUG: Check loaded schedule weeks to ensure Week 16 exists
+    try:
+        if not model_data["df_schedule"].is_empty():
+            weeks = sorted(model_data["df_schedule"]["week"].unique().to_list())
+            print(f"✅ Schedule Loaded: Weeks {weeks[:1]}...{weeks[-1:]} (Total {len(weeks)} games)")
+        else:
+            print("⚠️ Schedule DataFrame is EMPTY!")
+    except: pass
+
+    # Re-build Injury Map
+    try:
+        if "df_injuries" in model_data and not model_data["df_injuries"].is_empty():
+            inj = model_data["df_injuries"].select(['gsis_id', 'report_status']).drop_nulls()
+            model_data["injury_map"] = dict(zip(inj['gsis_id'], inj['report_status']))
+        else:
+            model_data["injury_map"] = {}
+    except:
+        model_data["injury_map"] = {}
+    
+    print("✅ [System] Database Refresh Complete.")
+
+# --- HELPER: Refresh State (Week & IDs) ---
+def refresh_app_state():
+    """Updates the dynamic variables like Current Week and ID Maps."""
+    print("🔄 [Scheduler] Refreshing App State (Week & IDs)...")
+    
+    # 1. Update Week
+    try:
+        base_week = nfl.get_current_week()
+        
+        # --- TUESDAY LOGIC ---
+        if datetime.now().weekday() == 1: 
+            print(f"📅 Tuesday Detected: Advancing Week from {base_week} to {base_week + 1}")
+            model_data["current_nfl_week"] = base_week + 1
+        else:
+            model_data["current_nfl_week"] = base_week
+            
+        print(f"✅ Active NFL Week: {model_data['current_nfl_week']}")
+    except Exception as e:
+        print(f"⚠️ Failed to detect week: {e}")
+        if "current_nfl_week" not in model_data:
+            model_data["current_nfl_week"] = 1
+
+    # 2. Update ID Map
     print("📥 Downloading/Refreshing Player ID Map...")
     try:
         players_df = nfl.load_ff_playerids()
-        if "sleeper_id" not in players_df.columns or "gsis_id" not in players_df.columns:
-            return False
-
-        map_df = players_df.drop_nulls(subset=['sleeper_id', 'gsis_id'])
-        sleeper_ids = map_df['sleeper_id'].cast(pl.Utf8).to_list()
-        gsis_ids = map_df['gsis_id'].to_list()
-        
-        model_data["sleeper_map"] = dict(zip(sleeper_ids, gsis_ids))
-        print(f"✅ ID Map Ready ({len(model_data['sleeper_map'])} players mapped)")
-        return True
+        if "sleeper_id" in players_df.columns and "gsis_id" in players_df.columns:
+            map_df = players_df.drop_nulls(subset=['sleeper_id', 'gsis_id'])
+            sleeper_ids = map_df['sleeper_id'].cast(pl.Utf8).to_list()
+            gsis_ids = map_df['gsis_id'].to_list()
+            
+            model_data["sleeper_map"] = dict(zip(sleeper_ids, gsis_ids))
+            print(f"✅ ID Map Ready ({len(model_data['sleeper_map'])} players mapped)")
+        else:
+            print("⚠️ ID Map columns missing.")
     except Exception as e:
         print(f"⚠️ ID Map Download Failed: {e}")
-        model_data["sleeper_map"] = {}
-        return False
+        if "sleeper_map" not in model_data:
+            model_data["sleeper_map"] = {}
+
+# --- ETL Runner Function ---
+def run_daily_etl():
+    """Runs the 05_etl_to_postgres.py script as a subprocess."""
+    print("\n⏰ [Scheduler] Starting Daily ETL Pipeline...")
+    
+    if not os.path.exists(ETL_SCRIPT_PATH):
+        print(f"❌ [Scheduler] ETL Script not found at: {ETL_SCRIPT_PATH}")
+        return
+
+    try:
+        # Run script using current Python interpreter
+        result = subprocess.run([sys.executable, ETL_SCRIPT_PATH], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ [Scheduler] Daily ETL Finished Successfully.")
+            print(result.stdout[-300:]) 
+            
+            # --- CRITICAL: Refresh Data AFTER ETL finishes ---
+            refresh_app_state()
+            refresh_db_data()
+        else:
+            print(f"❌ [Scheduler] ETL Failed with code {result.returncode}")
+            print(result.stderr)
+            
+    except Exception as e:
+        print(f"❌ [Scheduler] Exception running ETL: {e}")
 
 # --- 3. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("--- 🚀 Server Startup ---")
+    print("--- 🚀 Server Startup Sequence ---")
+    
     try:
-        # Load Dataframes from DB
-        # NOTE: df_injuries now targets the specific season table created by your generator
-        queries = {
-            "df_profile": "SELECT * FROM player_profiles",
-            "df_schedule": "SELECT * FROM schedule",
-            "df_player_stats": "SELECT * FROM weekly_player_stats",
-            "df_snap_counts": "SELECT * FROM weekly_snap_counts",
-            "df_odds": "SELECT * FROM weekly_player_odds",
-            "df_defense": "SELECT * FROM weekly_defense_stats",
-            "df_offense": "SELECT * FROM weekly_offense_stats",
-            "df_overunder": "SELECT * FROM schedule",
-            "df_injuries": f"SELECT * FROM weekly_injuries_{CURRENT_SEASON}", # <--- FIXED TABLE NAME
-            "df_game_spreads": "SELECT week, home_team, away_team, over_under FROM schedule WHERE over_under IS NOT NULL"
-        }
-        for key, query in queries.items():
-            try:
-                model_data[key] = pl.read_database_uri(query, DB_CONNECTION_STRING)
-            except Exception as e:
-                print(f"⚠️ {key} load failed: {e}")
-                model_data[key] = pl.DataFrame()
-
-        # Build Injury Lookup Dict
-        try:
-            if not model_data["df_injuries"].is_empty():
-                print("✅ Injuries Loaded from DB")
-                # Map gsis_id -> report_status
-                inj = model_data["df_injuries"].select(['gsis_id', 'report_status']).drop_nulls()
-                model_data["injury_map"] = dict(zip(inj['gsis_id'], inj['report_status']))
-            else:
-                model_data["injury_map"] = {}
-        except:
-            model_data["injury_map"] = {}
-
-        # Load Models
+        # 1. Load Static Models
+        print("1️⃣  Loading ML Models...")
         model_data["models"] = {}
         for pos, paths in MODELS_CONFIG.items():
             if os.path.exists(paths['model']):
@@ -121,17 +189,37 @@ async def lifespan(app: FastAPI):
             model_data["meta_models"] = joblib.load(META_MODEL_PATH)
             model_data["meta_features"] = json.load(open(META_FEATURES_PATH))
 
-        refresh_id_map()
+        # 2. Get Week & IDs
+        print("2️⃣  Detecting Week & IDs...")
+        refresh_app_state()
 
-        try: model_data["current_nfl_week"] = nfl.get_current_week()
-        except: model_data["current_nfl_week"] = 1
-        print(f"✅ Ready. Week: {model_data['current_nfl_week']}")
+        # 3. Load DB Data (BLOCKING) - Ensures schedule exists before server starts
+        print("3️⃣  Loading Database Data (Wait for it)...")
+        refresh_db_data()
 
     except Exception as e:
         print(f"❌ Startup Error: {e}")
         sys.exit(1)
+
+    # --- A. SETUP SCHEDULER ---
+    scheduler = BackgroundScheduler()
+    # Run ETL every day at 5:00 AM
+    scheduler.add_job(run_daily_etl, 'cron', hour=5, minute=0)
+    # Refresh Week/IDs every hour
+    scheduler.add_job(refresh_app_state, 'interval', hours=1)
+    scheduler.start()
+    print("🕒 Scheduler started.")
+
+    # --- B. RUN BACKGROUND ETL ---
+    # Now that we have loaded the "old" data, we can start the ETL refresh in the background
+    print("⚡ Triggering Background ETL Update...")
+    startup_etl_thread = threading.Thread(target=run_daily_etl)
+    startup_etl_thread.start()
     
+    print("🚀 Server Ready to Accept Requests!")
     yield
+    
+    scheduler.shutdown()
     model_data.clear()
 
 app = FastAPI(lifespan=lifespan)
@@ -242,36 +330,37 @@ async def get_player_card(player_id: str, week: int):
 
     snap_count, snap_pct = 0, 0.0
     try:
+        # Try current week first
         row = model_data["df_snap_counts"].filter((pl.col("player_id") == player_id) & (pl.col("week") == week))
-        if not row.is_empty(): d = row.row(0, named=True); snap_count, snap_pct = int(d.get("offense_snaps", 0)), float(d.get("offense_pct", 0.0))
+        if not row.is_empty(): 
+            d = row.row(0, named=True)
+            snap_count, snap_pct = int(d.get("offense_snaps", 0)), float(d.get("offense_pct", 0.0))
+        else:
+            # FALLBACK: Get average from previous weeks if current week is missing
+            hist_rows = model_data["df_snap_counts"].filter(pl.col("player_id") == player_id)
+            if not hist_rows.is_empty():
+                avg_pct = hist_rows["offense_pct"].mean()
+                snap_pct = float(avg_pct) if avg_pct else 0.0
     except: pass
 
-    # --- OVER/UNDER (TOTAL LINE) LOGIC ---
+    # --- OVER/UNDER LOGIC ---
     total_line = None
     try:
         spread_df = model_data["df_game_spreads"].filter(pl.col("week") == week)
-        
-        # Check if the player's team is in the game
         game_row = spread_df.filter((pl.col("home_team") == team) | (pl.col("away_team") == team))
-        
         if not game_row.is_empty():
-            # The over_under value (total line) is the same regardless of which team the player is on
             total_line = game_row.row(0, named=True).get("over_under")
-            if total_line is not None:
-                total_line = float(total_line)
-
+            if total_line is not None: total_line = float(total_line)
     except Exception as e:
         print(f"Over/Under lookup error: {e}")
         total_line = None
     
-    # Opponent Lookup
     opponent = "BYE"
     try:
         game = model_data["df_schedule"].filter((pl.col("week") == week) & ((pl.col("home_team") == team) | (pl.col("away_team") == team)))
         if not game.is_empty(): row = game.row(0, named=True); opponent = row['away_team'] if row['home_team'] == team else row['home_team']
     except: pass
 
-    # --- INJURY STATUS (FROM DB) ---
     injury_status = model_data.get("injury_map", {}).get(player_id, "Active")
 
     return {
@@ -285,13 +374,14 @@ async def get_player_card(player_id: str, week: int):
         "snap_count": snap_count,
         "snap_percentage": snap_pct,
         "overunder": total_line,
-        "spread": total_line, # <--- FIXED: Passing OVER/UNDER value using the 'spread' key for frontend compatibility
+        "spread": total_line,
         "image": get_headshot_url(player_id),
         "prediction": round(meta_score + mae, 2),  
         "floor_prediction": round(meta_score, 2),
         "average_points": round(avg_points, 1),
         "injury_status": injury_status
     }
+
 async def get_team_roster_cards(team_abbr: str, week: int):
     composition = {"QB": 5, "RB": 5, "WR": 5, "TE": 5}
     roster_result = []
@@ -312,7 +402,7 @@ async def get_team_roster_cards(team_abbr: str, week: int):
 
 async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
     if not model_data.get("sleeper_map"):
-        if not refresh_id_map(): return []
+        refresh_app_state() # Use new refresh function if map missing
 
     try:
         url = f"https://api.sleeper.app/v1/players/nfl/trending/{trend_type}?lookback_hours=24&limit={limit+10}"
@@ -364,7 +454,15 @@ async def get_current_week(): return {"week": model_data.get("current_nfl_week",
 
 @app.get("/schedule/{week}")
 async def get_schedule(week: int):
-    try: return model_data["df_schedule"].filter(pl.col("week") == week).to_dicts()
+    try: 
+        # Safety Check: If we forced Week 16 but DB only has up to Week 15, fallback to 15
+        if not model_data["df_schedule"].is_empty():
+            max_week = model_data["df_schedule"]["week"].max()
+            if week > max_week:
+                print(f"⚠️ Requested Week {week} not in DB (Max: {max_week}). Falling back.")
+                week = max_week
+                
+        return model_data["df_schedule"].filter(pl.col("week") == week).to_dicts()
     except: return []
 
 @app.get("/matchup/{week}/{home_team}/{away_team}")
@@ -403,7 +501,6 @@ async def compare(req: CompareRequest):
 async def search_players(q: str):
     if not q: return []
     try:
-        # REMOVED the 'ACT' status filter so you can find everyone
         expr = (
             pl.col('player_name').str.to_lowercase().str.contains(q.lower()) &
             (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE']))
@@ -412,6 +509,7 @@ async def search_players(q: str):
             'player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'
         ]).head(20).to_dicts()
     except: return []
+
 @app.get("/rankings/past/{week}")
 async def get_trending_down(week: int):
     return await fetch_sleeper_trends("drop", limit=30, week=week)
@@ -436,20 +534,23 @@ async def get_player_history(player_id: str):
                 s_data = s_row.row(0, named=True)
                 snap_count, snap_pct = int(s_data.get('offense_snaps', 0)), float(s_data.get('offense_pct', 0.0))
 
-            p_yds = row.get('passing_yards') or row.get('pass_yds') or 0
-            r_yds = row.get('rushing_yards') or row.get('rush_yds') or 0
-            rec_yds = row.get('receiving_yards') or row.get('rec_yds') or 0
+            p_yds = row.get('passing_yards') or 0
+            r_yds = row.get('rushing_yards') or 0
+            rec_yds = row.get('receiving_yards') or 0
             p_tds = row.get('passing_tds') or 0
             r_tds = row.get('rushing_tds') or 0
             rec_tds = row.get('receiving_tds') or 0
             receptions = int(row.get('receptions') or 0)
-            targets = int(row.get('targets') or row.get('tgt') or 0)
+            targets = int(row.get('targets') or 0)
+            
+            # --- FIXED: Use correct column 'rush_attempts' ---
+            carries = int(row.get('rush_attempts') or 0)
 
             pts = calculate_fantasy_points(row)
 
             history.append({
                 "week": wk,
-                "opponent": row.get('opponent_team') or row.get('opponent') or "N/A",
+                "opponent": row.get('opponent_team') or "N/A",
                 "points": round(float(pts), 2),
                 "passing_yds": int(p_yds),
                 "rushing_yds": int(r_yds),
@@ -458,10 +559,13 @@ async def get_player_history(player_id: str):
                 "snap_count": snap_count,
                 "snap_percentage": snap_pct,
                 "receptions": receptions,
-                "targets": targets
+                "targets": targets,
+                "carries": carries 
             })
         return history
-    except: return []
+    except Exception as e:
+        print(f"History Error: {e}")
+        return []
 
 # --- WATCHLIST ---
 def load_wl(): return json.load(open(WATCHLIST_FILE)) if os.path.exists(WATCHLIST_FILE) else []

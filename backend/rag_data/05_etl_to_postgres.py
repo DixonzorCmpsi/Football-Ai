@@ -33,7 +33,7 @@ PIPELINE_STEPS = [
         "script": "01_create_static_files.py",
         "uploads": [
             ("player_profiles.csv", "player_profiles", "replace"),
-            (f"schedule_{SEASON}.csv", "schedule", "replace")
+            (f"schedule_{SEASON}.csv", "schedule", "smart_append")
         ]
     },
     {
@@ -73,14 +73,14 @@ PIPELINE_STEPS = [
         "uploads": [
              (f"weekly_player_odds_{SEASON}.csv", "weekly_player_odds", "smart_append")
         ]   
-    },
-    # --- Rankings Generation ---
-    {
-        "script": "06_generate_rankings.py",
-        "uploads": [
-             ("weekly_rankings.csv", "weekly_rankings", "smart_append")
-        ]
     }
+    # # --- Rankings Generation ---
+    # {
+    #     "script": "06_generate_rankings.py",
+    #     "uploads": [
+    #          ("weekly_rankings.csv", "weekly_rankings", "smart_append")
+    #     ]
+    # }
 ]
 
 # --- Helpers ---
@@ -90,25 +90,25 @@ def get_db_engine():
 def run_external_script(script_name):
     """Runs a Python script located in the same directory."""
     print(f"\n" + "="*50)
-    print(f"🚀 EXECUTING: {script_name}")
+    print(f">> EXECUTING: {script_name}")
     print("="*50)
     
     current_dir = Path(__file__).parent
     script_path = current_dir / script_name
     
     if not script_path.exists():
-        print(f"❌ Error: Script {script_name} not found at {script_path}")
+        print(f"[ERROR] Script {script_name} not found at {script_path}")
         return False
 
     try:
         subprocess.run([sys.executable, str(script_path)], check=True)
-        print(f"✅ FINISHED: {script_name}")
+        print(f"[OK] FINISHED: {script_name}")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ FAILED: {script_name} exited with code {e.returncode}")
+        print(f"[FAILED] {script_name} exited with code {e.returncode}")
         return False
     except Exception as e:
-        print(f"❌ EXCEPTION: {e}")
+        print(f"[EXCEPTION] {e}")
         return False
 
 def push_to_postgres(file_name, table_name, mode, engine):
@@ -116,7 +116,7 @@ def push_to_postgres(file_name, table_name, mode, engine):
     file_path = Path(__file__).parent / file_name
     
     if not file_path.exists():
-        print(f"⚠️ Warning: Output file {file_name} not found. Skipping upload.")
+        print(f"Warning: Output file {file_name} not found. Skipping upload.")
         return
 
     print(f"   -> Uploading {file_name} to table '{table_name}' ({mode})...")
@@ -143,7 +143,7 @@ def push_to_postgres(file_name, table_name, mode, engine):
         print(f"      - Success! {len(df)} rows uploaded.")
 
     except Exception as e:
-        print(f"❌ ERROR uploading {table_name}: {e}")
+        print(f"[ERROR] uploading {table_name}: {e}")
 
 # --- Main Execution Loop ---
 def main():
@@ -160,7 +160,7 @@ def main():
             for csv_file, table, mode in uploads:
                 push_to_postgres(csv_file, table, mode, engine)
         else:
-            print(f"⚠️ Skipping uploads for {script} due to failure.")
+            print(f"Skipping uploads for {script} due to failure.")
 
     feature_path = Path(__file__).parent.parent / "dataPrep" / "featured_dataset.csv"
     if feature_path.exists():
@@ -168,13 +168,13 @@ def main():
         try:
             df_feat = pl.read_csv(feature_path, ignore_errors=True)
             df_feat.to_pandas().to_sql('featured_dataset', engine, if_exists='replace', index=False)
-            print("✅ featured_dataset uploaded.")
+            print("[OK] featured_dataset uploaded.")
         except Exception as e:
-            print(f"❌ Error uploading features: {e}")
+            print(f"[ERROR] uploading features: {e}")
 
     print("\n" + "="*50)
-    print("🎉 ETL PIPELINE COMPLETE")
+    print("ETL PIPELINE COMPLETE")
     print("="*50)
 
 if __name__ == "__main__":
-    main()# rag_data/06_generate_rankings.py
+    main()
