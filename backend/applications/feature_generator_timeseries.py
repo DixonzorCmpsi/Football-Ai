@@ -68,7 +68,7 @@ def generate_features_all(
         
     except Exception as e: return None, f"Player Info Error: {e}"
 
-    # --- 2. Get Opponent Info (FIXED) ---
+    # --- 2. Get Opponent Info ---
     # Filter schedule for this week and team
     game_info = df_schedule.filter(
         (pl.col('week') == target_week) & 
@@ -77,7 +77,7 @@ def generate_features_all(
     
     if game_info.is_empty(): return None, "Likely Bye Week"
     
-    # FIX: Use row(0) to safely get the first match, avoiding "ValueError: can only convert an array of size 1"
+    # Safely get first matching game
     game_row = game_info.row(0, named=True)
     is_home = (game_row['home_team'] == player_team)
     opponent_team = game_row['away_team'] if is_home else game_row['home_team']
@@ -86,7 +86,7 @@ def generate_features_all(
     player_history_stats = df_player_stats.filter((pl.col('player_id') == player_id) & (pl.col('week') < target_week)).sort('week', descending=True)
     
     player_history = player_history_stats
-    if 'player_id' in df_snap_counts.columns: # Check for the correct join key (gsis_id)
+    if 'player_id' in df_snap_counts.columns: 
         snaps = df_snap_counts.filter((pl.col('player_id') == player_id) & (pl.col('season') == CURRENT_SEASON) & (pl.col('week') < target_week))
         if not snaps.is_empty():
             try:
@@ -95,11 +95,14 @@ def generate_features_all(
                     snaps.select(['week', 'offense_snaps', 'offense_pct']), 
                     on='week', 
                     how='left'
-                ).fill_null(0.0) # Fill nulls that result from the join
+                ).fill_null(0.0) 
             except Exception:
-                pass # Fallback to stats only
+                pass 
 
     opponent_defense_history = df_defense.filter((pl.col('team_abbr') == opponent_team) & (pl.col('week') < target_week)).sort('week', descending=True)
+    
+    # NEW: Opponent Offense History (for Game Script)
+    opponent_offense_history = df_offense.filter((pl.col('team_abbr') == opponent_team) & (pl.col('week') < target_week)).sort('week', descending=True)
 
     # --- 4. Calculate Features ---
     features = {}
@@ -128,7 +131,7 @@ def generate_features_all(
         for lag in range(1, N_LAGS + 1):
             features[f'{col}_lag_{lag}'] = get_lagged_value(player_history, col, lag)
 
-    # --- C: Opponent Rolling Averages ---
+    # --- C: Opponent Defense Rolling Averages ---
     def_cols = [
         'points_allowed', 'passing_yards_allowed', 'rushing_yards_allowed',
         'def_sacks', 'def_interceptions', 'def_qb_hits'
@@ -136,6 +139,14 @@ def generate_features_all(
     for col in def_cols:
         features[f'rolling_avg_{col}_4_weeks'] = calculate_rolling_avg(opponent_defense_history, col, OPP_ROLLING_WINDOW)
     
+    # --- F: Opponent Offense Rolling Averages (GAME SCRIPT) ---
+    # Knowing if the opponent scores a lot helps predict if we will be passing (trailing) or running (leading)
+    off_cols = [
+        'points_scored', 'total_yards', 'pass_yards', 'rush_yards'
+    ]
+    for col in off_cols:
+        features[f'opp_offense_avg_{col}_4_weeks'] = calculate_rolling_avg(opponent_offense_history, col, OPP_ROLLING_WINDOW)
+
     # Impute the positional ones we can't get from RAG data
     features['rolling_avg_points_allowed_to_QB'] = 0.0
     features['rolling_avg_points_allowed_to_RB'] = 0.0

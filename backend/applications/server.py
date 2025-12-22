@@ -70,7 +70,7 @@ def refresh_db_data():
         "df_defense": "SELECT * FROM weekly_defense_stats",
         "df_offense": "SELECT * FROM weekly_offense_stats",
         "df_overunder": "SELECT * FROM schedule",
-        "df_injuries": f"SELECT * FROM weekly_injuries_{CURRENT_SEASON}",
+        "df_injuries": "SELECT * FROM weekly_injuries",       
         "df_game_spreads": "SELECT week, home_team, away_team, over_under FROM schedule WHERE over_under IS NOT NULL"
     }
     
@@ -153,18 +153,27 @@ def run_daily_etl():
 
     try:
         # Run script using current Python interpreter
-        result = subprocess.run([sys.executable, ETL_SCRIPT_PATH], capture_output=True, text=True)
+        # FIX: Added encoding='utf-8' to handle emojis like 🚀 on Windows
+        result = subprocess.run(
+            [sys.executable, ETL_SCRIPT_PATH], 
+            capture_output=True, 
+            text=True, 
+            encoding='utf-8' 
+        )
         
         if result.returncode == 0:
             print("✅ [Scheduler] Daily ETL Finished Successfully.")
-            print(result.stdout[-300:]) 
+            # Safe print: check if stdout exists before slicing
+            if result.stdout:
+                print(result.stdout[-300:]) 
             
             # --- CRITICAL: Refresh Data AFTER ETL finishes ---
             refresh_app_state()
             refresh_db_data()
         else:
             print(f"❌ [Scheduler] ETL Failed with code {result.returncode}")
-            print(result.stderr)
+            if result.stderr:
+                print(result.stderr)
             
     except Exception as e:
         print(f"❌ [Scheduler] Exception running ETL: {e}")

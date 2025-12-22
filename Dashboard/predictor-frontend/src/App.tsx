@@ -10,26 +10,26 @@ import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
-    if (!status) return 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
-    const s = status.toLowerCase();
-    
-    if (s.includes('out') || s.includes('ir')) return 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800';
-    if (s.includes('doubtful')) return 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800';
-    if (s.includes('questionable')) return 'bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800';
-    if (s.includes('active')) return 'bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800';
-    
-    return 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
+  if (!status) return 'bg-gray-100 text-gray-500 border-gray-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
+  const s = status.toLowerCase();
+  
+  if (s.includes('out') || s.includes('ir')) return 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800';
+  if (s.includes('doubtful')) return 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800';
+  if (s.includes('questionable')) return 'bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800';
+  if (s.includes('active')) return 'bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800';
+  
+  return 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
 };
 
 const getStatusLabel = (status?: string) => {
-    if (!status) return 'ACT';
-    const s = status.toLowerCase();
-    if (s.includes('out')) return 'OUT';
-    if (s.includes('ir')) return 'IR';
-    if (s.includes('doubtful')) return 'D';
-    if (s.includes('questionable')) return 'Q';
-    if (s.includes('active')) return 'ACT';
-    return status.substring(0, 3).toUpperCase();
+  if (!status) return 'ACT';
+  const s = status.toLowerCase();
+  if (s.includes('out')) return 'OUT';
+  if (s.includes('ir')) return 'IR';
+  if (s.includes('doubtful')) return 'D';
+  if (s.includes('questionable')) return 'Q';
+  if (s.includes('active')) return 'ACT';
+  return status.substring(0, 3).toUpperCase();
 };
 
 // --- COMPONENT: Sidebar Player Item ---
@@ -113,13 +113,28 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Data Hooks
-  const { pastRankings: trendingDown, loadingPast: loadingDown } = usePastRankings(currentWeek > 1 ? currentWeek - 1 : 1);
-  const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(currentWeek);
-  const { games, loadingSchedule } = useSchedule(currentWeek);
-  const { matchupData } = useMatchupDeepDive(currentWeek, selectedGame?.home || '', selectedGame?.away || '');
+  // --- SAFEGUARD: Hooks ---
+  // If loading, default to 1 to prevent invalid calls, but the UI Guard below handles the visual part.
+  const safeWeek = loadingWeek ? 1 : currentWeek;
 
-  if (loadingWeek) return <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 text-slate-400 font-bold animate-pulse">Connecting...</div>;
+  // Data Hooks
+  const { pastRankings: trendingDown, loadingPast: loadingDown } = usePastRankings(safeWeek > 1 ? safeWeek - 1 : 1);
+  const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(safeWeek);
+  const { games, loadingSchedule } = useSchedule(safeWeek);
+  const { matchupData } = useMatchupDeepDive(safeWeek, selectedGame?.home || '', selectedGame?.away || '');
+
+  // --- FIX: LOADING STATE GUARD ---
+  // CRITICAL: This prevents the App from rendering the "Wrong Week" before the API returns the "Right Week"
+  if (loadingWeek) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
+         <div className="flex flex-col items-center gap-4">
+            <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-slate-400 font-bold animate-pulse">Syncing with NFL Season...</p>
+         </div>
+      </div>
+    );
+  }
 
   // --- Sort by Average Points ---
   const filterRoster = (list: any[]) => {
@@ -165,7 +180,6 @@ export default function App() {
         {/* HEADER */}
         <header className="h-16 bg-slate-100/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
           
-          {/* FIX: Reduced gap-2 to gap-1 AND added pr-8 to force separation between logo and nav buttons */}
           <div className="flex items-center gap-1 pr-8">
              <button onClick={() => setShowSidebars(!showSidebars)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-white dark:hover:bg-slate-800 rounded-lg transition-colors">
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
@@ -230,9 +244,9 @@ export default function App() {
               </div>
               
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                 {/* COLUMNS */}
-                 {['away', 'home'].map(side => (
-                     <div key={side}>
+                  {/* COLUMNS */}
+                  {['away', 'home'].map(side => (
+                      <div key={side}>
                         <h3 className="text-center font-black text-xl mb-6 text-white py-2 rounded-t-lg shadow-sm" style={{ backgroundColor: getTeamColor((matchupData as any)[`${side}_roster`][0]?.team || 'ARI') }}>{side === 'away' ? 'AWAY' : 'HOME'} ROSTER</h3>
                         <div className="space-y-4">
                           {filterRoster((matchupData as any)[`${side}_roster`]).map((player: any) => (
@@ -248,8 +262,8 @@ export default function App() {
                              />
                           ))}
                         </div>
-                     </div>
-                 ))}
+                      </div>
+                  ))}
               </div>
             </div>
           )}
