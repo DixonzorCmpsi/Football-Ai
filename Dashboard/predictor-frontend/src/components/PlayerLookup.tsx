@@ -1,89 +1,126 @@
-import { useState } from 'react';
-import { Search } from 'lucide-react'; 
-import { usePlayerSearch, useBroadcastCard } from '../hooks/useNflData';
-// FIX: Import the global BroadcastCard that uses team colors
+import React, { useState, useEffect } from 'react';
+import { Search } from 'lucide-react';
+import { useBroadcastCard } from '../hooks/useNflData';
 import BroadcastCard from './BroadcastCard';
 
-// --- Types ---
-interface Props {
-  onViewHistory?: (playerId: string) => void;
+interface PlayerLookupProps {
+  onViewHistory: (playerId: string) => void;
+  compareList: string[]; 
+  onToggleCompare: (id: string) => void; 
 }
 
-// --- Wrapper Component to Fetch & Render ---
-// This replaces the old local BroadcastCard definition
-const LookupCardWrapper = ({ playerName, onClick }: { playerName: string, onClick?: (id: string) => void }) => {
-  const { cardData, loadingCard } = useBroadcastCard(playerName);
-
-  if (loadingCard) return <div className="h-96 flex items-center justify-center text-slate-400 dark:text-slate-500 animate-pulse font-bold">Running ML Prediction Model...</div>;
-  if (!cardData) return <div className="text-center text-slate-400 dark:text-slate-500 p-10">Player data not found.</div>;
-
-  return (
-    <div className="animate-in fade-in slide-in-from-bottom-8 duration-500">
-        {/* Uses the shared component which handles team colors and O/U formatting */}
-        <BroadcastCard 
-            data={cardData} 
-            onClick={onClick} 
-            mini={false} 
-        />
-    </div>
-  );
-};
-
-// --- Main Component ---
-export default function PlayerLookupView({ onViewHistory }: Props) {
+const PlayerLookupView: React.FC<PlayerLookupProps> = ({ 
+  onViewHistory, 
+  compareList, 
+  onToggleCompare 
+}) => {
   const [query, setQuery] = useState("");
-  const [selectedName, setSelectedName] = useState<string | null>(null);
-  const searchResults = usePlayerSearch(query);
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [results, setResults] = useState<any[]>([]); 
+  
+  const [targetPlayer, setTargetPlayer] = useState<string | null>(null);
+
+  const { cardData, loadingCard } = useBroadcastCard(targetPlayer);
+
+  // Debounce
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 500);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  // Search API
+  useEffect(() => {
+    if (!debouncedQuery || debouncedQuery.length < 2) {
+      setResults([]);
+      return;
+    }
+    // Don't search if we already selected this player
+    if (debouncedQuery !== targetPlayer) {
+        fetch(`http://127.0.0.1:8000/players/search?q=${debouncedQuery}`)
+        .then(res => res.json())
+        .then(setResults)
+        .catch(console.error);
+    }
+  }, [debouncedQuery, targetPlayer]);
+
+  const handleSelect = (player: any) => {
+    setQuery(player.player_name); 
+    setResults([]); // Clear results immediately
+    setTargetPlayer(player.player_name); // Set target
+  };
+
+  // FIX: Ensure this is always a boolean, never null
+  const isSelected = cardData ? compareList.includes(cardData.id) : false;
 
   return (
-    <div className="max-w-4xl mx-auto pt-8 px-4 text-slate-900 dark:text-slate-100">
-      <div className="relative mb-8 max-w-xl mx-auto">
-        <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
-          <Search className="h-5 w-5 text-slate-400 dark:text-slate-500" />
+    <div className="h-full flex flex-col items-center pt-8 px-4 max-w-4xl mx-auto">
+      
+      {/* --- SEARCH BAR --- */}
+      <div className="w-full max-w-lg relative mb-10 z-50">
+        <div className="relative group">
+          <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl opacity-20 group-hover:opacity-40 transition duration-500 blur-md"></div>
+          <div className="relative flex items-center bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <Search className="ml-4 text-slate-400" size={20} />
+            <input 
+              type="text" 
+              className="w-full py-4 px-4 bg-transparent outline-none text-slate-800 dark:text-slate-100 font-bold placeholder-slate-400 dark:placeholder-slate-500 text-lg"
+              placeholder="Search Player..." 
+              value={query}
+              onChange={(e) => { 
+                  setQuery(e.target.value); 
+                  if (e.target.value === "") setTargetPlayer(null);
+                  // If user types, we clear the target so dropdown can appear again
+                  if (targetPlayer && e.target.value !== targetPlayer) setTargetPlayer(null);
+              }}
+            />
+            {loadingCard && <div className="mr-4 w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>}
+          </div>
         </div>
-        <input
-          type="text"
-          className="block w-full pl-10 pr-3 py-4 border-2 border-slate-200 dark:border-slate-700 rounded-xl leading-5 bg-white dark:bg-slate-800 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400 focus:ring-4 focus:ring-blue-50 dark:focus:ring-blue-900/30 transition-all font-bold text-lg"
-          placeholder="Search player name (e.g. Mahomes)..."
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setSelectedName(null); }}
-        />
-        
-        {/* Type-Ahead Dropdown */}
-        {query.length > 1 && !selectedName && searchResults.length > 0 && (
-          <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-700 rounded-xl shadow-2xl border border-slate-100 dark:border-slate-600 z-50 overflow-hidden">
-            {searchResults.map((p) => (
-              <div
+
+        {/* DROPDOWN RESULTS */}
+        {/* FIX: Check !targetPlayer to ensure it hides after selection */}
+        {results.length > 0 && !targetPlayer && (
+          <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+            {results.map((p: any) => (
+              <div 
                 key={p.player_id}
-                onClick={() => {
-                   setQuery(p.player_name);
-                   setSelectedName(p.player_name); 
-                }}
-                className="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-600 cursor-pointer border-b border-slate-50 dark:border-slate-600 last:border-0 flex items-center justify-between group"
+                onClick={() => handleSelect(p)}
+                className="px-5 py-3 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer border-b border-slate-50 dark:border-slate-700 last:border-0 flex items-center justify-between group"
               >
                 <div>
-                  <div className="font-bold text-slate-800 dark:text-slate-100">{p.player_name}</div>
-                  <div className="text-xs text-slate-400 dark:text-slate-400">{p.position} • {p.team}</div>
+                  <div className="font-bold text-slate-800 dark:text-slate-200 text-sm group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{p.player_name}</div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{p.position} • {p.team_abbr || p.team}</div>
                 </div>
-                <div className="text-xs text-blue-600 dark:text-blue-400 opacity-0 group-hover:opacity-100 font-bold transition-opacity">Select &rarr;</div>
+                {p.headshot && <img src={p.headshot} alt="headshot" className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-600" />}
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* Render Broadcast Card Wrapper */}
-      {selectedName ? (
-        <LookupCardWrapper 
-            playerName={selectedName} 
-            onClick={onViewHistory} 
-        />
-      ) : (
-        <div className="text-center text-slate-300 dark:text-slate-600 mt-20">
-            <Search className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p>Search for a player to generate their Broadcast Card</p>
-        </div>
-      )}
+      {/* --- RESULT CARD AREA --- */}
+      <div className="w-full flex-1 flex flex-col items-center justify-start pb-20">
+        {cardData ? (
+          <div className="animate-in slide-in-from-bottom-8 duration-700 w-full max-w-md relative">
+            <BroadcastCard 
+              data={cardData}
+              onClick={() => onViewHistory(cardData.id)}
+              isSelected={isSelected}
+              onToggleCompare={onToggleCompare}
+            />
+          </div>
+        ) : (
+          !loadingCard && (
+            <div className="text-center mt-10 opacity-30">
+               <div className="text-9xl font-black text-slate-200 dark:text-slate-800 select-none">NFL</div>
+               <p className="text-slate-400 font-bold mt-4">Search for a player to analyze</p>
+            </div>
+          )
+        )}
+      </div>
+
     </div>
   );
-}
+};
+
+export default PlayerLookupView;

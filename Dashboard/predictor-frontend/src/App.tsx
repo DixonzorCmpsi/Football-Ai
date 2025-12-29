@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -33,37 +33,60 @@ const getStatusLabel = (status?: string) => {
 };
 
 // --- COMPONENT: Sidebar Player Item ---
-const SidebarPlayerItem = ({ player, type, onClick }: { player: Player, type: 'up' | 'down', onClick?: (id: string) => void }) => {
+const SidebarPlayerItem = ({ 
+    player, 
+    type, 
+    onClick, 
+    onToggleCompare, 
+    isSelected 
+}: { 
+    player: Player, 
+    type: 'up' | 'down', 
+    onClick?: (id: string) => void,
+    onToggleCompare?: (id: string) => void,
+    isSelected?: boolean
+}) => {
   const statusLabel = getStatusLabel(player.injury_status);
   const statusColor = getStatusColor(player.injury_status);
 
   return (
-    <div 
-      onClick={() => onClick && onClick(player.player_id)}
-      className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-start gap-3 mb-2 transition-all hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer relative group"
-    >
-      <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden border border-slate-200 dark:border-slate-600 shrink-0 relative">
-        {player.image ? (
-          <img src={player.image} alt={player.player_name} className="object-cover w-full h-full" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-500 text-xs">IMG</div>
-        )}
-      </div>
-      
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-            <p className="font-bold text-sm truncate text-slate-800 dark:text-slate-100">{player.player_name}</p>
-            <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${statusColor}`}>
-                {statusLabel}
-            </span>
-        </div>
-        <p className="text-[10px] uppercase font-semibold text-slate-400 dark:text-slate-500">{player.position} • {player.team}</p>
+    <div className="group relative bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-start gap-3 mb-2 transition-all hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer">
+      <div className="flex-1 flex gap-3 min-w-0" onClick={() => onClick && onClick(player.player_id)}>
+          <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden border border-slate-200 dark:border-slate-600 shrink-0 relative">
+            {player.image ? (
+              <img src={player.image} alt={player.player_name} className="object-cover w-full h-full" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-500 text-xs">IMG</div>
+            )}
+          </div>
+          
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+                <p className="font-bold text-sm truncate text-slate-800 dark:text-slate-100">{player.player_name}</p>
+                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${statusColor}`}>
+                    {statusLabel}
+                </span>
+            </div>
+            <p className="text-[10px] uppercase font-semibold text-slate-400 dark:text-slate-500">{player.position} • {player.team}</p>
+          </div>
       </div>
 
-      <div className="text-right shrink-0 mt-0.5">
+      <div className="flex flex-col items-end gap-1">
         <div className={`text-xs font-black px-2 py-1 rounded-full ${type === 'up' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
             {type === 'up' ? '+' : '-'}{Math.abs(player.trending_count || 0)}
         </div>
+        
+        {/* Compare Button */}
+        <button 
+            onClick={(e) => { e.stopPropagation(); onToggleCompare && onToggleCompare(player.player_id); }}
+            className={`w-6 h-6 flex items-center justify-center rounded-md transition-all ${
+                isSelected 
+                ? 'bg-blue-600 text-white shadow-md scale-110' 
+                : 'bg-slate-100 dark:bg-slate-700 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
+            }`}
+        >
+            {isSelected ? <Check size={12} strokeWidth={4} /> : <Plus size={12} strokeWidth={3} />}
+        </button>
       </div>
     </div>
   );
@@ -71,7 +94,19 @@ const SidebarPlayerItem = ({ player, type, onClick }: { player: Player, type: 'u
 
 // --- MAIN APP ---
 export default function App() {
+  // Use a local state to persist the week once loaded
   const { currentWeek, loadingWeek } = useCurrentWeek();
+  const [activeWeek, setActiveWeek] = useState<number | null>(null);
+
+  // Update activeWeek only when currentWeek is successfully fetched
+  useEffect(() => {
+    if (currentWeek) {
+        setActiveWeek(currentWeek);
+    }
+  }, [currentWeek]);
+
+  // Use activeWeek if available, otherwise 1 (Prevent fallback to 1 during re-validation)
+  const safeWeek = activeWeek || 1; 
   
   // State
   const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY'>('SCHEDULE');
@@ -81,9 +116,21 @@ export default function App() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE'>('SCHEDULE');
 
-  // Compare State
-  const [compareP1, setCompareP1] = useState<string | null>(null);
-  const [compareP2, setCompareP2] = useState<string | null>(null);
+  // --- Comparison State ---
+  const [compareList, setCompareList] = useState<string[]>([]);
+
+  const toggleCompare = (playerId: string) => {
+    setCompareList(prev => {
+        if (prev.includes(playerId)) return prev.filter(id => id !== playerId);
+        return [...prev, playerId];
+    });
+  };
+
+  useEffect(() => {
+    if (viewMode === 'COMPARE' && compareList.length > 2) {
+        setShowSidebars(false);
+    }
+  }, [viewMode, compareList.length]);
 
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -103,17 +150,13 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // --- STRICT SYNC LOGIC (Fixes Glitch) ---
-  // If loadingWeek is true OR currentWeek is invalid, we consider the app "Syncing"
-  const isSyncing = loadingWeek || !currentWeek;
-  const safeWeek = isSyncing ? 1 : currentWeek;
+  // Only show syncing screen if we have NO week data at all yet
+  const isSyncing = !activeWeek && (loadingWeek || !currentWeek);
 
-  // Data Hooks
   const { pastRankings: trendingDown, loadingPast: loadingDown } = usePastRankings(safeWeek > 1 ? safeWeek - 1 : 1);
   const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(safeWeek);
   const { games, loadingSchedule } = useSchedule(safeWeek);
 
-  // BLOCK RENDER UNTIL SYNC COMPLETE
   if (isSyncing) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
@@ -145,6 +188,8 @@ export default function App() {
                     key={p.player_id} 
                     player={p} 
                     type="down" 
+                    isSelected={compareList.includes(p.player_id)}
+                    onToggleCompare={toggleCompare}
                     onClick={(id) => { 
                         setSelectedHistoryId(id); 
                         setHistoryFrom('SCHEDULE'); 
@@ -178,9 +223,14 @@ export default function App() {
               {['SCHEDULE', 'COMPARE', 'LOOKUP'].map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode as any)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
-                  {mode === 'COMPARE' && <BarChart2 size={14}/>}
+                  {mode === 'COMPARE' && (
+                      <div className="flex items-center gap-1">
+                          <BarChart2 size={14}/>
+                          {compareList.length > 0 && <span className="bg-blue-600 text-white text-[9px] px-1.5 rounded-full">{compareList.length}</span>}
+                      </div>
+                  )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  {mode}
+                  {mode === 'COMPARE' ? 'COMPARE' : mode}
                 </button>
               ))}
             </div>
@@ -189,17 +239,16 @@ export default function App() {
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
             
-            <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">Wk {currentWeek}</div>
+            <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">Wk {activeWeek || currentWeek}</div>
           </div>
         </header>
 
         {/* CONTENT */}
         <div className="flex-1 overflow-y-auto p-4 md:p-6 scroll-smooth dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
           
-          {/* VIEW: SCHEDULE */}
           {viewMode === 'SCHEDULE' && (
             <div className={`mx-auto transition-all duration-300 ${showSidebars ? 'max-w-5xl' : 'max-w-6xl'}`}>
-              <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6">Week {currentWeek} Matchups</h2>
+              <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6">Week {activeWeek} Matchups</h2>
               
               {loadingSchedule ? (
                 <div className="flex flex-col items-center justify-center h-64 opacity-50">
@@ -214,7 +263,6 @@ export default function App() {
                       onClick={() => { setSelectedGame({ home: game.home_team, away: game.away_team }); setViewMode('GAME'); }} 
                       className="bg-white dark:bg-slate-800 rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-all group border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 relative overflow-hidden"
                     >
-                      {/* Game Total Badge */}
                       {game.game_total && (
                         <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-slate-100 dark:bg-slate-900 px-3 py-1 rounded-b-lg border-x border-b border-slate-200 dark:border-slate-700 shadow-sm z-10">
                           <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider">Total</span>
@@ -223,7 +271,6 @@ export default function App() {
                       )}
 
                       <div className="flex items-stretch h-28">
-                        {/* Away Team */}
                         <div className="flex-1 p-5 flex flex-col justify-center relative">
                           <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: getTeamColor(game.away_team) }}></div>
                           <div className="pl-3">
@@ -231,19 +278,18 @@ export default function App() {
                             {game.moneyline_away && (
                               <div className="mt-2">
                                 <span className={`text-xs font-bold px-2 py-1 rounded ${String(game.moneyline_away).startsWith('-') ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
-                                  {(!String(game.moneyline_away).startsWith('-') && game.moneyline_away !== 'EVEN') ? '+' : ''}{game.moneyline_away}
+                                  {/* FIX: Check if it already starts with '+' to prevent double plus signs */}
+                                  {(!String(game.moneyline_away).startsWith('-') && !String(game.moneyline_away).startsWith('+') && game.moneyline_away !== 'EVEN') ? '+' : ''}{game.moneyline_away}
                                 </span>
                               </div>
                             )}
                           </div>
                         </div>
 
-                        {/* VS Divider */}
                         <div className="w-16 flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900/50 border-x border-slate-100 dark:border-slate-700/50">
                           <span className="text-xs font-black text-slate-300 dark:text-slate-600 italic">VS</span>
                         </div>
 
-                        {/* Home Team */}
                         <div className="flex-1 p-5 flex flex-col justify-center items-end relative">
                           <div className="absolute right-0 top-0 bottom-0 w-1.5" style={{ backgroundColor: getTeamColor(game.home_team) }}></div>
                           <div className="pr-3 text-right">
@@ -251,7 +297,8 @@ export default function App() {
                             {game.moneyline_home && (
                               <div className="mt-2">
                                 <span className={`text-xs font-bold px-2 py-1 rounded ${String(game.moneyline_home).startsWith('-') ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
-                                  {(!String(game.moneyline_home).startsWith('-') && game.moneyline_home !== 'EVEN') ? '+' : ''}{game.moneyline_home}
+                                  {/* FIX: Check if it already starts with '+' to prevent double plus signs */}
+                                  {(!String(game.moneyline_home).startsWith('-') && !String(game.moneyline_home).startsWith('+') && game.moneyline_home !== 'EVEN') ? '+' : ''}{game.moneyline_home}
                                 </span>
                               </div>
                             )}
@@ -265,26 +312,33 @@ export default function App() {
             </div>
           )}
 
-          {/* VIEW: GAME ROSTERS (New Matchup View) */}
+          {/* VIEW: GAME ROSTERS */}
           {viewMode === 'GAME' && selectedGame && (
             <MatchupView 
-              week={currentWeek}
+              week={safeWeek}
               home={selectedGame.home}
               away={selectedGame.away}
               onBack={() => setViewMode('SCHEDULE')}
+              compareList={compareList}
+              onToggleCompare={toggleCompare}
             />
           )}
 
           {/* VIEW: LOOKUP */}
-          {viewMode === 'LOOKUP' && <PlayerLookupView onViewHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('LOOKUP'); setViewMode('HISTORY'); }} />}
+          {viewMode === 'LOOKUP' && (
+            <PlayerLookupView 
+                onViewHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('LOOKUP'); setViewMode('HISTORY'); }} 
+                compareList={compareList}
+                onToggleCompare={toggleCompare}
+            />
+          )}
           
           {/* VIEW: COMPARE */}
           {viewMode === 'COMPARE' && (
             <CompareView 
-                p1={compareP1}
-                p2={compareP2}
-                setP1={setCompareP1}
-                setP2={setCompareP2}
+                playerIds={compareList}
+                onRemove={(id) => toggleCompare(id)}
+                onAdd={(id) => toggleCompare(id)}
                 onViewHistory={(id) => { 
                     setSelectedHistoryId(id); 
                     setHistoryFrom('COMPARE'); 
@@ -320,6 +374,8 @@ export default function App() {
                     key={p.player_id} 
                     player={p} 
                     type="up" 
+                    isSelected={compareList.includes(p.player_id)}
+                    onToggleCompare={toggleCompare}
                     onClick={(id) => { 
                         setSelectedHistoryId(id); 
                         setHistoryFrom('SCHEDULE'); 

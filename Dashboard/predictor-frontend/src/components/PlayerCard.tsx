@@ -1,13 +1,23 @@
 import React from 'react';
+import { Plus, Check } from 'lucide-react';
 import type { PlayerData } from '../types';
 
 interface PlayerCardProps {
   data: PlayerData;
   teamColor?: string;
   onClick: (player: PlayerData) => void;
+  // Compare Logic Added
+  isSelected?: boolean;
+  onToggleCompare?: (id: string) => void;
 }
 
-const PlayerCard: React.FC<PlayerCardProps> = ({ data, teamColor = '#3b82f6', onClick }) => {
+const PlayerCard: React.FC<PlayerCardProps> = ({ 
+    data, 
+    teamColor = '#3b82f6', 
+    onClick,
+    isSelected,
+    onToggleCompare
+}) => {
   const getProbColor = (prob: number | null) => {
     if (!prob) return "text-slate-400 dark:text-white/40";
     if (prob >= 55) return "text-green-600 dark:text-emerald-300 font-black";
@@ -46,10 +56,13 @@ const PlayerCard: React.FC<PlayerCardProps> = ({ data, teamColor = '#3b82f6', on
   return (
     <div 
       onClick={() => onClick(data)}
-      className="relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col h-32 overflow-hidden border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900"
+      className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col h-32 overflow-hidden border bg-white dark:bg-slate-900 ${
+        isSelected 
+          ? 'border-blue-500 ring-2 ring-blue-500/20 dark:ring-blue-500/40' 
+          : 'border-slate-200 dark:border-white/10 hover:border-blue-300 dark:hover:border-blue-700'
+      }`}
     >
       {/* --- DYNAMIC BACKGROUND FADE --- */}
-      {/* Container controls opacity based on Light/Dark mode */}
       <div className="absolute inset-0 opacity-15 dark:opacity-40 transition-opacity">
         <div 
             className="absolute inset-0"
@@ -57,8 +70,22 @@ const PlayerCard: React.FC<PlayerCardProps> = ({ data, teamColor = '#3b82f6', on
         ></div>
       </div>
       
-      {/* Dark Mode Overlay for readability */}
+      {/* Dark Mode Overlay */}
       <div className="absolute inset-0 hidden dark:block bg-gradient-to-br from-transparent to-slate-950/90 pointer-events-none"></div>
+
+      {/* --- COMPARE BUTTON (NEW) --- */}
+      {onToggleCompare && (
+          <button 
+            onClick={(e) => { e.stopPropagation(); onToggleCompare(data.player_id); }}
+            className={`absolute top-2 right-2 z-20 p-1.5 rounded-full transition-all shadow-sm ${
+              isSelected 
+                ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                : 'bg-white/80 dark:bg-black/40 text-slate-400 hover:text-blue-500 hover:bg-white dark:hover:bg-slate-800'
+            }`}
+          >
+            {isSelected ? <Check size={12} strokeWidth={4} /> : <Plus size={12} strokeWidth={3} />}
+          </button>
+      )}
 
       {/* --- HEADER GRID --- */}
       <div className="grid grid-cols-[auto_1fr_auto] gap-3 mb-1 items-center relative z-10">
@@ -84,7 +111,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({ data, teamColor = '#3b82f6', on
           </div>
         </div>
 
-        <div className="flex gap-2 text-right pl-2 border-l border-slate-200 dark:border-white/10">
+        <div className="flex gap-2 text-right pl-2 border-l border-slate-200 dark:border-white/10 mr-6">
           <div className="flex flex-col items-end justify-center min-w-[32px]">
             <span className="text-[9px] text-slate-400 dark:text-white/50 uppercase font-bold tracking-widest">Avg</span>
             <span className="text-xs font-bold text-slate-700 dark:text-white/80">{data.average_points}</span>
