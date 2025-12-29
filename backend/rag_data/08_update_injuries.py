@@ -1,93 +1,115 @@
 import polars as pl
-import nflreadpy as nfl
-import pandas as pd
+import requests
+import os
 from datetime import datetime
 from dotenv import load_dotenv
-import logging
 
 # --- Configuration ---
 load_dotenv()
 
-# Suppress nflreadpy warnings about 404s (Known issue for 2025 injury report)
-logging.getLogger("nflreadpy").setLevel(logging.CRITICAL)
+current_dir = os.path.dirname(os.path.abspath(__file__))
 
 def get_current_season():
     now = datetime.now()
-    if now.month >= 3: return now.year
-    else: return now.year - 1
+    return now.year if now.month >= 3 else now.year - 1
 
 SEASON = get_current_season()
-OUTPUT_FILE = f"weekly_injuries_{SEASON}.csv"
+OUTPUT_FILE = os.path.join(current_dir, f"weekly_injuries_{SEASON}.csv")
+PROFILES_FILE = os.path.join(current_dir, f"player_profiles_{SEASON}.csv")
 
-def to_polars_safe(data):
-    """Robustly converts data to Polars DataFrame."""
-    if data is None: return pl.DataFrame()
-    if isinstance(data, pl.DataFrame): return data
-    if isinstance(data, pd.DataFrame): return pl.from_pandas(data)
-    if hasattr(data, "to_polars"): return data.to_polars()
-    try: return pl.from_pandas(pd.DataFrame(data))
-    except: return pl.DataFrame(data)
+# --- FETCH SLEEPER DATA ---
+def fetch_sleeper_map():
+    print("   ☁️  Fetching Sleeper API (Real-time Injuries)...")
+    try:
+        resp = requests.get("https://api.sleeper.app/v1/players/nfl")
+        if resp.status_code != 200: return None
+        
+        data = resp.json()
+        records = []
+        
+        for pid, info in data.items():
+            # We only care about players with a GSIS ID (to link to our data)
+            gsis_id = info.get('gsis_id')
+            if gsis_id:
+                # Logic to determine status
+                status = info.get('status')          # e.g. "Active", "Injured Reserve"
+                inj_status = info.get('injury_status') # e.g. "Questionable", "Out"
+                
+                final_status = "Active"
+                
+                # Priority 1: IR/PUP (Fixes Mahomes)
+                if status == "Injured Reserve" or status == "PUP":
+                    final_status = "IR"
+                # Priority 2: Game Designation (Fixes Kittle if he has Q/D/O tag)
+                elif inj_status:
+                    final_status = inj_status
+                # Priority 3: Inactive/Suspended
+                elif status == "Inactive":
+                    final_status = "Inactive"
+                elif status == "Suspended":
+                    final_status = "Suspended"
+
+                records.append({
+                    "player_id": str(gsis_id), # Keep "00-" format
+                    "sleeper_status": final_status
+                })
+        
+        if not records: return None
+        
+        # Return as DataFrame for joining
+        return pl.DataFrame(records).unique(subset=["player_id"])
+        
+    except Exception as e:
+        print(f"      ❌ Sleeper Fetch Error: {e}")
+        return None
 
 def main():
     print(f"--- 🏥 Updating Injury Data ({SEASON}) ---")
-    final_df = pl.DataFrame()
     
-    # 1. Try Official Injury Report
-    print(f"1. Checking official injury report source...")
+    # 1. Load Master List (Player Profiles)
+    if not os.path.exists(PROFILES_FILE):
+        print(f"❌ Critical: Profiles file not found at {PROFILES_FILE}")
+        return
+
+    # Load only IDs and Names to be lightweight
     try:
-        data = nfl.load_injuries(seasons=[SEASON])
-        df = to_polars_safe(data)
+        df_profiles = pl.read_csv(PROFILES_FILE).select(["player_id", "player_name"]).unique(subset=["player_id"])
+        print(f"   📋 Loaded {len(df_profiles)} players from Master Profile List.")
+    except Exception as e:
+        print(f"❌ Error reading profiles: {e}")
+        return
 
-        if not df.is_empty():
-            max_week = df['week'].max()
-            print(f"   ✅ Success! Found official data for Week {max_week}")
-            
-            final_df = df.filter(pl.col('week') == max_week).select([
-                pl.col("gsis_id").alias("player_id"),
-                pl.col("week"),
-                pl.col("report_status").alias("injury_status")
-            ]).with_columns(pl.lit(SEASON).alias("season"))
-            
-    except Exception:
-        # We expect this for 2025, so we just print a clean message
-        print(f"   ℹ️  Official report not published yet (Standard for {SEASON}).")
-
-    # 2. Fallback to Roster Status
-    if final_df.is_empty():
-        print(f"2. Switching to Roster Data (Fallback)...")
-        try:
-            rosters = nfl.load_rosters_weekly(seasons=[SEASON])
-            r_df = to_polars_safe(rosters)
-            
-            if not r_df.is_empty():
-                max_wk = r_df['week'].max()
-                print(f"   ✅ Success! Using Roster Data from Week {max_wk}")
-                
-                # Logic: Map raw roster status to cleaner injury terms
-                final_df = r_df.filter(pl.col('week') == max_wk).select([
-                    pl.col("gsis_id").alias("player_id"),
-                    pl.col("week"),
-                    pl.col("status").alias("raw_status")
-                ]).with_columns([
-                    pl.lit(SEASON).alias("season"),
-                    pl.when(pl.col("raw_status") == "RES").then(pl.lit("IR"))
-                      .when(pl.col("raw_status") == "NON").then(pl.lit("Out"))
-                      .when(pl.col("raw_status") == "SUS").then(pl.lit("Suspended"))
-                      .when(pl.col("raw_status") == "ACT").then(pl.lit("Healthy"))
-                      .otherwise(pl.lit("Unknown")).alias("injury_status")
-                ]).select(["player_id", "season", "week", "injury_status"])
-                
-        except Exception as e:
-            print(f"   ❌ Roster fallback failed: {e}")
-
-    # 3. Save
-    if not final_df.is_empty():
-        final_df = final_df.unique(subset=["player_id"])
+    # 2. Fetch Sleeper Injury Data
+    df_sleeper = fetch_sleeper_map()
+    
+    if df_sleeper is not None:
+        # 3. PERFORM LEFT JOIN
+        # This guarantees EVERY ID in profiles is present in the final file
+        final_df = df_profiles.join(df_sleeper, on="player_id", how="left")
+        
+        # 4. Fill Missing Statuses with "Active"
+        # If Sleeper didn't have data for a profile ID, we assume they are Active
+        final_df = final_df.with_columns(
+            pl.col("sleeper_status").fill_null("Active").alias("injury_status")
+        )
+        
+        # 5. Save Clean File
+        # Format: player_id, player_name, injury_status
+        final_df = final_df.select(["player_id", "player_name", "injury_status"])
+        
         final_df.write_csv(OUTPUT_FILE)
-        print(f"💾 Saved {len(final_df)} rows to {OUTPUT_FILE}")
-        print("✅ Injury update complete.")
+        print(f"   💾 Saved {len(final_df)} injury records to {OUTPUT_FILE}")
+        
+        # Verification
+        print("\n   👀 Verification Check:")
+        # Check specific stars
+        stars = ["00-0033873", "00-0033906"] # Mahomes, Kittle
+        check = final_df.filter(pl.col("player_id").is_in(stars))
+        for row in check.iter_rows(named=True):
+            print(f"      - {row['player_name']} ({row['player_id']}): {row['injury_status']}")
+            
     else:
-        print("❌ Critical: No injury data found from any source.")
+        print("   ❌ Failed to fetch Sleeper data. Skipping update.")
 
 if __name__ == "__main__":
     main()

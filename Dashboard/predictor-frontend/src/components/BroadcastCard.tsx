@@ -1,4 +1,4 @@
-import { Target, TrendingUp, Clock, MousePointerClick } from 'lucide-react'; // FIX TS6133: Removed TrendingDown
+import { Target, TrendingUp, Clock, MousePointerClick } from 'lucide-react';
 import type { BroadcastCardData } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 
@@ -6,14 +6,14 @@ interface Props {
   data: BroadcastCardData;
   onClick?: (id: string) => void;
   mini?: boolean;
+  showProps?: boolean; 
 }
 
-// --- HELPER FUNCTIONS (for Dark Mode and Status) ---
+// --- HELPER FUNCTIONS ---
 
 const getInjuryColor = (status: string) => {
     if (!status) return 'hidden';
     const s = status.toLowerCase();
-    
     if (s.includes('out') || s.includes('ir')) return 'bg-red-600';
     if (s.includes('doubtful')) return 'bg-orange-600';
     if (s.includes('questionable')) return 'bg-yellow-500';
@@ -24,7 +24,6 @@ const getInjuryColor = (status: string) => {
 const getInjuryLabel = (status: string) => {
     if (!status) return '';
     const s = status.toLowerCase();
-    
     if (s.includes('out')) return 'OUT';
     if (s.includes('ir')) return 'IR';
     if (s.includes('doubtful')) return 'D';
@@ -33,15 +32,12 @@ const getInjuryLabel = (status: string) => {
     return status.substring(0, 3).toUpperCase();
 };
 
-// --- NEW HELPER: Format Over/Under ---
 const formatOverUnder = (overUnderValue: string | number | null) => {
     if (overUnderValue === null || overUnderValue === 'N/A' || overUnderValue === '') {
         return "N/A";
     }
-    // We expect the backend to pass the 'total_line' as a number/string
     const value = parseFloat(overUnderValue as string);
     if (isNaN(value)) return "N/A";
-
     return (
         <span className="text-blue-600 dark:text-blue-400 font-black">
             {value.toFixed(1)}
@@ -50,20 +46,56 @@ const formatOverUnder = (overUnderValue: string | number | null) => {
 }
 
 // --- MAIN COMPONENT ---
-export default function BroadcastCard({ data, onClick, mini = false }: Props) {
+export default function BroadcastCard({ data, onClick, mini = false, showProps = false }: Props) {
   if (!data) return null;
   const teamColor = getTeamColor(data.team);
   const injuryColor = getInjuryColor(data.injury_status);
   const injuryLabel = getInjuryLabel(data.injury_status);
   
-  // FIX TS6133: The following unused variables have been removed or commented out:
-  // const isFavored = data.spread !== null && data.spread < 0; 
-  // const overUnderDisplay = formatOverUnder(data.spread); 
-
   const overUnderValue = formatOverUnder(data.spread); 
   const isSpreadData = data.spread !== null && !isNaN(data.spread);
 
+  // --- PROPS VIEW RENDER ---
+  if (showProps && data.props && data.props.length > 0) {
+      return (
+        <div 
+          onClick={() => onClick && onClick(data.id)}
+          className={`bg-white dark:bg-slate-800 rounded-xl shadow-sm overflow-hidden border border-slate-200 dark:border-slate-700 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all ${mini ? 'max-w-md mx-auto mb-4' : 'max-w-2xl mx-auto mt-8'}`}
+        >
+           {/* Mini Header */}
+           <div style={{ backgroundColor: teamColor }} className="p-3 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-white/20 overflow-hidden">
+                      {data.image && <img src={data.image} className="w-full h-full object-cover" alt="" />}
+                  </div>
+                  <span className="font-bold uppercase tracking-tight">{data.name}</span>
+              </div>
+              <span className="text-xs font-mono bg-black/20 px-2 py-1 rounded">{data.position}</span>
+           </div>
+           
+           {/* Props List */}
+           <div className="p-4 bg-slate-50 dark:bg-slate-800/50 space-y-2">
+              {data.props.slice(0, 3).map((p, i) => (
+                  <div key={i} className="flex justify-between items-center text-sm border-b border-slate-200 dark:border-slate-700 pb-2 last:border-0">
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold text-xs uppercase">{p.prop_type.replace(/_/g, ' ')}</span>
+                      <div className="text-right">
+                          <span className="font-black text-slate-900 dark:text-slate-100">{p.line}</span>
+                          <span className="text-xs text-slate-400 ml-2">({p.odds})</span>
+                      </div>
+                  </div>
+              ))}
+              <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-700 flex justify-between items-center">
+                 <span className="text-[10px] text-slate-400 uppercase font-bold">Implied Probability</span>
+                 <span className="text-xs text-emerald-600 font-bold bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 rounded-full">
+                    {data.props[0].implied_prob.toFixed(1)}% Hit Rate
+                 </span>
+              </div>
+           </div>
+        </div>
+      );
+  }
 
+  // --- STANDARD VIEW RENDER ---
   return (
     <div 
       onClick={() => onClick && onClick(data.id)}
@@ -111,7 +143,7 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
       {/* 2. KEY METRICS GRID */}
       <div className="grid grid-cols-3 divide-x divide-slate-100 dark:divide-slate-700 border-b border-slate-100 dark:border-slate-700">
         
-        {/* Metric A: Prediction + Floor + Avg */}
+        {/* Metric A: Prediction */}
         <div className={`${mini ? 'p-3' : 'p-6'} text-center`}>
           <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
             <TrendingUp size={14} /> Proj
@@ -128,7 +160,7 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
           </div>
         </div>
 
-        {/* Metric B: OVER/UNDER (Updated) */}
+        {/* Metric B: OVER/UNDER */}
         <div className={`${mini ? 'p-3' : 'p-6'} text-center bg-slate-50/50 dark:bg-slate-800/50`}>
           <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
             <Target size={14} /> O/U
@@ -141,7 +173,7 @@ export default function BroadcastCard({ data, onClick, mini = false }: Props) {
           </div>
         </div>
 
-        {/* Metric C: Snap Volume */}
+        {/* Metric C: Usage */}
         <div className={`${mini ? 'p-3' : 'p-6'} text-center`}>
           <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
             <Clock size={14} /> Usage

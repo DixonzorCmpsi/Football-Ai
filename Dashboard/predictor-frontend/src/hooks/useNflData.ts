@@ -1,10 +1,15 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-// --- 1. CONFIGURATION ---
 const API_BASE_URL = 'http://127.0.0.1:8000'; 
 
-// --- 2. TYPES ---
+export interface PropBet {
+  prop_type: string;
+  line: number;
+  odds: string;
+  implied_prob: number;
+}
+
 export interface Player {
   player_name: string;
   player_id: string;
@@ -22,7 +27,7 @@ export interface BroadcastCardData {
   name: string;
   position: string;
   team: string;
-  spread: number | null; // ADDED: For Game Spread display
+  spread: number | null;
   image: string;
   draft: string;
   injury_status: string; 
@@ -34,6 +39,7 @@ export interface BroadcastCardData {
     snap_count: number;
     snap_percentage: number;
   };
+  props?: PropBet[]; 
 }
 
 export interface HistoryEntry {
@@ -59,7 +65,6 @@ export interface MatchupData {
 }
 
 const transformToCardData = (d: any): BroadcastCardData => {
-    // This prop odds logic (over_under) is mostly obsolete now
     let oddsDisplay = "No Lines";
     if (d.odds) {
         const lines = [];
@@ -77,7 +82,8 @@ const transformToCardData = (d: any): BroadcastCardData => {
         image: d.image,
         draft: d.draft_position,
         injury_status: d.injury_status || "Active", 
-        spread: d.spread !== undefined ? d.spread : null, // MAPPING SPREAD
+        spread: d.spread !== undefined ? d.spread : null,
+        props: d.props || [], 
         stats: {
             projected: d.prediction || 0,
             floor: d.floor_prediction || 0,
@@ -89,10 +95,8 @@ const transformToCardData = (d: any): BroadcastCardData => {
     };
 };
 
-// --- 3. HOOKS ---
-
 export const useCurrentWeek = () => {
-  const [week, setWeek] = useState<number>(1);
+  const [week, setWeek] = useState<number | null>(null); 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -102,12 +106,13 @@ export const useCurrentWeek = () => {
         setLoading(false);
       })
       .catch(err => {
-        console.error("Failed to fetch week:", err);
+        console.error("Failed to fetch week, defaulting to 1:", err);
+        setWeek(1); 
         setLoading(false);
       });
   }, []);
 
-  return { currentWeek: week, loadingWeek: loading };
+  return { currentWeek: week || 1, loadingWeek: loading || week === null };
 };
 
 export const usePastRankings = (week: number) => {
@@ -147,13 +152,13 @@ export const useSchedule = (week: number) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) return; 
     setLoading(true);
     axios.get(`${API_BASE_URL}/schedule/${week}`)
       .then(res => setGames(res.data))
       .catch(err => console.error("Error fetching schedule:", err))
       .finally(() => setLoading(false));
-  }, [week]);
+  }, [week]); 
 
   return { games, loadingSchedule: loading };
 };
