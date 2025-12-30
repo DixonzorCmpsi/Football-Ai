@@ -31,7 +31,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     return 'Rec Yds';
   };
 
-  // --- INJURY BADGE LOGIC ---
+  // --- INJURY BADGE LOGIC (For current player status) ---
   const getStatusBadge = (status?: string) => {
     if (!status || status === 'Active' || status === 'ACT' || status === 'Healthy') return null;
     
@@ -49,6 +49,17 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     return (
       <span className={`ml-2 text-[9px] font-black px-1.5 py-0.5 rounded border uppercase tracking-wide ${colorClass}`}>
         {status === 'Questionable' ? 'Q' : status}
+      </span>
+    );
+  };
+
+  // --- OPPORTUNITY BOOST LOGIC (For teammate injury impact) ---
+  const getBoostBadge = () => {
+    if (!data.is_injury_boosted) return null;
+
+    return (
+      <span className="ml-2 text-[9px] font-black px-1.5 py-0.5 rounded border border-blue-200 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800 uppercase tracking-wide animate-pulse">
+        Boost
       </span>
     );
   };
@@ -73,7 +84,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
       {/* Dark Mode Overlay */}
       <div className="absolute inset-0 hidden dark:block bg-gradient-to-br from-transparent to-slate-950/90 pointer-events-none"></div>
 
-      {/* --- COMPARE BUTTON (NEW) --- */}
+      {/* --- COMPARE BUTTON --- */}
       {onToggleCompare && (
           <button 
             onClick={(e) => { e.stopPropagation(); onToggleCompare(data.player_id); }}
@@ -100,8 +111,10 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
              <h4 className="text-slate-900 dark:text-white font-black truncate text-sm leading-tight">
                {data.player_name}
              </h4>
-             {/* INJURY BADGE */}
+             {/* INJURY STATUS OF THIS PLAYER */}
              {getStatusBadge(data.injury_status)}
+             {/* OPPORTUNITY BOOST (USAGE VACUUM) BADGE */}
+             {getBoostBadge()}
           </div>
           
           <div className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-white/60 mt-0.5 truncate font-medium">

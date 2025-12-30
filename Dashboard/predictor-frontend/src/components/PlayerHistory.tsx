@@ -1,17 +1,21 @@
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Check, Plus } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 
 interface Props {
   playerId: string;
   onBack: () => void;
+  // New props for compare logic
+  compareList: string[];
+  onToggleCompare: (id: string) => void;
 }
 
-export default function PlayerHistory({ playerId, onBack }: Props) {
+export default function PlayerHistory({ playerId, onBack, compareList, onToggleCompare }: Props) {
   const { history, loadingHistory } = usePlayerHistory(playerId);
   const { cardData } = usePlayerProfileById(playerId);
 
   const teamColor = cardData ? getTeamColor(cardData.team) : "#1e293b"; 
+  const isSelected = compareList.includes(playerId);
 
   // Stats
   const totalPoints = history.reduce((acc, curr) => acc + (curr.points || 0), 0);
@@ -34,6 +38,18 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
             background: `linear-gradient(135deg, ${teamColor} 0%, #0f172a 100%)` 
         }}
       >
+        {/* ADD TO COMPARE BUTTON */}
+        <button 
+            onClick={(e) => { e.stopPropagation(); onToggleCompare(playerId); }}
+            className={`absolute top-4 right-4 z-30 p-2 rounded-full shadow-lg transition-all transform hover:scale-110 ${
+                isSelected 
+                ? 'bg-blue-600 text-white border border-blue-400' 
+                : 'bg-white/20 text-white hover:bg-white/40 backdrop-blur-md border border-white/20'
+            }`}
+        >
+            {isSelected ? <Check size={20} strokeWidth={4} /> : <Plus size={20} strokeWidth={3} />}
+        </button>
+
         {/* Decorative Blur Effect */}
         <div className="absolute -right-20 -top-20 w-96 h-96 bg-white/5 rounded-full blur-[100px] pointer-events-none mix-blend-overlay"></div>
         
@@ -59,7 +75,7 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
            <div className="w-full xl:w-auto grid grid-cols-3 md:grid-cols-5 gap-4 gap-y-6 text-center bg-black/20 p-4 rounded-xl border border-white/10 backdrop-blur-md shadow-inner">
                <div>
                    <div className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Wk Proj</div>
-                   <div className="text-xl md:text-2xl font-black text-yellow-400 drop-shadow-sm">{cardData?.stats.projected.toFixed(1) || "-"}</div>
+                   <div className="text-xl md:text-2xl font-black text-yellow-400 drop-shadow-sm">{cardData?.stats?.projected?.toFixed(1) || "-"}</div>
                </div>
                <div className="hidden md:block w-px bg-white/10 h-full mx-auto"></div>
                <div>
@@ -89,7 +105,6 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
                       <th className="px-6 py-4">Opponent</th>
                       <th className="px-6 py-4 text-center">Snaps</th>
                       <th className="px-6 py-4 text-center">Rec / Tgt</th>
-                      {/* EXTENDED STATS */}
                       <th className="px-6 py-4 text-right">Rush Att</th> 
                       <th className="px-6 py-4 text-right">Rush Yds</th>
                       <th className="px-6 py-4 text-right">Pass Yds</th>

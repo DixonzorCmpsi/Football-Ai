@@ -94,29 +94,27 @@ const SidebarPlayerItem = ({
 
 // --- MAIN APP ---
 export default function App() {
-  // Use a local state to persist the week once loaded
   const { currentWeek, loadingWeek } = useCurrentWeek();
+  
+  // FIX: Initialize to NULL. Do not default to 1.
   const [activeWeek, setActiveWeek] = useState<number | null>(null);
 
-  // Update activeWeek only when currentWeek is successfully fetched
   useEffect(() => {
-    if (currentWeek) {
+    // Only update if we have a valid positive week number
+    if (currentWeek && currentWeek > 0) {
         setActiveWeek(currentWeek);
     }
   }, [currentWeek]);
 
-  // Use activeWeek if available, otherwise 1 (Prevent fallback to 1 during re-validation)
-  const safeWeek = activeWeek || 1; 
+  // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
+  const safeWeek = activeWeek || 0; 
   
-  // State
   const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY'>('SCHEDULE');
   const [showSidebars, setShowSidebars] = useState(true); 
-  
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE'>('SCHEDULE');
 
-  // --- Comparison State ---
   const [compareList, setCompareList] = useState<string[]>([]);
 
   const toggleCompare = (playerId: string) => {
@@ -132,7 +130,6 @@ export default function App() {
     }
   }, [viewMode, compareList.length]);
 
-  // Theme State
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -150,9 +147,11 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Only show syncing screen if we have NO week data at all yet
-  const isSyncing = !activeWeek && (loadingWeek || !currentWeek);
+  // FIX: Syncing screen shows if we don't have an active week yet.
+  // This prevents the UI from flashing Week 1 before the real week loads.
+  const isSyncing = loadingWeek && !activeWeek;
 
+  // Hooks use safeWeek (0 if null). 0 causes them to return empty data, which is what we want.
   const { pastRankings: trendingDown, loadingPast: loadingDown } = usePastRankings(safeWeek > 1 ? safeWeek - 1 : 1);
   const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(safeWeek);
   const { games, loadingSchedule } = useSchedule(safeWeek);
@@ -239,7 +238,9 @@ export default function App() {
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
             
-            <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">Wk {activeWeek || currentWeek}</div>
+            <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
+                Wk {activeWeek || "-"}
+            </div>
           </div>
         </header>
 
@@ -254,6 +255,11 @@ export default function App() {
                 <div className="flex flex-col items-center justify-center h-64 opacity-50">
                   <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
                   <p className="text-sm text-slate-400 font-bold">Loading Live Odds...</p>
+                </div>
+              ) : games.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 opacity-50">
+                  <p className="text-xl font-black text-slate-300 dark:text-slate-600 mb-2">NO MATCHUPS AVAILABLE</p>
+                  <p className="text-sm text-slate-400">Schedule data is not available for Week {activeWeek}.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -278,7 +284,6 @@ export default function App() {
                             {game.moneyline_away && (
                               <div className="mt-2">
                                 <span className={`text-xs font-bold px-2 py-1 rounded ${String(game.moneyline_away).startsWith('-') ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
-                                  {/* FIX: Check if it already starts with '+' to prevent double plus signs */}
                                   {(!String(game.moneyline_away).startsWith('-') && !String(game.moneyline_away).startsWith('+') && game.moneyline_away !== 'EVEN') ? '+' : ''}{game.moneyline_away}
                                 </span>
                               </div>
@@ -297,7 +302,6 @@ export default function App() {
                             {game.moneyline_home && (
                               <div className="mt-2">
                                 <span className={`text-xs font-bold px-2 py-1 rounded ${String(game.moneyline_home).startsWith('-') ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
-                                  {/* FIX: Check if it already starts with '+' to prevent double plus signs */}
                                   {(!String(game.moneyline_home).startsWith('-') && !String(game.moneyline_home).startsWith('+') && game.moneyline_home !== 'EVEN') ? '+' : ''}{game.moneyline_home}
                                 </span>
                               </div>
@@ -350,7 +354,12 @@ export default function App() {
           {/* VIEW: HISTORY */}
           {viewMode === 'HISTORY' && selectedHistoryId && (
             <div className="w-full max-w-5xl mx-auto">
-                <PlayerHistory playerId={selectedHistoryId} onBack={() => setViewMode(historyFrom)} />
+                <PlayerHistory 
+                    playerId={selectedHistoryId} 
+                    onBack={() => setViewMode(historyFrom)}
+                    compareList={compareList}
+                    onToggleCompare={toggleCompare}
+                />
             </div>
           )}
 

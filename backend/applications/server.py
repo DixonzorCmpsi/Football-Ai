@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from difflib import get_close_matches
+import math
 
 # --- 1. CONFIGURATION & SETUP ---
 load_dotenv()
@@ -170,22 +171,48 @@ def refresh_app_state():
     except Exception:
         model_data["current_nfl_week"] = 1
 
-def run_daily_etl():
-    print("\n⏰ [Scheduler] Starting Daily ETL Pipeline...")
-    if not os.path.exists(ETL_SCRIPT_PATH): return
-    try:
-        subprocess.run([sys.executable, ETL_SCRIPT_PATH], capture_output=True, text=True, encoding='utf-8')
-        refresh_app_state()
-        refresh_db_data()
-        print("✅ ETL Complete")
-    except Exception as e:
-        print(f"❌ ETL Failed: {e}")
+# --- Updated Non-Blocking ETL Function ---
+async def run_daily_etl_async():
+    """Executes the ETL script without blocking the main FastAPI event loop."""
+    print(f"\n⏰ [Scheduler] Starting Daily ETL Pipeline at {datetime.now()}...")
+    if not os.path.exists(ETL_SCRIPT_PATH):
+        print(f"❌ ETL Script not found at: {ETL_SCRIPT_PATH}")
+        return
 
-# --- 5. LIFESPAN ---
+    try:
+        # Launch the process asynchronously
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, ETL_SCRIPT_PATH,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            print("✅ ETL Process Finished Successfully")
+            refresh_app_state()
+            refresh_db_data()
+        else:
+            print(f"❌ ETL Process exited with code {process.returncode}")
+            if stderr: print(f"STDERR: {stderr.decode()}")
+    except Exception as e:
+        print(f"❌ Error during async ETL: {e}")
+
+def etl_trigger_wrapper():
+    """Bridge for APScheduler thread to async ETL."""
+    try:
+        asyncio.run(run_daily_etl_async())
+    except Exception as e:
+        print(f"❌ Scheduler Bridge Error: {e}")
+
+# --- LIFESPAN MANAGER ---
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- STARTUP ---
     print("--- 🚀 Server Startup Sequence ---")
     try:
+        # 1. Load ML Models
         model_data["models"] = {}
         for pos, paths in MODELS_CONFIG.items():
             if os.path.exists(paths['model']):
@@ -198,22 +225,45 @@ async def lifespan(app: FastAPI):
             model_data["meta_models"] = joblib.load(META_MODEL_PATH)
             model_data["meta_features"] = json.load(open(META_FEATURES_PATH))
             
+        # 2. Initial Data Load
         refresh_app_state()
         refresh_db_data()
+        
+        # 3. Setup Scheduler
+        scheduler = BackgroundScheduler()
+        # Set for 6 AM
+        scheduler.add_job(etl_trigger_wrapper, 'cron', hour=6, minute=0) 
+        scheduler.add_job(refresh_app_state, 'interval', hours=1) 
+        scheduler.start()
+        print("📅 Scheduler active: ETL set for 06:00 daily.")
+        
+        # Store scheduler in app state so we can shut it down
+        app.state.scheduler = scheduler
+
     except Exception as e:
         print(f"❌ Startup Error: {e}")
-    
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(run_daily_etl, 'cron', hour=5, minute=0) 
-    scheduler.add_job(refresh_app_state, 'interval', hours=1) 
-    scheduler.start()
-    yield
-    scheduler.shutdown()
+        traceback.print_exc()
+
+    yield # --- SERVER IS RUNNING ---
+
+    # --- SHUTDOWN ---
+    print("--- 🛑 Server Shutdown Sequence ---")
+    if hasattr(app.state, "scheduler"):
+        app.state.scheduler.shutdown()
     model_data.clear()
 
+# --- INITIALIZE APP ---
+# This MUST come after the lifespan function but before any @app.get decorators
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# Add Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 # --- 6. CORE LOGIC ---
 def get_headshot_url(player_id: str):
     """Robust Headshot Locator"""
@@ -252,13 +302,15 @@ def calculate_fantasy_points(row):
 
 def run_base_prediction(pid, pos, week):
     """
-    Looks up features from DB. Returns None if features missing.
-    Includes ASYMMETRIC AMPLIFICATION logic.
+    Looks up features from DB. 
+    Includes:
+    1. NON-LINEAR UPSIDE AMPLIFICATION.
+    2. USAGE VACUUM LOGIC (Injury Boost).
     """
     if "df_features" not in model_data or model_data["df_features"].is_empty():
         return None, "Feature Table Empty", None
 
-    # Filter by ID and Week
+    # Filter current player's features
     player_features = model_data["df_features"].filter(
         (pl.col("player_id") == str(pid)) & 
         (pl.col("week") == int(week))
@@ -268,34 +320,70 @@ def run_base_prediction(pid, pos, week):
         return None, f"No feature data for Week {week}", None
 
     features_dict = player_features.row(0, named=True)
+    team = features_dict.get('team') or features_dict.get('team_abbr')
     
     if pos not in model_data["models"]: return None, "No Model", None
     m_info = model_data["models"][pos]
     
     try:
+        # --- 1. MODEL PREDICTION ---
         feats_input = {k: [float(features_dict.get(k) or 0.0)] for k in m_info["features"]}
-        
-        # 1. Get Raw Model Deviation (e.g. +1.5 or -2.0)
         pred_dev = m_info["model"].predict(pl.DataFrame(feats_input).to_numpy())[0]
         
-        # 2. AMPLIFY THE VARIATION (Asymmetric)
-        # If Positive (Upside): Double it to reward good matchups aggressively.
-        # If Negative (Downside): Keep it as is (don't over-penalize).
+        # --- 2. UPSIDE AMPLIFICATION ---
         if pred_dev > 0:
-            amplified_dev = pred_dev * 2.0
+            amplified_dev = (pred_dev ** 1.3) * 2.0 
         else:
             amplified_dev = pred_dev
         
+        # --- 3. BASELINE (AVERAGE) ---
         baseline = float(features_dict.get('player_season_avg_points', 0.0))
-        
-        # Check if baseline is 0 (missing in DB?), if so try fallback
         if baseline == 0.0:
             baseline = get_average_points_fallback(pid, week)
 
-        final_score = max(0.0, baseline + amplified_dev)
+        # --- 4. USAGE VACUUM LOGIC (Injury Boost) ---
+        injury_boost = 0.0
+        injury_statuses = ["IR", "Out", "Doubtful", "Questionable"]
         
-        return float(final_score), None, features_dict
+        # Find teammates at the same position
+        teammates = model_data["df_profile"].filter(
+            (pl.col("team_abbr") == team) & 
+            (pl.col("position") == pos) & 
+            (pl.col("player_id") != pid)
+        )
+
+        for mate in teammates.iter_rows(named=True):
+            mate_id = mate['player_id']
+            status = model_data.get("injury_map", {}).get(mate_id, "Active")
+            
+            # Check if status matches your list
+            if any(s in status for s in injury_statuses):
+                # Lookup teammate's stats from df_features for the SAME week
+                mate_feats = model_data["df_features"].filter(
+                    (pl.col("player_id") == mate_id) & (pl.col("week") == int(week))
+                )
+                
+                if not mate_feats.is_empty():
+                    m_row = mate_feats.row(0, named=True)
+                    m_snaps = float(m_row.get("offense_pct", 0))
+                    # Convert to whole number if stored as decimal (0.6 -> 60)
+                    if m_snaps < 1.0: m_snaps *= 100
+                    
+                    m_avg = float(m_row.get("player_season_avg_points", 0))
+                    if m_avg == 0: m_avg = get_average_points_fallback(mate_id, week)
+
+                    # star power threshold check
+                    if m_snaps >= 25 and m_avg >= 6.0:
+                        injury_boost = 2.5 if pos in ["RB", "QB"] else 1.5
+                        break # Only apply one boost per position
+
+        # --- 5. FINAL SCORE ---
+        final_score = max(0.0, baseline + amplified_dev + injury_boost)
+        
+        return round(float(final_score), 2), None, features_dict
+        
     except Exception as e:
+        print(f"Prediction Error: {e}")
         return 0.0, str(e), features_dict
 def get_average_points_fallback(player_id, week):
     """Fallback calculation of average points if DB features are missing."""

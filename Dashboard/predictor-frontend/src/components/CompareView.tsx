@@ -59,13 +59,12 @@ const LoadedPlayerCard = ({ id, onRemove, onViewHistory, colorIndex }: { id: str
     );
 };
 
-// --- SUB-COMPONENT: Add Player Card (Refined) ---
+// --- SUB-COMPONENT: Add Player Card ---
 const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, existingIds: string[] }) => {
     const [isSearching, setIsSearching] = useState(false);
     const [query, setQuery] = useState("");
     const results = usePlayerSearch(query);
 
-    // Initial Button State
     if (!isSearching) {
         return (
             <button 
@@ -78,7 +77,6 @@ const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, ex
         );
     }
 
-    // Active Search State
     return (
         <div className="h-auto min-h-[140px] w-72 rounded-xl bg-white dark:bg-slate-800 shadow-xl border border-slate-200 dark:border-slate-700 flex flex-col relative animate-in fade-in zoom-in-95 duration-200 shrink-0 z-50">
             <div className="p-3 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
@@ -171,13 +169,26 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
 
   const radarData = React.useMemo(() => {
       if (players.length === 0 || histories.length === 0) return [];
-      const playerTotalTDs = histories.map(hist => hist.reduce((acc: number, game: any) => acc + (game.touchdowns || 0), 0));
+      
+      const playerTotalTDs = histories.map(hist => 
+          hist.reduce((acc: number, game: any) => acc + (game.touchdowns || 0), 0)
+      );
+      
+      // Calculate Average Snap Count from history
+      const playerAvgSnaps = histories.map(hist => {
+          if (!hist || hist.length === 0) return 0;
+          const totalSnaps = hist.reduce((acc: number, game: any) => acc + (game.snap_count || 0), 0);
+          return totalSnaps / hist.length;
+      });
+
       const maxTDs = Math.max(...playerTotalTDs, 5);
+      // Determine max snaps for scaling (default min 60 to avoid weird skew on low snap players)
+      const maxSnaps = Math.max(...playerAvgSnaps, 60);
 
       const metrics = [
           { key: 'prediction', label: 'Proj', cap: 25 },
           { key: 'average_points', label: 'Avg', cap: 25 },
-          { key: 'snap_percentage', label: 'Snaps', cap: 1, scale: 100 }, 
+          { key: 'AVG_SNAPS', label: 'Avg Snaps', cap: maxSnaps }, // CHANGED from 'snap_percentage'
           { key: 'overunder', label: 'Game Script', cap: 60 }, 
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
       ];
@@ -189,11 +200,13 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
               if (m.key === 'TOTAL_TDS') {
                   val = playerTotalTDs[idx] || 0;
                   val = (val / m.cap) * 100;
+              } else if (m.key === 'AVG_SNAPS') {
+                  val = playerAvgSnaps[idx] || 0;
+                  val = (val / m.cap) * 100;
               } else {
                   // @ts-ignore
                   val = p[m.key] || 0;
-                  if (m.key === 'snap_percentage') val = val * 100; 
-                  else val = (val / m.cap) * 100;
+                  val = (val / m.cap) * 100;
               }
               point[`player_${idx}`] = Math.min(Math.max(val, 0), 100);
           });
@@ -227,7 +240,7 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
         <p className="text-slate-500 dark:text-slate-400 text-xs">Comparing {playerIds.length} players</p>
       </div>
 
-      {/* DYNAMIC PLAYER GRID (Fixed: Added shrink-0 to prevent collapse) */}
+      {/* DYNAMIC PLAYER GRID */}
       <div className="flex gap-4 overflow-x-auto pb-0 snap-x mx-auto max-w-full items-start px-2 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-700 shrink-0 min-h-[160px]">
         {playerIds.map((id, idx) => (
             <div key={id} className="snap-center">
@@ -239,28 +252,41 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
                 />
             </div>
         ))}
-        
         <div className="snap-center pt-0">
             <AddPlayerCard onAdd={onAdd} existingIds={playerIds} />
         </div>
       </div>
 
-      {/* VISUALIZATION SECTION (Fixed: Large Min-Height, fills space) */}
+      {/* VISUALIZATION SECTION */}
       {playerIds.length > 0 ? (
-          <div className="mt-2 bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 animate-in fade-in slide-in-from-bottom-8 duration-700 flex flex-col min-h-[600px] mb-20">
+          <div className="mt-2 bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex-1 flex flex-col min-h-[600px] mb-20">
             
-            <div className="flex items-center justify-between mb-4 shrink-0">
-                <h3 className="font-black text-slate-700 dark:text-slate-200 uppercase tracking-widest text-xs flex items-center gap-2">
-                    {activeTab === 'RADAR' ? <Radar size={14} /> : <Activity size={14} />} 
-                    {activeTab === 'RADAR' ? 'Metric Analysis' : 'Season Trends'}
-                </h3>
-                <div className="flex bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg">
-                    <button onClick={() => setActiveTab('RADAR')} className={`px-3 py-1 rounded text-[10px] font-bold transition-all ${activeTab === 'RADAR' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}>Radar</button>
-                    <button onClick={() => setActiveTab('LINE')} className={`px-3 py-1 rounded text-[10px] font-bold transition-all ${activeTab === 'LINE' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}>History</button>
-                </div>
+            {/* TAB BAR */}
+            <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+                <button 
+                    onClick={() => setActiveTab('RADAR')}
+                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-colors ${
+                        activeTab === 'RADAR' 
+                        ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border-b-2 border-blue-600 dark:border-blue-400' 
+                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                >
+                    <Radar size={14} /> Metric Radar
+                </button>
+                <button 
+                    onClick={() => setActiveTab('LINE')}
+                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-colors ${
+                        activeTab === 'LINE' 
+                        ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border-b-2 border-blue-600 dark:border-blue-400' 
+                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                >
+                    <Activity size={14} /> Performance Trends
+                </button>
             </div>
 
-            <div className="flex-1 w-full h-full min-h-[500px]">
+            {/* CHART AREA */}
+            <div className="flex-1 w-full h-full min-h-[500px] pt-16 px-4">
                 {loadingGraphs ? (
                     <div className="h-full flex items-center justify-center text-slate-400 font-bold animate-pulse">Running Simulation...</div>
                 ) : (

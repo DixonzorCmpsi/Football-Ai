@@ -106,13 +106,14 @@ export const useCurrentWeek = () => {
         setLoading(false);
       })
       .catch(err => {
-        console.error("Failed to fetch week, defaulting to 1:", err);
-        setWeek(1); 
+        console.error("Failed to fetch week:", err);
+        // FIX: Do NOT default to 1. Leave as null to indicate failure/unknown.
+        setWeek(null); 
         setLoading(false);
       });
   }, []);
 
-  return { currentWeek: week || 1, loadingWeek: loading || week === null };
+  return { currentWeek: week, loadingWeek: loading };
 };
 
 export const usePastRankings = (week: number) => {
@@ -120,7 +121,10 @@ export const usePastRankings = (week: number) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) {
+        setLoading(false);
+        return;
+    }
     setLoading(true);
     axios.get(`${API_BASE_URL}/rankings/past/${week}`)
       .then(res => setData(res.data))
@@ -136,7 +140,10 @@ export const useFutureRankings = (week: number) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) {
+        setLoading(false);
+        return;
+    }
     setLoading(true);
     axios.get(`${API_BASE_URL}/rankings/future/${week}`)
       .then(res => setData(res.data))
@@ -149,14 +156,23 @@ export const useFutureRankings = (week: number) => {
 
 export const useSchedule = (week: number) => {
   const [games, setGames] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!week || week < 1) return; 
+    if (!week || week < 1) {
+        setGames([]);
+        return; 
+    }
+    
     setLoading(true);
+    setGames([]); // Clear old games immediately
+
     axios.get(`${API_BASE_URL}/schedule/${week}`)
       .then(res => setGames(res.data))
-      .catch(err => console.error("Error fetching schedule:", err))
+      .catch(err => {
+          console.error("Error fetching schedule:", err);
+          setGames([]); // Ensure empty array on error
+      })
       .finally(() => setLoading(false));
   }, [week]); 
 

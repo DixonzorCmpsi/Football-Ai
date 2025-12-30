@@ -9,6 +9,7 @@ export interface PlayerData {
   prediction: number;
   floor_prediction: number;
   average_points: number;
+  is_injury_boosted?: boolean; // <-- Add this line
   // Game Context
   overunder: number | null;
   spread: number | null;
