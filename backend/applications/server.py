@@ -584,7 +584,7 @@ async def get_player_card(player_id: str, week: int):
         "average_points": round(season_avg, 1), 
         
         # We send the 4-game average here. 
-        # Frontend might still label it "3wk" unless you change the text in PlayerModal.tsx, 
+        # Frontend might still label it "3wk" unless we change the text in PlayerModal.tsx, 
         # but the DATA is now the 4-week average.
         "rolling_3wk_avg": round(rolling_avg_val, 1),
         
