@@ -1,17 +1,21 @@
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Check, Plus } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 
 interface Props {
   playerId: string;
   onBack: () => void;
+  compareList: string[];
+  onToggleCompare: (id: string) => void;
 }
 
-export default function PlayerHistory({ playerId, onBack }: Props) {
+export default function PlayerHistory({ playerId, onBack, compareList, onToggleCompare }: Props) {
   const { history, loadingHistory } = usePlayerHistory(playerId);
   const { cardData } = usePlayerProfileById(playerId);
 
   const teamColor = cardData ? getTeamColor(cardData.team) : "#1e293b"; 
+  const isSelected = compareList.includes(playerId);
+  const isBoosted = cardData?.is_injury_boosted;
 
   // Stats
   const totalPoints = history.reduce((acc, curr) => acc + (curr.points || 0), 0);
@@ -27,20 +31,53 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
         <ArrowLeft size={16} className="mr-1"/> BACK TO DASHBOARD
       </button>
 
-      <div className="rounded-xl shadow-lg border border-white/20 p-6 mb-8 text-white relative overflow-hidden transition-colors duration-500" style={{ backgroundColor: teamColor }}>
-        <div className="absolute -right-10 -top-10 w-64 h-64 bg-white/10 rounded-full blur-3xl pointer-events-none"></div>
+      {/* HEADER CARD WITH GRADIENT BLEND */}
+      <div 
+        className="rounded-xl shadow-lg border border-white/10 p-6 mb-8 text-white relative overflow-hidden transition-all duration-500"
+        style={{ 
+            background: `linear-gradient(135deg, ${teamColor} 0%, #0f172a 100%)` 
+        }}
+      >
+        {/* ADD TO COMPARE BUTTON */}
+        <button 
+            onClick={(e) => { e.stopPropagation(); onToggleCompare(playerId); }}
+            className={`absolute top-4 right-4 z-30 p-2 rounded-full shadow-lg transition-all transform hover:scale-110 ${
+                isSelected 
+                ? 'bg-blue-600 text-white border border-blue-400' 
+                : 'bg-white/20 text-white hover:bg-white/40 backdrop-blur-md border border-white/20'
+            }`}
+        >
+            {isSelected ? <Check size={20} strokeWidth={4} /> : <Plus size={20} strokeWidth={3} />}
+        </button>
+
+        {/* Decorative Blur Effect */}
+        <div className="absolute -right-20 -top-20 w-96 h-96 bg-white/5 rounded-full blur-[100px] pointer-events-none mix-blend-overlay"></div>
         
-        {/* OVERLAP FIX: Changed lg:flex-row to xl:flex-row so it stacks on laptops */}
+        {/* INJURY BOOST GLOW */}
+        {isBoosted && (
+             <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-amber-500/20 to-transparent pointer-events-none mix-blend-overlay animate-pulse"></div>
+        )}
+        
         <div className="flex flex-col xl:flex-row items-center justify-between gap-6 relative z-10">
            <div className="flex items-center gap-6 w-full xl:w-auto">
-               <div className="h-24 w-24 rounded-full border-4 border-white/20 bg-black/20 overflow-hidden shadow-lg shrink-0">
+               <div className="h-24 w-24 rounded-full border-4 border-white/20 bg-black/20 overflow-hidden shadow-2xl shrink-0">
                    {cardData?.image ? <img src={cardData.image} alt={cardData.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-white/50 font-bold">...</div>}
                </div>
                <div>
-                   <h1 className="text-2xl md:text-3xl font-black tracking-tight uppercase drop-shadow-sm">{cardData?.name || "Loading..."}</h1>
-                   <div className="flex flex-wrap items-center gap-2 md:gap-3 text-white/80 font-bold text-sm mt-1">
-                        <span className="bg-white/20 px-2 py-0.5 rounded text-white border border-white/10">{cardData?.position}</span>
+                   <div className="flex items-center gap-3">
+                        <h1 className="text-3xl md:text-4xl font-black tracking-tight uppercase drop-shadow-md">{cardData?.name || "Loading..."}</h1>
+                        {isBoosted && (
+                            <div className="flex items-center gap-1 bg-amber-500/20 border border-amber-400/50 px-2 py-0.5 rounded text-[10px] font-black uppercase text-amber-200 tracking-wider shadow-[0_0_10px_rgba(251,191,36,0.3)] animate-pulse">
+                                <span>Usage Boost</span>
+                            </div>
+                        )}
+                   </div>
+                   
+                   <div className="flex flex-wrap items-center gap-2 md:gap-3 text-white/90 font-bold text-sm mt-1">
+                        <span className="bg-black/30 px-2 py-0.5 rounded text-white border border-white/10">{cardData?.position}</span>
                         <span>{cardData?.team}</span>
+                        <span className="text-white/50 hidden md:inline">•</span>
+                        <span>vs {cardData?.opponent}</span>
                         <span className="text-white/50 hidden md:inline">•</span>
                         <span className={`px-2 py-0.5 rounded font-black text-xs ${cardData?.injury_status === 'Active' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
                             {cardData?.injury_status || 'ACT'}
@@ -50,10 +87,12 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
            </div>
 
            {/* RESPONSIVE STATS GRID */}
-           <div className="w-full xl:w-auto grid grid-cols-3 md:grid-cols-5 gap-4 gap-y-6 text-center bg-black/20 p-4 rounded-xl border border-white/10 backdrop-blur-sm">
+           <div className="w-full xl:w-auto grid grid-cols-3 md:grid-cols-5 gap-4 gap-y-6 text-center bg-black/20 p-4 rounded-xl border border-white/10 backdrop-blur-md shadow-inner">
                <div>
                    <div className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Wk Proj</div>
-                   <div className="text-xl md:text-2xl font-black text-yellow-400">{cardData?.stats.projected.toFixed(1) || "-"}</div>
+                   <div className={`text-xl md:text-2xl font-black drop-shadow-sm ${isBoosted ? 'text-amber-400 scale-110' : 'text-yellow-400'}`}>
+                       {cardData?.stats?.projected?.toFixed(1) || "-"}
+                   </div>
                </div>
                <div className="hidden md:block w-px bg-white/10 h-full mx-auto"></div>
                <div>
@@ -72,7 +111,7 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
         </div>
       </div>
 
-      {/* HISTORY TABLE - DARK MODE ADDED */}
+      {/* HISTORY TABLE */}
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col transition-colors duration-300">
         {loadingHistory ? <div className="p-20 text-center text-slate-400 dark:text-slate-500 animate-pulse font-bold">Loading Season History...</div> : (
           <div className="overflow-x-auto scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
@@ -83,7 +122,6 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
                       <th className="px-6 py-4">Opponent</th>
                       <th className="px-6 py-4 text-center">Snaps</th>
                       <th className="px-6 py-4 text-center">Rec / Tgt</th>
-                      {/* ADDED HEADER: RUSH ATTEMPTS */}
                       <th className="px-6 py-4 text-right">Rush Att</th> 
                       <th className="px-6 py-4 text-right">Rush Yds</th>
                       <th className="px-6 py-4 text-right">Pass Yds</th>
@@ -100,7 +138,6 @@ export default function PlayerHistory({ playerId, onBack }: Props) {
                       <td className="px-6 py-4 text-center"><span className="font-bold text-slate-700 dark:text-slate-300">{(game.snap_percentage * 100).toFixed(0)}%</span></td>
                       <td className="px-6 py-4 text-center font-medium text-slate-600 dark:text-slate-400">{game.receptions} <span className="text-slate-300 dark:text-slate-600 mx-1">/</span> {game.targets}</td>
                       
-                      {/* ADDED COLUMN: RUSH ATTEMPTS (Mapped from 'carries') */}
                       <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.carries !== undefined ? game.carries : "-"}</td> 
                       
                       <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">{game.rushing_yds || "-"}</td>

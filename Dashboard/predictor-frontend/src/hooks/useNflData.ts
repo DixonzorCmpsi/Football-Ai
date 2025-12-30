@@ -1,10 +1,15 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-// --- 1. CONFIGURATION ---
 const API_BASE_URL = 'http://127.0.0.1:8000'; 
 
-// --- 2. TYPES ---
+export interface PropBet {
+  prop_type: string;
+  line: number;
+  odds: string;
+  implied_prob: number;
+}
+
 export interface Player {
   player_name: string;
   player_id: string;
@@ -22,10 +27,12 @@ export interface BroadcastCardData {
   name: string;
   position: string;
   team: string;
-  spread: number | null; // ADDED: For Game Spread display
+  opponent: string; // Added
+  spread: number | null;
   image: string;
   draft: string;
-  injury_status: string; 
+  injury_status: string;
+  is_injury_boosted: boolean; // Added
   stats: {
     projected: number;
     floor: number;
@@ -34,6 +41,11 @@ export interface BroadcastCardData {
     snap_count: number;
     snap_percentage: number;
   };
+  props?: PropBet[]; 
+  // Raw fields to assist with mapping
+  pass_td_line?: number | null;
+  pass_td_prob?: number | null;
+  anytime_td_prob?: number | null;
 }
 
 export interface HistoryEntry {
@@ -59,7 +71,6 @@ export interface MatchupData {
 }
 
 const transformToCardData = (d: any): BroadcastCardData => {
-    // This prop odds logic (over_under) is mostly obsolete now
     let oddsDisplay = "No Lines";
     if (d.odds) {
         const lines = [];
@@ -74,10 +85,17 @@ const transformToCardData = (d: any): BroadcastCardData => {
         name: d.player_name,
         position: d.position,
         team: d.team,
+        opponent: d.opponent || "BYE", // Map opponent
         image: d.image,
         draft: d.draft_position,
-        injury_status: d.injury_status || "Active", 
-        spread: d.spread !== undefined ? d.spread : null, // MAPPING SPREAD
+        injury_status: d.injury_status || "Active",
+        is_injury_boosted: d.is_injury_boosted || false, // Map boost flag
+        spread: d.spread !== undefined ? d.spread : null,
+        props: d.props || [], 
+        // Pass through raw props for PlayerCard mapping
+        pass_td_line: d.pass_td_line,
+        pass_td_prob: d.pass_td_prob,
+        anytime_td_prob: d.anytime_td_prob,
         stats: {
             projected: d.prediction || 0,
             floor: d.floor_prediction || 0,
@@ -89,10 +107,8 @@ const transformToCardData = (d: any): BroadcastCardData => {
     };
 };
 
-// --- 3. HOOKS ---
-
 export const useCurrentWeek = () => {
-  const [week, setWeek] = useState<number>(1);
+  const [week, setWeek] = useState<number | null>(null); 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -103,6 +119,7 @@ export const useCurrentWeek = () => {
       })
       .catch(err => {
         console.error("Failed to fetch week:", err);
+        setWeek(null); 
         setLoading(false);
       });
   }, []);
@@ -115,7 +132,10 @@ export const usePastRankings = (week: number) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) {
+        setLoading(false);
+        return;
+    }
     setLoading(true);
     axios.get(`${API_BASE_URL}/rankings/past/${week}`)
       .then(res => setData(res.data))
@@ -131,7 +151,10 @@ export const useFutureRankings = (week: number) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) {
+        setLoading(false);
+        return;
+    }
     setLoading(true);
     axios.get(`${API_BASE_URL}/rankings/future/${week}`)
       .then(res => setData(res.data))
@@ -144,16 +167,25 @@ export const useFutureRankings = (week: number) => {
 
 export const useSchedule = (week: number) => {
   const [games, setGames] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (week < 1) return;
+    if (!week || week < 1) {
+        setGames([]);
+        return; 
+    }
+    
     setLoading(true);
+    setGames([]); // Clear old games immediately
+
     axios.get(`${API_BASE_URL}/schedule/${week}`)
       .then(res => setGames(res.data))
-      .catch(err => console.error("Error fetching schedule:", err))
+      .catch(err => {
+          console.error("Error fetching schedule:", err);
+          setGames([]); // Ensure empty array on error
+      })
       .finally(() => setLoading(false));
-  }, [week]);
+  }, [week]); 
 
   return { games, loadingSchedule: loading };
 };

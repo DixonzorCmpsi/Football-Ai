@@ -1,8 +1,7 @@
-# rag_data/05_etl_to_postgres.py
 import sys
 import os
 import polars as pl
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
 from pathlib import Path
 import subprocess
@@ -11,70 +10,152 @@ from datetime import datetime
 # --- Configuration ---
 load_dotenv()
 
+# --- WINDOWS CONSOLE FIX ---
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
 if not DB_CONNECTION_STRING:
     print("Error: DB_CONNECTION_STRING not found in environment variables.")
     sys.exit(1)
 
-# --- Dynamic Season Logic ---
 def get_current_season():
     now = datetime.now()
-    if now.month >= 3: 
-        return now.year
-    else: 
-        return now.year - 1
+    if now.month >= 3: return now.year
+    else: return now.year - 1
 
 SEASON = get_current_season()
 print(f"Dynamic Season Detected: {SEASON}")
 
+# --- Helper: Check if Schema Matches ---
+def check_schema_match(file_path_str, table_name, engine):
+    """
+    Returns True if:
+    1. Local file exists.
+    2. DB Table exists.
+    3. DB Table columns match CSV columns (Schema Check).
+    """
+    current_dir = Path(__file__).parent
+    file_path = (current_dir / file_path_str).resolve() if file_path_str.startswith("../") else current_dir / file_path_str
+
+    if not file_path.exists():
+        return False
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table(table_name):
+            return False 
+
+        # Read header only
+        df_head = pl.read_csv(file_path, n_rows=0)
+        csv_cols = set(df_head.columns)
+        db_cols = set([col['name'] for col in insp.get_columns(table_name)])
+        
+        # If CSV cols are inside DB cols, we are good.
+        if csv_cols.issubset(db_cols):
+            return True 
+        else:
+            return False
+
+    except Exception as e:
+        return False
+
 # --- Pipeline Configuration ---
 PIPELINE_STEPS = [
+    # 1. FOUNDATION (Static Files)
     {
         "script": "01_create_static_files.py",
         "uploads": [
-            ("player_profiles.csv", "player_profiles", "replace"),
-            (f"schedule_{SEASON}.csv", "schedule", "smart_append")
+            (f"player_profiles_{SEASON}.csv", "player_profiles", "replace"), # Profiles schema might update
+            (f"schedule_{SEASON}.csv", "schedule", "replace") 
         ]
     },
+    # 2. HISTORICAL DATA
+    {
+        "script": "09_upload_training_data.py", 
+        "uploads": [
+            ("../dataPrep/data/yearly_player_stats_offense.csv", "training_player_yearly", "if_missing"),
+            ("../dataPrep/data/weekly_player_stats_offense.csv", "training_player_weekly", "if_missing"),
+            ("../dataPrep/data/weekly_team_stats_offense.csv", "training_team_offense", "if_missing"),
+            ("../dataPrep/data/weekly_team_stats_defense.csv", "training_team_defense", "if_missing")
+        ]
+    },
+    # 3. CURRENT SEASON CONTEXT
     {
         "script": "03_create_defense_file.py",
         "uploads": [
-             (f"weekly_defense_stats_{SEASON}.csv", "weekly_defense_stats", "smart_append")
+             (f"weekly_defense_stats_{SEASON}.csv", f"weekly_defense_stats_{SEASON}", "smart_append"),
+             (f"weekly_offense_stats_{SEASON}.csv", f"weekly_offense_stats_{SEASON}", "smart_append"),
+             (f"schedule_{SEASON}.csv", "schedule", "replace") 
         ]
     },
+    # 4. CURRENT SEASON PLAYER STATS
     {
         "script": "02_update_weekly_stats.py",
         "uploads": [
-             (f"weekly_player_stats_{SEASON}.csv", "weekly_player_stats", "smart_append"),
-             (f"weekly_offense_stats_{SEASON}.csv", "weekly_offense_stats", "smart_append")
+             (f"weekly_player_stats_{SEASON}.csv", f"weekly_player_stats_{SEASON}", "smart_append")
         ]
     },
+    # 5. ENRICHMENT
     {
         "script": "04_update_snap_counts.py",
         "uploads": [
-             (f"weekly_snap_counts_{SEASON}.csv", "weekly_snap_counts", "smart_append")
+             (f"weekly_snap_counts_{SEASON}.csv", f"weekly_snap_counts_{SEASON}", "smart_append")
         ]
     },
     {
-        "script": "injuries_stats.py",
-        "uploads": [ 
-                (f"weekly_injury_stats_{SEASON}.csv", "weekly_injury_stats", "smart_append")
-
-            ]
-    },
-    # --- NEW: Refresh Models Step ---
-    {
-        "script": "refresh_models.py", 
-        "uploads": [] # Maintenance script, no DB upload
-    },
-    # --- weekly odds update ---
-    {
-        "script": "07_update_odds.py",
+        "script": "08_update_injuries.py",
         "uploads": [
-             (f"weekly_player_odds_{SEASON}.csv", "weekly_player_odds", "smart_append")
-        ]   
-    }
-    # # --- Rankings Generation ---
+             (f"weekly_injuries_{SEASON}.csv", f"weekly_injuries_{SEASON}", "smart_append")
+        ]
+    },
+    # 6. FEATURE ENGINEERING (DB CENTRIC)
+    # New Architecture: Script 13 pulls from DB -> Computes -> Writes to DB
+    # We include the upload step here just as a backup for the local CSV artifact
+    {
+        "script": "13_generate_production_features.py", 
+        "uploads": [
+            (f"weekly_feature_set_{SEASON}.csv", f"weekly_feature_set_{SEASON}", "replace") 
+        ]
+    },
+    # 7. MODELING DATASET (Training Prep)
+    {
+        "script": "../dataPrep/build_modeling_dataset.py", 
+        "smart_check_file": "../dataPrep/weekly_modeling_dataset.csv",
+        "smart_check_table": "modeling_dataset",
+        "uploads": [
+            ("../dataPrep/weekly_modeling_dataset.csv", "modeling_dataset", "replace") 
+        ]
+    },
+    # 8. FEATURE ENGINEERING (Training Prep)
+    {
+        "script": "../dataPrep/feature_engineering.py", 
+        "smart_check_file": "../dataPrep/featured_dataset.csv",
+        "smart_check_table": "featured_dataset",
+        "uploads": [
+            ("../dataPrep/featured_dataset.csv", "featured_dataset", "replace") 
+        ]
+    },
+   # 10. BOVADA CRAWLER (Get Game URLs)
+    {
+        "script": "10_bovada_crawler.py",
+        "uploads": [] 
+    },
+
+    # 11. BOVADA SCRAPER (Visit URLs -> Menu.json)
+    {
+        "script": "11_bovada_scraper.py",
+        "uploads": []
+    },
+    {
+        "script": "12_process_bovada.py",
+        "uploads": [
+             (f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "replace"),
+             (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "replace")
+        ]
+    },
+    # 10. FINAL RANKINGS
     # {
     #     "script": "06_generate_rankings.py",
     #     "uploads": [
@@ -83,97 +164,151 @@ PIPELINE_STEPS = [
     # }
 ]
 
-# --- Helpers ---
-def get_db_engine():
-    return create_engine(DB_CONNECTION_STRING)
+def get_db_engine(): return create_engine(DB_CONNECTION_STRING)
 
-def run_external_script(script_name):
-    """Runs a Python script located in the same directory."""
-    print(f"\n" + "="*50)
-    print(f">> EXECUTING: {script_name}")
-    print("="*50)
+def run_external_script(step, engine):
+    script_name = step["script"]
     
+    # --- SMART SKIP LOGIC ---
+    if "smart_check_file" in step and "smart_check_table" in step:
+        check_file = step["smart_check_file"]
+        check_table = step["smart_check_table"]
+        print(f"\n🔍 Checking if we can skip {script_name}...")
+        if check_schema_match(check_file, check_table, engine):
+            print(f"   ✅ Schema Match & File Exists ({check_file}). SKIPPING execution.")
+            return False 
+        else:
+            print(f"   ⚠️ Schema mismatch or file missing. PROCEEDING with execution.")
+
+    print(f"\n" + "="*50 + f"\n🚀 EXECUTING: {script_name}\n" + "="*50)
     current_dir = Path(__file__).parent
-    script_path = current_dir / script_name
+    script_path = (current_dir / script_name).resolve() if script_name.startswith("../") else current_dir / script_name
     
     if not script_path.exists():
-        print(f"[ERROR] Script {script_name} not found at {script_path}")
+        print(f"❌ Error: Script {script_name} not found.")
         return False
 
     try:
-        subprocess.run([sys.executable, str(script_path)], check=True)
-        print(f"[OK] FINISHED: {script_name}")
+        subprocess.run([sys.executable, str(script_path)], check=True, cwd=script_path.parent)
+        print(f"✅ FINISHED: {script_name}")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"[FAILED] {script_name} exited with code {e.returncode}")
-        return False
-    except Exception as e:
-        print(f"[EXCEPTION] {e}")
+        print(f"❌ FAILED: {script_name} code {e.returncode}")
         return False
 
-def push_to_postgres(file_name, table_name, mode, engine):
-    """Reads a CSV and pushes it to Postgres."""
-    file_path = Path(__file__).parent / file_name
+def reset_db_table(table_name, engine):
+    """
+    NUCLEAR OPTION: Drops and recreates a table if the schema is wrong.
+    """
+    print(f"      ☢️  RESETTING table '{table_name}' (Dropping & Recreating)...")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE"))
+            conn.commit()
+    except Exception as e:
+        print(f"      ❌ Error dropping table: {e}")
+
+def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
+    current_dir = Path(__file__).parent
+    file_path = (current_dir / file_path_str).resolve() if file_path_str.startswith("../") else current_dir / file_path_str
     
-    if not file_path.exists():
-        print(f"Warning: Output file {file_name} not found. Skipping upload.")
+    if skipped:
+        print(f"   -> Skipping upload for {table_name} (Smart Check Passed).")
         return
 
-    print(f"   -> Uploading {file_name} to table '{table_name}' ({mode})...")
+    if not file_path.exists():
+        print(f"⚠️ Warning: Output file {file_path_str} not found. Skipping upload.")
+        return
+
+    print(f"   -> Uploading {file_path.name} to '{table_name}' ({mode})...")
     
     try:
         df = pl.read_csv(file_path, ignore_errors=True)
         
-        if mode == 'replace':
-            df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
-            
-        elif mode == 'smart_append':
-            if 'week' in df.columns and 'season' in df.columns:
-                weeks = df['week'].unique().to_list()
-                if weeks:
-                    weeks_str = ",".join(map(str, weeks))
-                    delete_query = text(f"DELETE FROM {table_name} WHERE season = {SEASON} AND week IN ({weeks_str})")
-                    with engine.connect() as conn:
-                        conn.execute(delete_query)
-                        conn.commit()
-                    print(f"      - Cleared old data for weeks {weeks}")
-            
-            df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
+        # --- 1. HARDENED SCHEMA CHECK ---
+        # Before doing anything, check if CSV has columns that the DB lacks.
+        try:
+            insp = inspect(engine)
+            if insp.has_table(table_name):
+                # Get DB columns (normalize to lower case)
+                db_cols = set([col['name'].lower() for col in insp.get_columns(table_name)])
+                # Get CSV columns (normalize to lower case)
+                csv_cols = set([c.lower() for c in df.columns])
+                
+                # If CSV has columns that are NOT in the DB -> FORCE REPLACE
+                if not csv_cols.issubset(db_cols):
+                    new_cols = csv_cols - db_cols
+                    print(f"      ⚠️ Schema Evolution Detected! Found new columns: {new_cols}")
+                    print(f"      ☢️  Switching mode to 'replace' to update table schema.")
+                    mode = 'replace'
+        except Exception as e:
+            print(f"      ⚠️ Schema check warning: {e}")
 
-        print(f"      - Success! {len(df)} rows uploaded.")
+        # --- 2. EXECUTE UPLOAD ---
+        
+        # MODE: IF MISSING
+        if mode == 'if_missing':
+            with engine.connect() as conn:
+                exists = conn.execute(text(f"SELECT to_regclass('public.{table_name}')")).scalar()
+                if exists and conn.execute(text(f"SELECT 1 FROM {table_name} LIMIT 1")).fetchone():
+                    print(f"      - Table exists & populated. SKIPPING.")
+                    return
+            df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
+            print(f"      - Success! Initial load complete.")
+            return
+
+        # MODE: REPLACE (or forced via Schema Check)
+        if mode == 'replace':
+            # Drop explicitly to ensure clean schema recreation
+            reset_db_table(table_name, engine)
+            df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
+            print(f"      - Success! Replaced table with new schema.")
+            
+        # MODE: SMART APPEND
+        elif mode == 'smart_append':
+            try:
+                with engine.connect() as conn:
+                    # Only try to delete by week/season if columns actually exist in CSV
+                    if 'week' in df.columns and 'season' in df.columns:
+                        weeks = ",".join(map(str, df['week'].unique().to_list()))
+                        conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON} AND week IN ({weeks})"))
+                        conn.commit()
+                    elif 'game_date' in df.columns:
+                        dates = ",".join([f"'{d}'" for d in df['game_date'].unique().to_list()])
+                        conn.execute(text(f"DELETE FROM {table_name} WHERE game_date IN ({dates})"))
+                        conn.commit()
+                    elif 'season' in df.columns:
+                        conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON}"))
+                        conn.commit()
+                
+                df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
+                print(f"      - Success! Appended {len(df)} rows.")
+
+            except Exception as e:
+                # FAIL-SAFE: If Append crashes (e.g. mismatch we missed), Default to Replace
+                print(f"      ❌ Smart Append Failed: {e}")
+                print(f"      ☢️  Falling back to REPLACE strategy...")
+                reset_db_table(table_name, engine)
+                df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
+                print(f"      - Success! Replaced table (Fail-safe).")
 
     except Exception as e:
-        print(f"[ERROR] uploading {table_name}: {e}")
+        print(f"❌ ERROR in push_to_postgres: {e}")
 
-# --- Main Execution Loop ---
 def main():
     print("Starting Master ETL Orchestrator...")
     engine = get_db_engine()
     
     for step in PIPELINE_STEPS:
-        script = step["script"]
-        uploads = step["uploads"]
+        ran_script = run_external_script(step, engine)
+        was_skipped = not ran_script
         
-        success = run_external_script(script)
-        
-        if success:
-            for csv_file, table, mode in uploads:
-                push_to_postgres(csv_file, table, mode, engine)
-        else:
-            print(f"Skipping uploads for {script} due to failure.")
-
-    feature_path = Path(__file__).parent.parent / "dataPrep" / "featured_dataset.csv"
-    if feature_path.exists():
-        print("\n--- Uploading Historical Features ---")
-        try:
-            df_feat = pl.read_csv(feature_path, ignore_errors=True)
-            df_feat.to_pandas().to_sql('featured_dataset', engine, if_exists='replace', index=False)
-            print("[OK] featured_dataset uploaded.")
-        except Exception as e:
-            print(f"[ERROR] uploading features: {e}")
+        if "uploads" in step:
+            for csv, table, mode in step["uploads"]:
+                push_to_postgres(csv, table, mode, engine, skipped=was_skipped)
 
     print("\n" + "="*50)
-    print("ETL PIPELINE COMPLETE")
+    print("🎉 ETL PIPELINE COMPLETE")
     print("="*50)
 
 if __name__ == "__main__":

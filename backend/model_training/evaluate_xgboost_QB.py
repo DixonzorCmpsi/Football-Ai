@@ -1,4 +1,3 @@
-# model_training/evaluate_xgboost_QB.py
 import pandas as pd
 import xgboost as xgb
 import joblib
@@ -8,105 +7,125 @@ from pathlib import Path
 import numpy as np
 
 # --- Configuration ---
-# Path to the dataset you trained on
-DATA_FILE = Path("../dataPrep/featured_dataset_RB.csv") 
+# We test on 2024 (Complete Season) to get a firm accuracy number.
+# You can change this to 2025 to test the current partial season.
+VALIDATION_SEASON = 2025 
 
-# Path to the model you just saved
-MODEL_PATH = Path("./models/xgboost_RB_tuned_temporal_v1.joblib") 
+DATA_DIR = Path("../dataPrep")
+MODEL_DIR = Path("./models")
 
-# Path to the feature names file generated during training
-FEATURES_PATH = Path("./models/feature_names_RB_tuned_temporal_v1.json") 
+# Map positions to their specific files
+POSITION_CONFIG = {
+    'QB': {
+        'data': "timeseries_training_data_QB_avg.csv",
+        'model': "xgboost_QB_sliding_window_deviation_v1.joblib",
+        'feats': "feature_names_QB_sliding_window_deviation_v1.json"
+    },
+    'RB': {
+        'data': "timeseries_training_data_RB_avg.csv", # Or _avg.csv if you used that
+        'model': "xgboost_RB_sliding_window_deviation_v1.joblib",
+        'feats': "feature_names_RB_sliding_window_deviation_v1.json"
+    },
+    'WR': {
+        'data': "timeseries_training_data_WR_avg.csv",
+        'model': "xgboost_WR_sliding_window_deviation_v1.joblib",
+        'feats': "feature_names_WR_sliding_window_deviation_v1.json"
+    },
+    'TE': {
+        'data': "timeseries_training_data_TE_avg.csv",
+        'model': "xgboost_TE_sliding_window_deviation_v1.joblib",
+        'feats': "feature_names_TE_sliding_window_deviation_v1.json"
+    }
+}
 
-TARGET_VARIABLE = 'y_fantasy_points_ppr'
-VALIDATION_SEASON = 2024 # The season you held out for validation
+def evaluate_position(pos, config):
+    print(f"\n" + "="*60)
+    print(f"🏈 EVALUATING POSITION: {pos}")
+    print("="*60)
+
+    # 1. Setup Paths
+    data_path = DATA_DIR / config['data']
+    model_path = MODEL_DIR / config['model']
+    feat_path = MODEL_DIR / config['feats']
+
+    # 2. Load Model & Features
+    try:
+        model = joblib.load(model_path)
+        with open(feat_path, 'r') as f:
+            feature_names = json.load(f)
+        print(f"✅ Model loaded: {model_path.name}")
+        print(f"✅ Features loaded: {len(feature_names)} features")
+    except Exception as e:
+        print(f"❌ Error loading model/features: {e}")
+        return
+
+    # 3. Load Data
+    try:
+        df = pd.read_csv(data_path)
+        # Filter for Validation Season
+        df_val = df[df['season'] == VALIDATION_SEASON].copy()
+        
+        if df_val.empty:
+            print(f"❌ No data found for Season {VALIDATION_SEASON}"); return
+            
+        print(f"✅ Data loaded: {len(df_val)} rows for {VALIDATION_SEASON}")
+    except Exception as e:
+        print(f"❌ Error loading data: {e}"); return
+
+    # 4. Prepare Features
+    # Ensure all expected features exist (fill missing with 0)
+    for col in feature_names:
+        if col not in df_val.columns:
+            df_val[col] = 0.0
+            
+    # Select Features for Model
+    X_val = df_val[feature_names]
+    
+    # Select Baseline & Actuals for Reconstruction
+    # (These are NOT passed to the model, but used for math)
+    if 'player_season_avg_points' not in df_val.columns:
+        print("❌ Critical Error: 'player_season_avg_points' column missing. Cannot reconstruct predictions.")
+        return
+        
+    baseline = df_val['player_season_avg_points'].values
+    actuals = df_val['y_fantasy_points_ppr'].values
+
+    # 5. Run Prediction (Deviation)
+    # The model predicts: How much better/worse than average will they be?
+    pred_deviation = model.predict(X_val)
+
+    # 6. Reconstruct Final Prediction
+    # Formula: Final = Average + Deviation
+    final_predictions = baseline + pred_deviation
+    
+    # Optional: Clip predictions so they aren't negative (unless you allow negative points)
+    final_predictions = np.maximum(final_predictions, 0)
+
+    # 7. Metrics
+    mae = mean_absolute_error(actuals, final_predictions)
+    r2 = r2_score(actuals, final_predictions)
+
+    print(f"\n📊 {VALIDATION_SEASON} PERFORMANCE METRICS:")
+    print(f"✅ True MAE: {mae:.4f} (Avg Error in Points)")
+    print(f"✅ True R²:  {r2:.4f}  (Correlation)")
+
+    # 8. Show Examples
+    results = df_val[['player_name', 'week', 'opponent']].copy()
+    results['Actual'] = actuals
+    results['Avg'] = baseline
+    results['Pred_Dev'] = pred_deviation
+    results['Final_Pred'] = final_predictions
+    results['Error'] = (results['Final_Pred'] - results['Actual']).abs()
+
+    print(f"\n🔍 Top 5 Best Predictions:")
+    print(results.sort_values('Error').head(5).to_string(index=False, float_format="%.1f"))
+
+    print(f"\n⚠️ Top 5 Worst Misses:")
+    print(results.sort_values('Error', ascending=False).head(5).to_string(index=False, float_format="%.1f"))
 
 def main():
-    print(f"--- Evaluating Model ---")
-    print(f"Model: {MODEL_PATH}")
-    print(f"Data: {DATA_FILE}")
-    print(f"Features: {FEATURES_PATH}")
-    print(f"Validation Season: {VALIDATION_SEASON}")
-
-    # --- 1. Load Model, Features, and Data ---
-    try:
-        print("Loading model...")
-        model = joblib.load(MODEL_PATH)
-        
-        print("Loading feature names...")
-        with open(FEATURES_PATH, 'r') as f:
-            feature_names = json.load(f)
-        print(f"Loaded {len(feature_names)} features.")
-        
-        print("Loading dataset...")
-        df = pd.read_csv(DATA_FILE)
-        
-    except FileNotFoundError as e:
-        print(f"\n!!! ERROR: File not found. {e}")
-        return
-    except Exception as e:
-        print(f"\n!!! ERROR: {e}")
-        return
-
-    # --- 2. Prepare Validation Set (2024 data) ---
-    print(f"Filtering for validation season {VALIDATION_SEASON}...")
-    df_val = df[df['season'] == VALIDATION_SEASON].copy()
-    
-    if df_val.empty:
-        print(f"Error: No data found for validation season {VALIDATION_SEASON}.")
-        return
-        
-    # Fill any NaNs just as in training
-    df_val.fillna(0, inplace=True)
-
-    # Separate features (X) and target (y)
-    # Ensure all expected features are present, fill with 0 if not
-    missing_features = set(feature_names) - set(df_val.columns)
-    if missing_features:
-        print(f"Warning: {len(missing_features)} features missing from validation data. Filling with 0.")
-        for col in missing_features:
-            df_val[col] = 0.0
-
-    # Ensure correct feature order
-    X_val = df_val[feature_names]
-    y_val = df_val[TARGET_VARIABLE]
-
-    print(f"Prepared {len(X_val)} validation samples.")
-
-    # --- 3. Run Predictions ---
-    print("Running predictions...")
-    try:
-        predictions = model.predict(X_val)
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        print("This might be a feature mismatch error. Ensure the .json file is correct.")
-        return
-
-    # --- 4. Calculate and Display Metrics ---
-    mae = mean_absolute_error(y_val, predictions)
-    r2 = r2_score(y_val, predictions)
-    
-    print("\n--- Model Evaluation Results ---")
-    print(f"✅ Mean Absolute Error (MAE): {mae:.4f}")
-    print(f"✅ R-squared (R²): {r2:.4f}")
-
-    # --- 5. Show Prediction Examples ---
-    print("\n--- Prediction Examples (Actual vs. Predicted) ---")
-    df_results = pd.DataFrame({
-        'player_name': df_val['player_name'],
-        'week': df_val['week'],
-        'actual_points': y_val,
-        'predicted_points': predictions
-    })
-    df_results['error'] = (df_results['predicted_points'] - df_results['actual_points']).abs()
-    
-    # Sort by error to see the worst misses
-    df_results_sorted = df_results.sort_values(by='error', ascending=False)
-    
-    print("\nTop 10 Worst Misses (Highest Error):")
-    print(df_results_sorted.head(10).to_string(index=False, float_format="%.2f"))
-    
-    print("\nTop 10 Best Hits (Lowest Error):")
-    print(df_results_sorted.tail(10).to_string(index=False, float_format="%.2f"))
+    for pos in ['QB', 'RB', 'WR', 'TE']:
+        evaluate_position(pos, POSITION_CONFIG[pos])
 
 if __name__ == "__main__":
     main()

@@ -1,17 +1,23 @@
-# build_modeling_dataset.py (v7 - Definitive Final Version)
 import pandas as pd
 from pathlib import Path
 import logging
+import os
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 
 # --- 1. CONFIGURATION ---
-DATA_FOLDER = Path("data")
-OUTPUT_PATH = Path("weekly_modeling_dataset.csv")
+load_dotenv()
+DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
 
-PATHS = {
-    'player_yearly': DATA_FOLDER / "yearly_player_stats_offense.csv",
-    'player_weekly': DATA_FOLDER / "weekly_player_stats_offense.csv",
-    'team_offense_weekly': DATA_FOLDER / "weekly_team_stats_offense.csv",
-    'team_defense_weekly': DATA_FOLDER / "weekly_team_stats_defense.csv",
+# Local Fallback Paths
+DATA_FOLDER = Path(__file__).parent / "data"
+OUTPUT_CSV_PATH = Path("weekly_modeling_dataset.csv")
+
+# Mapping: Config Key -> (DB Table Name, Local Filename)
+DATA_SOURCES = {
+    'player_weekly':       ('training_player_weekly', 'weekly_player_stats_offense.csv'),
+    'team_offense_weekly': ('training_team_offense', 'weekly_team_stats_offense.csv'),
+    'team_defense_weekly': ('training_team_defense', 'weekly_team_stats_defense.csv'),
 }
 
 ROLLING_WINDOW_SIZE = 4
@@ -19,129 +25,168 @@ PLAYER_ID_COLS = ['player_id', 'season', 'week']
 TARGET_COL = 'fantasy_points_ppr'
 RENAMED_TARGET_COL = f'y_{TARGET_COL}'
 PLAYER_STATS_TO_ROLL = [TARGET_COL, 'targets', 'receptions', 'rushing_yards', 'receiving_yards']
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def get_db_engine():
+    if not DB_CONNECTION_STRING: return None
+    return create_engine(DB_CONNECTION_STRING)
 
-# --- HELPER FUNCTIONS ---
+def standardize_columns(key, df):
+    """
+    Ensures columns loaded from DB match the names expected by the logic.
+    """
+    if key == 'team_defense_weekly':
+        # DB uses 'def_sacks', Logic uses 'sack'
+        rename_map = {
+            'def_sacks': 'sack', 
+            'def_interceptions': 'interception', 
+            'def_qb_hits': 'qb_hit'
+        }
+        return df.rename(columns=rename_map)
+    
+    if key == 'team_offense_weekly':
+        # DB uses 'points_scored', Logic uses 'total_off_points'
+        rename_map = {'points_scored': 'total_off_points'}
+        return df.rename(columns=rename_map)
+        
+    return df
 
-def load_data(paths: dict[str, Path]) -> dict[str, pd.DataFrame]:
-    """Loads all required CSV files into a dictionary of DataFrames."""
-    logging.info("Loading all data sources...")
-    try:
-        # Using low_memory=False to prevent dtype warnings on large, mixed-type files
-        dataframes = {name: pd.read_csv(path, low_memory=False) for name, path in paths.items()}
-        logging.info("All files loaded successfully.")
-        return dataframes
-    except FileNotFoundError as e:
-        logging.error(f"Could not find the file '{e.filename}'. Check paths in CONFIG.")
-        raise
+def load_data_smart() -> dict[str, pd.DataFrame]:
+    """Loads data with a 'DB First, Local Fallback' strategy."""
+    logging.info("Loading data sources...")
+    data = {}
+    engine = get_db_engine()
+    
+    for key, (table_name, filename) in DATA_SOURCES.items():
+        loaded = False
+        
+        # 1. Try Database
+        if engine:
+            try:
+                logging.info(f"   Attempting to load '{key}' from DB table '{table_name}'...")
+                # Check if table exists
+                with engine.connect() as conn:
+                    exists = conn.execute(text(f"SELECT to_regclass('public.{table_name}')")).scalar()
+                    
+                if exists:
+                    df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
+                    # Standardize column names to match legacy logic
+                    data[key] = standardize_columns(key, df)
+                    logging.info(f"     ✅ Loaded {len(data[key])} rows from DB.")
+                    loaded = True
+                else:
+                    logging.warning(f"     ⚠️ Table '{table_name}' not found in DB.")
+            except Exception as e:
+                logging.warning(f"     ⚠️ DB Error for '{key}': {e}")
+        
+        # 2. Fallback to Local
+        if not loaded:
+            local_path = DATA_FOLDER / filename
+            logging.info(f"   🔄 Falling back to local file: {filename}")
+            if local_path.exists():
+                try:
+                    data[key] = pd.read_csv(local_path, low_memory=False)
+                    logging.info(f"     ✅ Loaded {len(data[key])} rows from local CSV.")
+                    loaded = True
+                except Exception as e:
+                    logging.error(f"     ❌ Error reading local file: {e}")
+            else:
+                logging.error(f"     ❌ File not found locally: {local_path}")
+                
+        if not loaded:
+            raise FileNotFoundError(f"Could not load '{key}' from DB or Local.")
+
+    return data
 
 def get_weekly_opponents(team_offense_df: pd.DataFrame) -> pd.DataFrame:
-    """Identifies the opponent for each team in each game."""
     logging.info("Identifying weekly opponents...")
+    # Normalize 'team' vs 'team_abbr'
+    if 'team_abbr' in team_offense_df.columns: 
+        team_offense_df = team_offense_df.rename(columns={'team_abbr': 'team'})
+        
     team_map = team_offense_df[['game_id', 'season', 'week', 'team']].copy()
-    
     opponents_df = pd.merge(team_map, team_map.rename(columns={'team': 'opponent'}), on=['game_id', 'season', 'week'])
     opponents_df = opponents_df[opponents_df['team'] != opponents_df['opponent']].copy()
-    
-    assert 'opponent' in opponents_df.columns, "Failed to create opponent column."
     return opponents_df
 
-def engineer_rolling_defense_features(team_offense_df: pd.DataFrame, team_defense_df: pd.DataFrame, opponents_df: pd.DataFrame, player_weekly_df: pd.DataFrame) -> pd.DataFrame:
-    """Calculates rolling averages for a comprehensive set of defensive stats."""
+def engineer_rolling_defense_features(team_offense_df, team_defense_df, opponents_df, player_weekly_df):
     logging.info("Engineering rolling features for opponent defenses...")
     
+    # Normalization
+    if 'team_abbr' in team_offense_df.columns: team_offense_df = team_offense_df.rename(columns={'team_abbr': 'team'})
+    if 'team_abbr' in team_defense_df.columns: team_defense_df = team_defense_df.rename(columns={'team_abbr': 'team'})
+    
     # Part A: General Offensive Stats Allowed
+    # Note: 'total_off_points' comes from our standardize_columns function
     off_stats_for_def = team_offense_df[['game_id', 'team', 'passing_yards', 'rushing_yards', 'total_off_points']].copy()
     def_merged_df = pd.merge(opponents_df, off_stats_for_def.rename(columns={'team': 'opponent'}), on=['game_id', 'opponent'])
     def_merged_df.rename(columns={'passing_yards': 'passing_yards_allowed', 'rushing_yards': 'rushing_yards_allowed', 'total_off_points': 'points_allowed'}, inplace=True)
 
-    # Part B: Direct Defensive Stats (sacks, interceptions, qb_hits)
-    logging.info("Incorporating direct defensive stats (sacks, interceptions, QB hits)...")
+    # Part B: Direct Defensive Stats
     direct_def_stats = team_defense_df[['season', 'week', 'team', 'sack', 'interception', 'qb_hit']].copy()
     def_merged_df = pd.merge(def_merged_df, direct_def_stats, on=['season', 'week', 'team'], how='left')
 
-    # Part C: Position-Specific Fantasy Points Allowed
-    logging.info("Engineering position-specific fantasy points allowed...")
-    pos_points_scored = player_weekly_df.groupby(['season', 'week', 'team', 'position'])['fantasy_points_ppr'].sum().reset_index()
-    pos_points_allowed = pd.merge(pos_points_scored, opponents_df[['season', 'week', 'team', 'opponent']], on=['season', 'week', 'team'])
-    pos_points_allowed.rename(columns={'fantasy_points_ppr': 'points_allowed_to_pos', 'opponent': 'defensive_team'}, inplace=True)
-    pos_points_allowed.sort_values(by=['defensive_team', 'position', 'season', 'week'], inplace=True)
-    pos_points_allowed['rolling_avg_points_allowed_to_pos'] = pos_points_allowed.groupby(['defensive_team', 'position'])['points_allowed_to_pos'].shift(1).rolling(4, min_periods=1).mean()
-    
-    pivoted_pos_df = pos_points_allowed.pivot_table(index=['season', 'week', 'defensive_team'], columns='position', values='rolling_avg_points_allowed_to_pos').reset_index()
-    pivoted_pos_df.columns = [f"rolling_avg_points_allowed_to_{col}" if col not in ['season', 'week', 'defensive_team'] else col for col in pivoted_pos_df.columns]
-    
-    def_merged_df = pd.merge(def_merged_df, pivoted_pos_df.rename(columns={'defensive_team': 'team'}), on=['season', 'week', 'team'], how='left')
-    
-    # Part D: Calculate Rolling Averages for ALL Defensive Stats
+    # Part D: Calculate Rolling Averages
     def_merged_df.sort_values(by=['team', 'season', 'week'], inplace=True)
     stats_to_roll = ['passing_yards_allowed', 'rushing_yards_allowed', 'points_allowed', 'sack', 'interception', 'qb_hit']
     for stat in stats_to_roll:
-        def_merged_df[stat].fillna(0, inplace=True)
-        def_merged_df[f'rolling_avg_{stat}_4_weeks'] = def_merged_df.groupby('team')[stat].shift(1).rolling(4, min_periods=1).mean()
+        if stat in def_merged_df.columns:
+            def_merged_df[stat] = def_merged_df[stat].fillna(0)
+            def_merged_df[f'rolling_avg_{stat}_4_weeks'] = def_merged_df.groupby('team')[stat].shift(1).rolling(4, min_periods=1).mean()
 
     return def_merged_df
 
 def engineer_rolling_player_features(player_weekly_df: pd.DataFrame) -> pd.DataFrame:
-    """Calculates rolling average of key offensive stats for each player."""
     logging.info("Engineering rolling features for players...")
     df = player_weekly_df.copy()
     df.sort_values(by=PLAYER_ID_COLS, inplace=True)
     
     for stat in PLAYER_STATS_TO_ROLL:
-        col_name = f'rolling_avg_{stat}_{ROLLING_WINDOW_SIZE}_weeks'
-        df[col_name] = df.groupby('player_id')[stat].shift(1).rolling(window=ROLLING_WINDOW_SIZE, min_periods=1).mean()
-        
+        if stat in df.columns:
+            col_name = f'rolling_avg_{stat}_{ROLLING_WINDOW_SIZE}_weeks'
+            df[col_name] = df.groupby('player_id')[stat].shift(1).rolling(window=ROLLING_WINDOW_SIZE, min_periods=1).mean()
     return df
 
 def combine_datasets(dataframes: dict, opponents_df: pd.DataFrame, defense_features_df: pd.DataFrame) -> pd.DataFrame:
-    """Merges all player, team, and opponent data, including team offensive context."""
-    logging.info("Merging all data into the master modeling dataset...")
-    
+    logging.info("Merging master dataset...")
     master_df = dataframes['player_weekly']
     master_df = pd.merge(master_df, opponents_df[['season', 'week', 'team', 'opponent']], on=['season', 'week', 'team'], how='left')
     
-    # Merge defensive stats for the opponent
     cols_to_merge = [col for col in defense_features_df.columns if 'rolling_avg' in col] + ['season', 'week', 'team']
     def_stats_to_merge = defense_features_df[cols_to_merge].drop_duplicates().copy()
     def_stats_to_merge.rename(columns={'team': 'opponent'}, inplace=True)
     master_df = pd.merge(master_df, def_stats_to_merge, on=['season', 'week', 'opponent'], how='left')
     
-    # Merge offensive context for the PLAYER'S OWN TEAM
-    logging.info("Adding player's team offensive context (pass pct, total yards)...")
-    team_off_context = dataframes['team_offense_weekly'][['season', 'week', 'team', 'pass_pct', 'total_off_yards']].copy()
-    master_df = pd.merge(master_df, team_off_context, on=['season', 'week', 'team'], how='left')
-    
     return master_df
 
 def finalize_dataset(master_df: pd.DataFrame) -> pd.DataFrame:
-    """Renames target and drops rows with missing essential rolling data."""
-    logging.info("Finalizing dataset: renaming target and cleaning rows...")
+    logging.info("Finalizing dataset...")
+    if TARGET_COL in master_df.columns:
+        master_df.rename(columns={TARGET_COL: RENAMED_TARGET_COL}, inplace=True)
     
-    master_df.rename(columns={TARGET_COL: RENAMED_TARGET_COL}, inplace=True)
-    
-    essential_rolling_features = [f'rolling_avg_{s}_{ROLLING_WINDOW_SIZE}_weeks' for s in PLAYER_STATS_TO_ROLL]
-    final_df = master_df.dropna(subset=essential_rolling_features)
-    
-    return final_df
-
+    # For training, drop rows without history. For inference, keep them.
+    # We will keep them for now and let the model handle NaNs or fill 0.
+    return master_df
 
 def main():
-    """Main function to execute the data preparation pipeline."""
-    logging.info("--- Starting Master Dataset Construction ---")
+    logging.info("--- Starting Master Dataset Construction (Hybrid) ---")
     
-    all_data = load_data(PATHS)
+    all_data = load_data_smart()
+    
+    # Execute Logic
     opponents = get_weekly_opponents(all_data['team_offense_weekly'])
     rolling_def_feats = engineer_rolling_defense_features(all_data['team_offense_weekly'], all_data['team_defense_weekly'], opponents, all_data['player_weekly'])
     all_data['player_weekly'] = engineer_rolling_player_features(all_data['player_weekly'])
+    
     master_dataset = combine_datasets(all_data, opponents, rolling_def_feats)
     final_dataset = finalize_dataset(master_dataset)
 
-    final_dataset.to_csv(OUTPUT_PATH, index=False)
-    logging.info(f"--- Master Dataset Construction Complete ---")
-    logging.info(f"Successfully saved '{OUTPUT_PATH}' with {len(final_dataset)} rows and {len(final_dataset.columns)} columns.")
-
+    # Save to Local CSV (ETL will handle upload)
+    final_dataset.to_csv(OUTPUT_CSV_PATH, index=False)
+    
+    logging.info(f"--- Complete ---")
+    logging.info(f"Successfully saved '{OUTPUT_CSV_PATH}' with {len(final_dataset)} rows.")
 
 if __name__ == "__main__":
     main()

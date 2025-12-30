@@ -11,236 +11,285 @@ import asyncio
 import requests
 import numpy as np
 import subprocess
-import threading
+import traceback
 from contextlib import asynccontextmanager
 import nflreadpy as nfl
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
+from difflib import get_close_matches
+import math
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION & SETUP ---
 load_dotenv()
 DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
 if not DB_CONNECTION_STRING:    
-    sys.exit("Error: DB_CONNECTION_STRING not found.")
+    print("⚠️ Warning: DB_CONNECTION_STRING not found. Server will rely on local CSVs.")
 
+# Paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, '..'))
-dataPrep_dir = os.path.abspath(os.path.join(current_dir, '..', 'dataPrep'))
 RAG_DIR = os.path.join(PROJECT_ROOT, 'rag_data')
 MODEL_DIR = os.path.join(PROJECT_ROOT, 'model_training', 'models')
+ETL_SCRIPT_PATH = os.path.abspath(os.path.join(RAG_DIR, '05_etl_to_postgres.py'))
 
-# Correctly locate the ETL script
-ETL_SCRIPT_PATH = os.path.abspath(os.path.join(current_dir, '..', 'rag_data', '05_etl_to_postgres.py'))
+# --- 2. DYNAMIC SEASON LOGIC ---
+def get_current_season():
+    """Determines the active NFL season based on the current date."""
+    now = datetime.now()
+    if now.month >= 3: return now.year
+    else: return now.year - 1
 
-if dataPrep_dir not in sys.path: sys.path.insert(0, dataPrep_dir)
+CURRENT_SEASON = get_current_season()
+print(f"🏈 Server initialized for NFL Season: {CURRENT_SEASON}")
 
-try:
-    from feature_generator_timeseries import generate_features_all
-except ImportError:
-    print("Warning: feature_generator_timeseries not found.")
-
-# --- 2. CONSTANTS ---
-CURRENT_SEASON = 2025
+# --- 3. CONSTANTS & MAPPINGS ---
 MAE_VALUES = {'QB': 4.30, 'RB': 5.19, 'WR': 4.33, 'TE': 4.34}
 META_MAE_VALUES = {'QB': 4.79, 'RB': 3.66, 'WR': 2.88, 'TE': 2.41}
 WATCHLIST_FILE = os.path.join(RAG_DIR, 'watchlist.json')
 
+TEAM_ABBR_MAP = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
+    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
+    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs": "KC", "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
+    "Los Angeles Rams": "LA", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
+    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
+    "San Francisco 49ers": "SF", "Seattle Seahawks": "SEA", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS"
+}
+
 MODELS_CONFIG = {
-    'QB': {'model': os.path.join(MODEL_DIR, 'xgboost_QB_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_QB_sliding_window_v1(TimeSeries).json')},
-    'RB': {'model': os.path.join(MODEL_DIR, 'xgboost_RB_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_RB_sliding_window_v1(TimeSeries).json')},
-    'WR': {'model': os.path.join(MODEL_DIR, 'xgboost_WR_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_WR_sliding_window_v1(TimeSeries).json')},
-    'TE': {'model': os.path.join(MODEL_DIR, 'xgboost_TE_sliding_window_v1(TimeSeries).joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_TE_sliding_window_v1(TimeSeries).json')}
+    'QB': {'model': os.path.join(MODEL_DIR, 'xgboost_QB_sliding_window_deviation_v1.joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_QB_sliding_window_deviation_v1.json')},
+    'RB': {'model': os.path.join(MODEL_DIR, 'xgboost_RB_sliding_window_deviation_v1.joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_RB_sliding_window_deviation_v1.json')},
+    'WR': {'model': os.path.join(MODEL_DIR, 'xgboost_WR_sliding_window_deviation_v1.joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_WR_sliding_window_deviation_v1.json')},
+    'TE': {'model': os.path.join(MODEL_DIR, 'xgboost_TE_sliding_window_deviation_v1.joblib'), 'features': os.path.join(MODEL_DIR, 'feature_names_TE_sliding_window_deviation_v1.json')}
 }
 META_MODEL_PATH = os.path.join(MODEL_DIR, 'xgboost_META_model_v1.joblib')
 META_FEATURES_PATH = os.path.join(MODEL_DIR, 'feature_names_META_model_v1.json')
 
 model_data = {}
 
-# --- HELPER: Refresh Database Data (Crucial for Startup) ---
+# --- 4. DATA LOADING HELPER FUNCTIONS ---
+def enforce_types(df: pl.DataFrame) -> pl.DataFrame:
+    """Ensures consistent data types for critical columns."""
+    if df.is_empty(): return df
+    cols = df.columns
+    exprs = []
+    
+    # Force IDs to String
+    if "player_id" in cols: exprs.append(pl.col("player_id").cast(pl.Utf8).str.strip_chars())
+    
+    # Force Week/Season to Int
+    if "week" in cols: exprs.append(pl.col("week").fill_null(-1).cast(pl.Int64, strict=False))
+    if "season" in cols: exprs.append(pl.col("season").fill_null(-1).cast(pl.Int64, strict=False))
+    
+    if exprs:
+        try: return df.with_columns(exprs)
+        except Exception: return df
+    return df
+
+def normalize_name(name):
+    if not name: return ""
+    return str(name).lower().replace(".", "").replace(" ", "").strip()
+
+def get_team_abbr(raw_team):
+    clean = str(raw_team).strip()
+    return TEAM_ABBR_MAP.get(clean, clean)
+
+def load_data_source(query: str, csv_filename: str):
+    if DB_CONNECTION_STRING:
+        try:
+            df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+            return enforce_types(df)
+        except Exception as e:
+            if "relation" not in str(e):
+                print(f"   ⚠️ DB Load Failed for {csv_filename}: {e}")
+    
+    csv_path = os.path.join(RAG_DIR, csv_filename)
+    if os.path.exists(csv_path):
+        try:
+            df = pl.read_csv(csv_path, ignore_errors=True)
+            return enforce_types(df)
+        except Exception as e:
+            print(f"   ❌ CSV Load Failed: {csv_filename} - {e}")
+    return pl.DataFrame()
+
 def refresh_db_data():
-    """Reloads all dataframes from Postgres. Runs ONCE at startup and after ETL."""
-    print("🔄 [System] Loading Dataframes from Database...")
-    queries = {
-        "df_profile": "SELECT * FROM player_profiles",
-        "df_schedule": "SELECT * FROM schedule",
-        "df_player_stats": "SELECT * FROM weekly_player_stats",
-        "df_snap_counts": "SELECT * FROM weekly_snap_counts",
-        "df_odds": "SELECT * FROM weekly_player_odds",
-        "df_defense": "SELECT * FROM weekly_defense_stats",
-        "df_offense": "SELECT * FROM weekly_offense_stats",
-        "df_overunder": "SELECT * FROM schedule",
-        "df_injuries": f"SELECT * FROM weekly_injuries_{CURRENT_SEASON}",
-        "df_game_spreads": "SELECT week, home_team, away_team, over_under FROM schedule WHERE over_under IS NOT NULL"
+    print("🔄 [System] Loading Dataframes...")
+    sources = {
+        "df_profile": ("SELECT * FROM player_profiles", f"player_profiles_{CURRENT_SEASON}.csv"),
+        "df_schedule": ("SELECT * FROM schedule", f"schedule_{CURRENT_SEASON}.csv"),
+        "df_player_stats": ("SELECT * FROM weekly_player_stats", f"weekly_player_stats_{CURRENT_SEASON}.csv"),
+        "df_snap_counts": ("SELECT * FROM weekly_snap_counts", f"weekly_snap_counts_{CURRENT_SEASON}.csv"),
+        "df_lines": ("SELECT * FROM bovada_game_lines", f"weekly_bovada_game_lines_{CURRENT_SEASON}.csv"),
+        "df_props": ("SELECT * FROM bovada_player_props", f"weekly_bovada_player_props_{CURRENT_SEASON}.csv"),
+        "df_injuries": ("SELECT * FROM weekly_injuries", f"weekly_injuries_{CURRENT_SEASON}.csv"),
+        "df_features": (f"SELECT * FROM weekly_feature_set_{CURRENT_SEASON}", f"weekly_feature_set_{CURRENT_SEASON}.csv"),
     }
     
-    for key, query in queries.items():
+    for key, (query, csv) in sources.items():
+        model_data[key] = load_data_source(query, csv)
+
+    # --- BUILD INJURY MAP (ROBUST FIX) ---
+    model_data["injury_map"] = {}
+    model_data["gsis_to_sleeper"] = {}
+    
+    if "df_injuries" in model_data and not model_data["df_injuries"].is_empty():
         try:
-            model_data[key] = pl.read_database_uri(query, DB_CONNECTION_STRING)
-        except Exception as e:
-            print(f"⚠️ {key} load failed: {e}")
-            model_data[key] = pl.DataFrame()
+            df = model_data["df_injuries"]
+            
+            # 1. Check if 'week' column exists (New Format)
+            if "week" in df.columns:
+                # Find the LATEST week available in the file
+                max_wk = df.select(pl.col("week").max()).item()
+                print(f"   🚑 Filtering Injury Map to Latest Week: {max_wk}")
+                latest_report = df.filter(pl.col("week") == max_wk)
+                
+                rows = latest_report.select(["player_id", "injury_status"]).to_dicts()
+                model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
+            else:
+                # Fallback for old CSVs without week column
+                print("   ⚠️ Injury CSV lacks 'week' column. Loading all rows (Last write wins).")
+                rows = df.select(["player_id", "injury_status"]).to_dicts()
+                model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
+                
+        except Exception as e: 
+            print(f"   ❌ Injury Map Build Error: {e}")
 
-    # DEBUG: Check loaded schedule weeks to ensure Week 16 exists
     try:
-        if not model_data["df_schedule"].is_empty():
-            weeks = sorted(model_data["df_schedule"]["week"].unique().to_list())
-            print(f"✅ Schedule Loaded: Weeks {weeks[:1]}...{weeks[-1:]} (Total {len(weeks)} games)")
-        else:
-            print("⚠️ Schedule DataFrame is EMPTY!")
-    except: pass
+        players_df = nfl.load_ff_playerids()
+        if "sleeper_id" in players_df.columns:
+            map_df = players_df.drop_nulls(subset=['sleeper_id', 'gsis_id'])
+            model_data["gsis_to_sleeper"] = dict(zip(map_df['gsis_id'].to_list(), map_df['sleeper_id'].cast(pl.Utf8).to_list()))
+            model_data["sleeper_map"] = dict(zip(map_df['sleeper_id'].cast(pl.Utf8).to_list(), map_df['gsis_id'].to_list()))
+    except Exception: pass
 
-    # Re-build Injury Map
-    try:
-        if "df_injuries" in model_data and not model_data["df_injuries"].is_empty():
-            inj = model_data["df_injuries"].select(['gsis_id', 'report_status']).drop_nulls()
-            model_data["injury_map"] = dict(zip(inj['gsis_id'], inj['report_status']))
-        else:
-            model_data["injury_map"] = {}
-    except:
-        model_data["injury_map"] = {}
-    
-    print("✅ [System] Database Refresh Complete.")
+    print("✅ [System] Data Loaded.")
 
-# --- HELPER: Refresh State (Week & IDs) ---
 def refresh_app_state():
-    """Updates the dynamic variables like Current Week and ID Maps."""
-    print("🔄 [Scheduler] Refreshing App State (Week & IDs)...")
-    
-    # 1. Update Week
+    print("🔄 [Scheduler] Refreshing App State...")
     try:
         base_week = nfl.get_current_week()
-        
-        # --- TUESDAY LOGIC ---
         if datetime.now().weekday() == 1: 
-            print(f"📅 Tuesday Detected: Advancing Week from {base_week} to {base_week + 1}")
             model_data["current_nfl_week"] = base_week + 1
         else:
             model_data["current_nfl_week"] = base_week
-            
         print(f"✅ Active NFL Week: {model_data['current_nfl_week']}")
-    except Exception as e:
-        print(f"⚠️ Failed to detect week: {e}")
-        if "current_nfl_week" not in model_data:
-            model_data["current_nfl_week"] = 1
+    except Exception:
+        model_data["current_nfl_week"] = 1
 
-    # 2. Update ID Map
-    print("📥 Downloading/Refreshing Player ID Map...")
-    try:
-        players_df = nfl.load_ff_playerids()
-        if "sleeper_id" in players_df.columns and "gsis_id" in players_df.columns:
-            map_df = players_df.drop_nulls(subset=['sleeper_id', 'gsis_id'])
-            sleeper_ids = map_df['sleeper_id'].cast(pl.Utf8).to_list()
-            gsis_ids = map_df['gsis_id'].to_list()
-            
-            model_data["sleeper_map"] = dict(zip(sleeper_ids, gsis_ids))
-            print(f"✅ ID Map Ready ({len(model_data['sleeper_map'])} players mapped)")
-        else:
-            print("⚠️ ID Map columns missing.")
-    except Exception as e:
-        print(f"⚠️ ID Map Download Failed: {e}")
-        if "sleeper_map" not in model_data:
-            model_data["sleeper_map"] = {}
-
-# --- ETL Runner Function ---
-def run_daily_etl():
-    """Runs the 05_etl_to_postgres.py script as a subprocess."""
-    print("\n⏰ [Scheduler] Starting Daily ETL Pipeline...")
-    
+# --- Updated Non-Blocking ETL Function ---
+async def run_daily_etl_async():
+    """Executes the ETL script without blocking the main FastAPI event loop."""
+    print(f"\n⏰ [Scheduler] Starting Daily ETL Pipeline at {datetime.now()}...")
     if not os.path.exists(ETL_SCRIPT_PATH):
-        print(f"❌ [Scheduler] ETL Script not found at: {ETL_SCRIPT_PATH}")
+        print(f"❌ ETL Script not found at: {ETL_SCRIPT_PATH}")
         return
 
     try:
-        # Run script using current Python interpreter
-        result = subprocess.run([sys.executable, ETL_SCRIPT_PATH], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print("✅ [Scheduler] Daily ETL Finished Successfully.")
-            print(result.stdout[-300:]) 
-            
-            # --- CRITICAL: Refresh Data AFTER ETL finishes ---
+        # Launch the process asynchronously
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, ETL_SCRIPT_PATH,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            print("✅ ETL Process Finished Successfully")
             refresh_app_state()
             refresh_db_data()
         else:
-            print(f"❌ [Scheduler] ETL Failed with code {result.returncode}")
-            print(result.stderr)
-            
+            print(f"❌ ETL Process exited with code {process.returncode}")
+            if stderr: print(f"STDERR: {stderr.decode()}")
     except Exception as e:
-        print(f"❌ [Scheduler] Exception running ETL: {e}")
+        print(f"❌ Error during async ETL: {e}")
 
-# --- 3. LIFESPAN ---
+def etl_trigger_wrapper():
+    """Bridge for APScheduler thread to async ETL."""
+    try:
+        asyncio.run(run_daily_etl_async())
+    except Exception as e:
+        print(f"❌ Scheduler Bridge Error: {e}")
+
+# --- LIFESPAN MANAGER ---
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- STARTUP ---
     print("--- 🚀 Server Startup Sequence ---")
-    
     try:
-        # 1. Load Static Models
-        print("1️⃣  Loading ML Models...")
+        # 1. Load ML Models
         model_data["models"] = {}
         for pos, paths in MODELS_CONFIG.items():
             if os.path.exists(paths['model']):
                 model_data["models"][pos] = {
-                    "model": joblib.load(paths['model']),
+                    "model": joblib.load(paths['model']), 
                     "features": json.load(open(paths['features']))
                 }
         
         if os.path.exists(META_MODEL_PATH):
             model_data["meta_models"] = joblib.load(META_MODEL_PATH)
             model_data["meta_features"] = json.load(open(META_FEATURES_PATH))
-
-        # 2. Get Week & IDs
-        print("2️⃣  Detecting Week & IDs...")
+            
+        # 2. Initial Data Load
         refresh_app_state()
-
-        # 3. Load DB Data (BLOCKING) - Ensures schedule exists before server starts
-        print("3️⃣  Loading Database Data (Wait for it)...")
         refresh_db_data()
+        
+        # 3. Setup Scheduler
+        scheduler = BackgroundScheduler()
+        # Set for 6 AM
+        scheduler.add_job(etl_trigger_wrapper, 'cron', hour=6, minute=0) 
+        scheduler.add_job(refresh_app_state, 'interval', hours=1) 
+        scheduler.start()
+        print("📅 Scheduler active: ETL set for 06:00 daily.")
+        
+        # Store scheduler in app state so we can shut it down
+        app.state.scheduler = scheduler
 
     except Exception as e:
         print(f"❌ Startup Error: {e}")
-        sys.exit(1)
+        traceback.print_exc()
 
-    # --- A. SETUP SCHEDULER ---
-    scheduler = BackgroundScheduler()
-    # Run ETL every day at 5:00 AM
-    scheduler.add_job(run_daily_etl, 'cron', hour=5, minute=0)
-    # Refresh Week/IDs every hour
-    scheduler.add_job(refresh_app_state, 'interval', hours=1)
-    scheduler.start()
-    print("🕒 Scheduler started.")
+    yield # --- SERVER IS RUNNING ---
 
-    # --- B. RUN BACKGROUND ETL ---
-    # Now that we have loaded the "old" data, we can start the ETL refresh in the background
-    print("⚡ Triggering Background ETL Update...")
-    startup_etl_thread = threading.Thread(target=run_daily_etl)
-    startup_etl_thread.start()
-    
-    print("🚀 Server Ready to Accept Requests!")
-    yield
-    
-    scheduler.shutdown()
+    # --- SHUTDOWN ---
+    print("--- 🛑 Server Shutdown Sequence ---")
+    if hasattr(app.state, "scheduler"):
+        app.state.scheduler.shutdown()
     model_data.clear()
 
+# --- INITIALIZE APP ---
+# This MUST come after the lifespan function but before any @app.get decorators
 app = FastAPI(lifespan=lifespan)
+
+# Add Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
-# --- 4. CORE LOGIC ---
-
+# --- 6. CORE LOGIC ---
 def get_headshot_url(player_id: str):
+    """Robust Headshot Locator"""
     try:
-        row = model_data["df_profile"].filter(pl.col("player_id") == player_id)
-        if not row.is_empty():
-            db_url = row.row(0, named=True).get("headshot")
-            if db_url: return db_url
+        if "df_profile" in model_data:
+            row = model_data["df_profile"].filter(pl.col("player_id") == player_id)
+            if not row.is_empty():
+                url = row.row(0, named=True).get("headshot")
+                if url and "http" in str(url): return url
     except: pass
-    return f"https://sleepercdn.com/content/nfl/players/{player_id}.jpg"
+
+    sleeper_id = model_data.get("gsis_to_sleeper", {}).get(player_id)
+    if sleeper_id: return f"https://sleepercdn.com/content/nfl/players/{sleeper_id}.jpg"
+    
+    return "https://sleepercdn.com/images/v2/icons/player_default.webp"
 
 def format_draft_info(year, number):
     if year and number and not np.isnan(number):
@@ -250,72 +299,192 @@ def format_draft_info(year, number):
 def calculate_fantasy_points(row):
     try:
         if row.get('y_fantasy_points_ppr') is not None: return float(row['y_fantasy_points_ppr'])
-        if row.get('fantasy_points_ppr') is not None: return float(row['fantasy_points_ppr'])
-        if row.get('fantasy_points') is not None: return float(row['fantasy_points'])
-        
-        p_yds = row.get('passing_yards') or row.get('pass_yds') or 0
+        p_yds = row.get('passing_yards') or 0
         p_tds = row.get('passing_tds') or 0
-        r_yds = row.get('rushing_yards') or row.get('rush_yds') or 0
+        r_yds = row.get('rushing_yards') or 0
         r_tds = row.get('rushing_tds') or 0
-        rec_yds = row.get('receiving_yards') or row.get('rec_yds') or 0
+        rec_yds = row.get('receiving_yards') or 0
         rec_tds = row.get('receiving_tds') or 0
         receptions = row.get('receptions') or 0
         ints = row.get('interceptions') or 0
         fumbles = row.get('fumbles_lost') or 0
-        
-        return (
-            (p_yds * 0.04) + (p_tds * 4.0) + (r_yds * 0.1) + (r_tds * 6.0) + 
-            (rec_yds * 0.1) + (rec_tds * 6.0) + (receptions * 1.0) - 
-            (ints * 2.0) - (fumbles * 2.0)
-        )
+        return ((p_yds * 0.04) + (p_tds * 4.0) + (r_yds * 0.1) + (r_tds * 6.0) + (rec_yds * 0.1) + (rec_tds * 6.0) + (receptions * 1.0) - (ints * 2.0) - (fumbles * 2.0))
     except: return 0.0
 
-def run_base_prediction(pid, pos, week):
-    features, err = generate_features_all(
-        pid, week, model_data["df_profile"], model_data["df_schedule"],
-        model_data["df_player_stats"], model_data["df_defense"],
-        model_data["df_offense"], model_data["df_snap_counts"]
+def get_injury_status_for_week(player_id: str, week: int, default="Active"):
+    """
+    Intelligent Injury Lookup with DEBUGGING logs.
+    """
+    if "df_injuries" not in model_data or model_data["df_injuries"].is_empty():
+        print("   ⚠️ DEBUG: Injury DF is missing or empty!")
+        return default
+
+    df = model_data["df_injuries"]
+    
+    # Debug: Print what we are looking for
+    # print(f"   🔎 DEBUG LOOKUP: Player {player_id}, Week {week}")
+
+    # Safety Check
+    if "week" not in df.columns:
+        print("   ⚠️ DEBUG: 'week' column missing in memory DF.")
+        # Fallback logic
+        record = df.filter(pl.col("player_id") == str(player_id))
+        if not record.is_empty():
+            return record.row(0, named=True).get("injury_status", default)
+        return default
+    
+    # Check Max Week in Memory
+    max_wk = df.select(pl.col("week").max()).item()
+    target_week = int(week)
+    
+    # If Future Week, use Max
+    week_exists = not df.filter(pl.col("week") == int(week)).is_empty()
+    if not week_exists:
+        print(f"   ℹ️ DEBUG: Week {week} not in data. Falling back to Week {max_wk}")
+        target_week = max_wk
+    
+    # Filter
+    record = df.filter(
+        (pl.col("week") == target_week) & 
+        (pl.col("player_id") == str(player_id))
     )
-    if not features: return None, err, None
     
-    if pos not in model_data["models"]: return None, "No Model", None
+    if not record.is_empty():
+        status = record.row(0, named=True).get("injury_status", default)
+        # print(f"   ✅ DEBUG: Found Status '{status}' for Week {target_week}")
+        return status
+    
+    # print(f"   ❌ DEBUG: Player not found in Week {target_week}. Defaulting to Active.")
+    return default
+def run_base_prediction(pid, pos, week):
+    """
+    Looks up features from DB. 
+    1. RECENT FORM: Calculates average of the LAST 4 NON-ZERO GAMES.
+    2. BASELINE CORRECTION: Uses that 4-game average as the starting point.
+    3. LOGARITHMIC BOOST: 5.0 * ln(1 + deviation).
+    4. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
+    """
+    # Initialize defaults
+    features_dict = {}
+    team = None
+    
+    # 1. Try to get features
+    if "df_features" in model_data and not model_data["df_features"].is_empty():
+        player_features = model_data["df_features"].filter(
+            (pl.col("player_id") == str(pid)) & (pl.col("week") == int(week))
+        )
+        if not player_features.is_empty():
+            features_dict = player_features.row(0, named=True)
+            team = features_dict.get('team') or features_dict.get('team_abbr')
+
+    # 2. Fallback: Get Team/Pos from Profile
+    if not team:
+        prof = model_data["df_profile"].filter(pl.col("player_id") == str(pid))
+        if not prof.is_empty():
+            p_row = prof.row(0, named=True)
+            team = p_row.get('team_abbr') or p_row.get('team')
+        else:
+            return None, "Player Not Found", None, 0.0
+
+    if pos not in model_data["models"]: return None, "No Model", None, 0.0
     m_info = model_data["models"][pos]
-    feats = {k: [features.get(k, 0.0)] for k in m_info["features"]}
-    pred = m_info["model"].predict(pl.DataFrame(feats).to_numpy())[0]
-    return float(pred), None, features
-
-async def get_player_card(player_id: str, week: int):
-    profile = model_data["df_profile"].filter(pl.col('player_id') == player_id)
-    if profile.is_empty(): return None
-    p_row = profile.row(0, named=True)
-    pos, team = p_row['position'], p_row['team_abbr']
-
-    l0_score, err, feats = run_base_prediction(player_id, pos, week)
-    if err: l0_score = 0.0
-
+    
     try:
-        teammates = {'QB': 0.0, 'RB': 0.0, 'WR': 0.0, 'TE': 0.0}
-        teammates[pos] = l0_score or 0.0
-        roster = model_data["df_profile"].filter((pl.col('team_abbr') == team) & (pl.col('status') == 'ACT') & (pl.col('player_id') != player_id))
-        for p_pos in ['QB', 'RB', 'WR', 'TE']:
-            if p_pos == pos: continue
-            mate = roster.filter(pl.col('position') == p_pos).head(1)
-            if not mate.is_empty():
-                m_id = mate.row(0, named=True)['player_id']
-                s, _, _ = run_base_prediction(m_id, p_pos, week)
-                if s: teammates[p_pos] = s
+        # --- 1. RECENT FORM (Last 4 Non-Zero Games) ---
+        history_df = model_data['df_player_stats'].filter(
+            (pl.col('player_id') == str(pid)) & 
+            (pl.col('week') < int(week))
+        )
+        
+        avg_recent_form = 0.0
+        if not history_df.is_empty():
+            sorted_history = history_df.sort("week", descending=True)
+            valid_pts = []
+            for row in sorted_history.iter_rows(named=True):
+                pts = calculate_fantasy_points(row)
+                if pts > 0.0:
+                    valid_pts.append(pts)
+                if len(valid_pts) >= 4:
+                    break
+            
+            if len(valid_pts) > 0:
+                avg_recent_form = sum(valid_pts) / len(valid_pts)
+            else:
+                avg_recent_form = float(features_dict.get('player_season_avg_points', 0.0))
+        else:
+            avg_recent_form = float(features_dict.get('player_season_avg_points', 0.0))
 
-        if pos == 'QB': meta_score = l0_score
-        elif pos in model_data["meta_models"]:
-            meta_in = {f"L0_pred_{k}": [v] for k, v in teammates.items()}
-            meta_input = pl.DataFrame(meta_in).select(model_data["meta_features"]).to_numpy()
-            meta_score = float(model_data["meta_models"][pos].predict(meta_input)[0])
-        else: meta_score = l0_score 
-    except: meta_score = l0_score 
-    
-    mae = META_MAE_VALUES.get(pos, 5.0)
-    
-    avg_points = 0.0
+        # --- 2. MODEL PREDICTION ---
+        pred_dev = 0.0
+        if features_dict:
+            feats_input = {}
+            for k in m_info["features"]:
+                if k == 'player_season_avg_points':
+                    feats_input[k] = [float(avg_recent_form)]
+                else:
+                    feats_input[k] = [float(features_dict.get(k) or 0.0)]
+            
+            try:
+                pred_dev = m_info["model"].predict(pl.DataFrame(feats_input).to_numpy())[0]
+            except: pred_dev = 0.0
+        
+        # --- 3. LOGARITHMIC BOOST ---
+        if pred_dev > 0:
+            amplified_dev = 5.0 * math.log1p(pred_dev)
+        else:
+            amplified_dev = pred_dev 
+        
+        # --- 4. BASELINE CORRECTION ---
+        baseline = avg_recent_form
+
+        # --- 5. USAGE VACUUM LOGIC (Robust Time-Aware) ---
+        injury_boost = 0.0
+        injury_statuses = ["IR", "Out", "Doubtful", "Inactive", "PUP"] 
+        
+        teammates = model_data["df_profile"].filter(
+            (pl.col("team_abbr") == team) & (pl.col("position") == pos) & (pl.col("player_id") != pid)
+        )
+        
+        for mate in teammates.iter_rows(named=True):
+            mate_id = mate['player_id']
+            
+            # USE HELPER FUNCTION for Correct Time Travel Logic
+            status = get_injury_status_for_week(mate_id, week)
+            
+            if any(s in status for s in injury_statuses):
+                mate_stats = model_data["df_player_stats"].filter(
+                    (pl.col("player_id") == mate_id) & (pl.col("week") < int(week))
+                )
+                
+                if not mate_stats.is_empty():
+                    mate_pts = [calculate_fantasy_points(row) for row in mate_stats.to_dicts()]
+                    m_avg = sum(mate_pts) / len(mate_pts) if len(mate_pts) > 0 else 0
+
+                    m_snaps = 0.0
+                    if "df_snap_counts" in model_data:
+                        mate_snaps_df = model_data["df_snap_counts"].filter(
+                            (pl.col("player_id") == mate_id) & (pl.col("week") < int(week))
+                        )
+                        if not mate_snaps_df.is_empty():
+                            m_snaps = mate_snaps_df.select(pl.col("offense_pct")).mean().item()
+                            if m_snaps < 1.0: m_snaps *= 100
+
+                    if m_snaps >= 30 and m_avg >= 10:
+                        injury_boost = 2.5 if pos in ["RB", "QB"] else 1.5
+                        print(f"   💉 BOOST: {pid} boosted by {mate_id} ({status})")
+                        break 
+
+        # --- 6. FINAL SCORE ---
+        final_score = max(0.0, baseline + amplified_dev + injury_boost)
+        is_boosted = injury_boost > 0
+        
+        return round(float(final_score), 2), is_boosted, features_dict, avg_recent_form
+        
+    except Exception as e:
+        print(f"Prediction Error for {pid}: {e}")
+        return 0.0, False, features_dict, 0.0
+def get_average_points_fallback(player_id, week):
+    """Fallback calculation of average points if DB features are missing."""
     try:
         stats_history = model_data['df_player_stats'].filter((pl.col('player_id') == player_id) & (pl.col('week') < week))
         if not stats_history.is_empty():
@@ -325,46 +494,124 @@ async def get_player_card(player_id: str, week: int):
                 if pts > 0 or row.get('offense_snaps', 0) > 0:
                     total_points += pts
                     game_count += 1
-            if game_count > 0: avg_points = total_points / game_count
+            if game_count > 0: return total_points / game_count
     except: pass
+    return 0.0
 
-    snap_count, snap_pct = 0, 0.0
-    try:
-        # Try current week first
-        row = model_data["df_snap_counts"].filter((pl.col("player_id") == player_id) & (pl.col("week") == week))
-        if not row.is_empty(): 
-            d = row.row(0, named=True)
-            snap_count, snap_pct = int(d.get("offense_snaps", 0)), float(d.get("offense_pct", 0.0))
-        else:
-            # FALLBACK: Get average from previous weeks if current week is missing
-            hist_rows = model_data["df_snap_counts"].filter(pl.col("player_id") == player_id)
-            if not hist_rows.is_empty():
-                avg_pct = hist_rows["offense_pct"].mean()
-                snap_pct = float(avg_pct) if avg_pct else 0.0
-    except: pass
-
-    # --- OVER/UNDER LOGIC ---
-    total_line = None
-    try:
-        spread_df = model_data["df_game_spreads"].filter(pl.col("week") == week)
-        game_row = spread_df.filter((pl.col("home_team") == team) | (pl.col("away_team") == team))
-        if not game_row.is_empty():
-            total_line = game_row.row(0, named=True).get("over_under")
-            if total_line is not None: total_line = float(total_line)
-    except Exception as e:
-        print(f"Over/Under lookup error: {e}")
-        total_line = None
+async def get_player_card(player_id: str, week: int):
+    profile = model_data["df_profile"].filter(pl.col('player_id') == player_id)
+    if profile.is_empty(): return None
+    p_row = profile.row(0, named=True)
     
-    opponent = "BYE"
-    try:
-        game = model_data["df_schedule"].filter((pl.col("week") == week) & ((pl.col("home_team") == team) | (pl.col("away_team") == team)))
-        if not game.is_empty(): row = game.row(0, named=True); opponent = row['away_team'] if row['home_team'] == team else row['home_team']
-    except: pass
+    pos = p_row['position']
+    p_name = p_row['player_name']
+    team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
-    injury_status = model_data.get("injury_map", {}).get(player_id, "Active")
+    # --- RUN PREDICTION ---
+    l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week)
+    
+    # --- GET SEASON AVERAGE ---
+    season_avg = 0.0
+    if feats and isinstance(feats, dict) and feats.get("player_season_avg_points", 0) > 0:
+        season_avg = feats["player_season_avg_points"]
+    else:
+        season_avg = get_average_points_fallback(player_id, week)
+
+    if l0_score is None or l0_score == 0.0:
+        l0_score = season_avg if season_avg > 0 else rolling_avg_val
+
+    meta_score = l0_score 
+
+    # --- INJURY STATUS (Use Same Logic as Prediction) ---
+    final_status = get_injury_status_for_week(player_id, week)
+
+    # --- SNAP COUNT FALLBACK ---
+    snap_pct, snap_count = 0.0, 0
+    if feats and isinstance(feats, dict):
+        snap_pct = float(feats.get('offense_pct', 0.0))
+        snap_count = int(feats.get('offense_snaps', 0))
+
+    if snap_count == 0 and "df_snap_counts" in model_data:
+        try:
+            history_snaps = model_data["df_snap_counts"].filter(
+                (pl.col("player_id") == player_id) & 
+                (pl.col("week") < int(week))
+            ).sort("week", descending=True).head(1)
+            
+            if not history_snaps.is_empty():
+                last_game = history_snaps.row(0, named=True)
+                snap_count = int(last_game.get('offense_snaps', 0))
+                snap_pct = float(last_game.get('offense_pct', 0.0))
+        except Exception: pass
+
+    if snap_pct < 1.0 and snap_pct > 0: snap_pct *= 100
+
+    total_line = None 
+    props_data = [] 
+    prop_line = None
+    prop_prob = None
+    pass_td_line = None
+    pass_td_prob = None
+    anytime_td_prob = None
+
+    try:
+        if "df_lines" in model_data and not model_data["df_lines"].is_empty():
+            lines = model_data["df_lines"].filter(
+                (pl.col("week") == int(week)) & 
+                ((pl.col("home_team").map_elements(get_team_abbr, return_dtype=pl.Utf8) == team) | 
+                 (pl.col("away_team").map_elements(get_team_abbr, return_dtype=pl.Utf8) == team))
+            )
+            if not lines.is_empty():
+                total_line = lines.row(0, named=True).get("total_over")
+    except Exception: pass
+
+    try:
+        if "df_props" in model_data and not model_data["df_props"].is_empty():
+            week_props = model_data["df_props"].filter(pl.col("week") == int(week))
+            p_norm = normalize_name(p_name)
+            week_props = week_props.with_columns(
+                pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8).alias("norm_name")
+            )
+            p_props = week_props.filter(pl.col("norm_name") == p_norm)
+
+            if p_props.is_empty():
+                all_names = week_props["player_name"].unique().to_list()
+                matches = get_close_matches(p_name, all_names, n=1, cutoff=0.6)
+                if matches:
+                    p_props = week_props.filter(pl.col("player_name") == matches[0])
+
+            if not p_props.is_empty():
+                props_data = p_props.select(["prop_type", "line", "odds", "implied_prob"]).to_dicts()
+                
+                target_prop = None
+                if pos == 'QB': target_prop = "Passing Yards"
+                elif pos == 'RB': target_prop = "Rushing Yards"
+                elif pos in ['WR', 'TE']: target_prop = "Receiving Yards"
+                
+                if target_prop:
+                    main_p = p_props.filter(pl.col("prop_type").str.contains(target_prop))
+                    if not main_p.is_empty():
+                        row = main_p.row(0, named=True)
+                        prop_line = row['line']
+                        prop_prob = row['implied_prob'] 
+                
+                if pos == 'QB':
+                    td_pass = p_props.filter(pl.col("prop_type").str.contains("Passing Touchdowns"))
+                    if not td_pass.is_empty():
+                        row = td_pass.row(0, named=True)
+                        pass_td_line = row['line']
+                        pass_td_prob = row['implied_prob']
+
+                td_p = p_props.filter(pl.col("prop_type").str.contains("Anytime TD"))
+                if not td_p.is_empty():
+                    anytime_td_prob = td_p.row(0, named=True)['implied_prob']
+
+    except Exception as e: print(f"Props extraction error: {e}")
+
+    opponent = feats.get('opponent_team') if (feats and isinstance(feats, dict)) else "BYE"
 
     return {
-        "player_name": p_row['player_name'],
+        "player_name": p_name,
         "player_id": player_id,
         "position": pos,
         "week": week,
@@ -373,64 +620,74 @@ async def get_player_card(player_id: str, week: int):
         "draft_position": format_draft_info(p_row.get('draft_year'), p_row.get('draft_number')),
         "snap_count": snap_count,
         "snap_percentage": snap_pct,
-        "overunder": total_line,
-        "spread": total_line,
+        "overunder": float(total_line) if total_line else None,
+        "spread": float(total_line) if total_line else None,
+        "props": props_data,
+        "prop_line": prop_line, 
+        "prop_prob": prop_prob,
+        "pass_td_line": pass_td_line, 
+        "pass_td_prob": pass_td_prob, 
+        "anytime_td_prob": anytime_td_prob,
         "image": get_headshot_url(player_id),
-        "prediction": round(meta_score + mae, 2),  
-        "floor_prediction": round(meta_score, 2),
-        "average_points": round(avg_points, 1),
-        "injury_status": injury_status
+        "prediction": round(meta_score, 2),  
+        "floor_prediction": round(meta_score * 0.8, 2),
+        "average_points": round(season_avg, 1), 
+        "rolling_4wk_avg": round(rolling_avg_val, 1), 
+        "is_injury_boosted": is_boosted, 
+        "injury_status": final_status, 
+        "debug_err": None 
     }
-
 async def get_team_roster_cards(team_abbr: str, week: int):
-    composition = {"QB": 5, "RB": 5, "WR": 5, "TE": 5}
+    composition = {"QB": 4, "RB": 8, "WR": 8, "TE": 5}
     roster_result = []
+    
+    ranked = pl.DataFrame()
     try:
         q = f"SELECT player_id, position FROM weekly_rankings WHERE week={week} AND team_abbr='{team_abbr}' ORDER BY predicted_points DESC"
         ranked = pl.read_database_uri(q, DB_CONNECTION_STRING)
-    except: ranked = pl.DataFrame()
+    except: pass
+
     if ranked.is_empty():
-        ranked = model_data["df_profile"].filter((pl.col("team_abbr") == team_abbr) & (pl.col("status") == "ACT")).select(["player_id", "position"])
+        team_col = "team_abbr" if "team_abbr" in model_data["df_profile"].columns else "team"
+        candidates = model_data["df_profile"].filter(
+            (pl.col(team_col) == team_abbr) & 
+            (pl.col("status") == "ACT")
+        ).select(["player_id", "position"])
+        ranked = candidates
+
     for pos, limit in composition.items():
-        candidates = ranked.filter(pl.col("position") == pos).head(limit)
-        for row in candidates.iter_rows(named=True):
+        pos_candidates = ranked.filter(pl.col("position") == pos).head(limit)
+        for row in pos_candidates.iter_rows(named=True):
             card = await get_player_card(row['player_id'], week)
             if card: roster_result.append(card)
+            
     order = {"QB": 1, "RB": 2, "WR": 3, "TE": 4}
     roster_result.sort(key=lambda x: order.get(x["position"], 99))
     return roster_result
 
 async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
-    if not model_data.get("sleeper_map"):
-        refresh_app_state() # Use new refresh function if map missing
-
+    if not model_data.get("sleeper_map"): refresh_app_state() 
     try:
         url = f"https://api.sleeper.app/v1/players/nfl/trending/{trend_type}?lookback_hours=24&limit={limit+10}"
         headers = {"User-Agent": "Mozilla/5.0"}
-        
         response = requests.get(url, headers=headers, timeout=3)
         if response.status_code != 200: return []
-        
         data = response.json()
-        
         cards = []
         for item in data:
             sleeper_id = str(item.get("player_id"))
             count = item.get("count", 0)
             our_id = model_data["sleeper_map"].get(sleeper_id)
-            
             if our_id:
                 card = await get_player_card(our_id, week)
                 if card:
                     card["trending_count"] = count 
                     cards.append(card)
-            
             if len(cards) >= limit: break
-            
         return cards
     except: return []
 
-# --- 5. ENDPOINTS ---
+# --- 7. ENDPOINTS ---
 class PlayerRequest(BaseModel):
     player_name: str
     week: Optional[int] = None
@@ -454,24 +711,80 @@ async def get_current_week(): return {"week": model_data.get("current_nfl_week",
 
 @app.get("/schedule/{week}")
 async def get_schedule(week: int):
-    try: 
-        # Safety Check: If we forced Week 16 but DB only has up to Week 15, fallback to 15
-        if not model_data["df_schedule"].is_empty():
-            max_week = model_data["df_schedule"]["week"].max()
-            if week > max_week:
-                print(f"⚠️ Requested Week {week} not in DB (Max: {max_week}). Falling back.")
-                week = max_week
+    try:
+        if model_data["df_schedule"].is_empty(): return []
+        
+        max_week = model_data["df_schedule"]["week"].max()
+        target_week = week if week <= max_week else max_week
+        
+        sched_df = model_data["df_schedule"].filter(pl.col("week") == int(target_week))
+        games = sched_df.to_dicts()
+        
+        matched_count = 0
+        if "df_lines" in model_data and not model_data["df_lines"].is_empty():
+            lines_df = model_data["df_lines"].filter(pl.col("week") == int(target_week))
+            
+            # Create a robust lookup map
+            odds_map = {}
+            for row in lines_df.iter_rows(named=True):
+                h_abbr = get_team_abbr(row['home_team'])
+                a_abbr = get_team_abbr(row['away_team'])
+                odds_map[(h_abbr, a_abbr)] = row
+                odds_map[(a_abbr, h_abbr)] = row
+            
+            for game in games:
+                key = (game['home_team'], game['away_team'])
+                match = odds_map.get(key)
                 
-        return model_data["df_schedule"].filter(pl.col("week") == week).to_dicts()
-    except: return []
+                if match:
+                    game['moneyline_home'] = match.get('home_ml')
+                    game['moneyline_away'] = match.get('away_ml')
+                    game['game_total'] = match.get('total_over')
+                    matched_count += 1
+                else:
+                    game['moneyline_home'] = None
+                    game['moneyline_away'] = None
+                    game['game_total'] = None
+        
+        print(f"✅ Schedule (Wk {week}): Odds attached for {matched_count}/{len(games)} games.")
+        return games
+
+    except Exception as e:
+        print(f"Schedule Error: {e}")
+        return []
 
 @app.get("/matchup/{week}/{home_team}/{away_team}")
 async def get_matchup_rosters(week: int, home_team: str, away_team: str):
     try:
         home_cards = await get_team_roster_cards(home_team, week)
         away_cards = await get_team_roster_cards(away_team, week)
-        return {"matchup": f"{away_team} @ {home_team}", "week": week, "home_roster": home_cards, "away_roster": away_cards}
-    except Exception as e: raise HTTPException(status_code=500, detail="Failed to load matchup")
+        
+        over_under, home_win, away_win = None, None, None
+        if "df_lines" in model_data and not model_data["df_lines"].is_empty():
+            lines = model_data["df_lines"].filter(pl.col("week") == int(week))
+            for row in lines.iter_rows(named=True):
+                h = get_team_abbr(row['home_team'])
+                a = get_team_abbr(row['away_team'])
+                
+                if (h == home_team and a == away_team) or (h == away_team and a == home_team):
+                    over_under = row.get('total_over')
+                    home_win = row.get('home_ml_prob') if h == home_team else row.get('away_ml_prob')
+                    away_win = row.get('away_ml_prob') if h == home_team else row.get('home_ml_prob')
+                    break
+
+        return {
+            "matchup": f"{away_team} @ {home_team}",
+            "week": week,
+            "over_under": over_under,
+            "home_win_prob": home_win,
+            "away_win_prob": away_win,
+            "home_roster": home_cards,
+            "away_roster": away_cards
+        }
+    except Exception as e: 
+        print(f"Matchup Error Details: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to load matchup: {str(e)}")
 
 @app.post("/predict")
 async def predict(req: PlayerRequest):
@@ -501,13 +814,8 @@ async def compare(req: CompareRequest):
 async def search_players(q: str):
     if not q: return []
     try:
-        expr = (
-            pl.col('player_name').str.to_lowercase().str.contains(q.lower()) &
-            (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE']))
-        )
-        return model_data["df_profile"].filter(expr).select([
-            'player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'
-        ]).head(20).to_dicts()
+        expr = (pl.col('player_name').str.to_lowercase().str.contains(q.lower()) & (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE'])))
+        return model_data["df_profile"].filter(expr).select(['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status']).head(20).to_dicts()
     except: return []
 
 @app.get("/rankings/past/{week}")
@@ -524,7 +832,6 @@ async def get_player_history(player_id: str):
         stats = model_data['df_player_stats'].filter(pl.col('player_id') == player_id).unique(subset=['week']).sort('week')
         player_snaps = model_data['df_snap_counts'].filter(pl.col('player_id') == player_id)
         if stats.is_empty(): return []
-
         history = []
         for row in stats.iter_rows(named=True):
             wk = row['week']
@@ -533,7 +840,6 @@ async def get_player_history(player_id: str):
             if not s_row.is_empty():
                 s_data = s_row.row(0, named=True)
                 snap_count, snap_pct = int(s_data.get('offense_snaps', 0)), float(s_data.get('offense_pct', 0.0))
-
             p_yds = row.get('passing_yards') or 0
             r_yds = row.get('rushing_yards') or 0
             rec_yds = row.get('receiving_yards') or 0
@@ -542,12 +848,8 @@ async def get_player_history(player_id: str):
             rec_tds = row.get('receiving_tds') or 0
             receptions = int(row.get('receptions') or 0)
             targets = int(row.get('targets') or 0)
-            
-            # --- FIXED: Use correct column 'rush_attempts' ---
             carries = int(row.get('rush_attempts') or 0)
-
             pts = calculate_fantasy_points(row)
-
             history.append({
                 "week": wk,
                 "opponent": row.get('opponent_team') or "N/A",
@@ -589,6 +891,6 @@ async def remove_watchlist(player_id: str):
         with open(WATCHLIST_FILE, 'w') as f: json.dump(ids, f)
     return ids
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)

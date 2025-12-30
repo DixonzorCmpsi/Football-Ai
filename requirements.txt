@@ -28,3 +28,10 @@ psycopg2-binary
 connectorx
 sentence-transformers
 apscheduler
+apify-client
+python-dotenv
+seleniumbase
+beautifulsoup4
+crawl4ai
+undetected-chromedriver
+selenium

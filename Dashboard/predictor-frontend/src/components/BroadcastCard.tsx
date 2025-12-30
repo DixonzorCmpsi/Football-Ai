@@ -1,157 +1,208 @@
-import { Target, TrendingUp, Clock, MousePointerClick } from 'lucide-react'; // FIX TS6133: Removed TrendingDown
-import type { BroadcastCardData } from '../hooks/useNflData';
+import React from 'react';
+import { TrendingUp, ExternalLink, Plus, Check } from 'lucide-react';
 import { getTeamColor } from '../utils/nflColors';
+import type { BroadcastCardData } from '../hooks/useNflData';
 
-interface Props {
-  data: BroadcastCardData;
-  onClick?: (id: string) => void;
+interface BroadcastCardProps {
+  data: BroadcastCardData | null;
+  loading?: boolean;
   mini?: boolean;
+  showProps?: boolean;
+  onClick?: () => void;
+  // Compare Logic
+  isSelected?: boolean;
+  onToggleCompare?: (id: string) => void;
 }
 
-// --- HELPER FUNCTIONS (for Dark Mode and Status) ---
-
-const getInjuryColor = (status: string) => {
-    if (!status) return 'hidden';
-    const s = status.toLowerCase();
-    
-    if (s.includes('out') || s.includes('ir')) return 'bg-red-600';
-    if (s.includes('doubtful')) return 'bg-orange-600';
-    if (s.includes('questionable')) return 'bg-yellow-500';
-    if (s.includes('active')) return 'bg-emerald-500'; 
-    return 'bg-slate-500'; 
-};
-
-const getInjuryLabel = (status: string) => {
-    if (!status) return '';
-    const s = status.toLowerCase();
-    
-    if (s.includes('out')) return 'OUT';
-    if (s.includes('ir')) return 'IR';
-    if (s.includes('doubtful')) return 'D';
-    if (s.includes('questionable')) return 'Q';
-    if (s.includes('active')) return 'ACT';
-    return status.substring(0, 3).toUpperCase();
-};
-
-// --- NEW HELPER: Format Over/Under ---
-const formatOverUnder = (overUnderValue: string | number | null) => {
-    if (overUnderValue === null || overUnderValue === 'N/A' || overUnderValue === '') {
-        return "N/A";
-    }
-    // We expect the backend to pass the 'total_line' as a number/string
-    const value = parseFloat(overUnderValue as string);
-    if (isNaN(value)) return "N/A";
-
+const BroadcastCard: React.FC<BroadcastCardProps> = ({ 
+  data, 
+  loading, 
+  mini, 
+  showProps = true, 
+  onClick,
+  isSelected,
+  onToggleCompare
+}) => {
+  if (loading) {
     return (
-        <span className="text-blue-600 dark:text-blue-400 font-black">
-            {value.toFixed(1)}
-        </span>
+      <div className="w-full h-96 bg-white dark:bg-slate-800 rounded-3xl animate-pulse shadow-xl border border-slate-200 dark:border-slate-700 relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 animate-shimmer"></div>
+      </div>
     );
-}
+  }
 
-// --- MAIN COMPONENT ---
-export default function BroadcastCard({ data, onClick, mini = false }: Props) {
   if (!data) return null;
-  const teamColor = getTeamColor(data.team);
-  const injuryColor = getInjuryColor(data.injury_status);
-  const injuryLabel = getInjuryLabel(data.injury_status);
+
+  // --- DATA MAPPING FIX ---
+  // Removed 'spread' from destructuring as it was unused
+  const { id, name, position, team, image, injury_status, stats, props } = data;
   
-  // FIX TS6133: The following unused variables have been removed or commented out:
-  // const isFavored = data.spread !== null && data.spread < 0; 
-  // const overUnderDisplay = formatOverUnder(data.spread); 
+  // Stats
+  const prediction = stats?.projected || 0;
+  const floor = stats?.floor || 0;
+  const average = stats?.average || 0;
+  const snapPct = stats?.snap_percentage ? (stats.snap_percentage * 100).toFixed(0) : "0";
+  // Removed unused 'snapCount' variable
+  
+  // Props Logic (Find specific props in the array)
+  const passProp = props?.find(p => p.prop_type === 'Passing Yards');
+  const rushProp = props?.find(p => p.prop_type === 'Rushing Yards');
+  const recProp = props?.find(p => p.prop_type === 'Receiving Yards');
+  const tdProp = props?.find(p => p.prop_type === 'Anytime TD');
 
-  const overUnderValue = formatOverUnder(data.spread); 
-  const isSpreadData = data.spread !== null && !isNaN(data.spread);
+  // Determine Main Prop to Show
+  let mainProp = recProp;
+  let mainPropLabel = "Receiving Yards";
+  if (position === 'QB') { mainProp = passProp; mainPropLabel = "Passing Yards"; }
+  else if (position === 'RB') { mainProp = rushProp; mainPropLabel = "Rushing Yards"; }
 
+  const teamColor = getTeamColor(team);
+  
+  // Status Logic
+  const getStatusColor = (s: string) => {
+    if (!s) return 'bg-slate-100 text-slate-500';
+    const lower = s.toLowerCase();
+    if (lower.includes('out') || lower.includes('ir')) return 'bg-red-100 text-red-700 border-red-200';
+    if (lower.includes('questionable')) return 'bg-yellow-100 text-yellow-700 border-yellow-200';
+    return 'bg-green-100 text-green-700 border-green-200';
+  };
 
   return (
     <div 
-      onClick={() => onClick && onClick(data.id)}
-      className={`bg-white dark:bg-slate-800 rounded-2xl shadow-sm overflow-hidden border border-slate-200 dark:border-slate-700 cursor-pointer hover:ring-4 hover:ring-opacity-50 transition-all group relative ${mini ? 'max-w-md mx-auto mb-4' : 'max-w-2xl mx-auto mt-8'}`}
-      style={{ '--ring-color': teamColor } as React.CSSProperties} 
+      onClick={onClick}
+      className={`group relative w-full bg-white dark:bg-slate-900 rounded-3xl shadow-2xl overflow-hidden border transition-all duration-500 ${
+        isSelected 
+          ? 'border-blue-500 ring-4 ring-blue-500/20' 
+          : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+      } ${mini ? '' : 'max-w-md mx-auto'}`}
     >
-      {/* INJURY BADGE */}
-      {injuryLabel && (
-          <div className={`absolute top-0 right-0 z-50 px-3 py-1 text-[10px] font-black text-white rounded-bl-xl ${injuryColor} shadow-md border-b border-l border-white/20`}>
-              {injuryLabel}
-          </div>
+      
+      {/* --- COMPARE BUTTON --- */}
+      {onToggleCompare && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleCompare(id); }}
+          className={`absolute top-4 right-4 z-30 p-2 rounded-full shadow-lg transition-all transform hover:scale-110 ${
+            isSelected 
+              ? 'bg-blue-600 text-white' 
+              : 'bg-white/90 dark:bg-slate-800/90 text-slate-400 hover:text-blue-500 backdrop-blur-sm'
+          }`}
+        >
+          {isSelected ? <Check size={18} strokeWidth={4} /> : <Plus size={18} strokeWidth={3} />}
+        </button>
       )}
 
-      {/* Hover Hint */}
-      <div className="absolute top-4 right-14 bg-white/20 backdrop-blur text-white px-3 py-1 rounded-full text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 z-20">
-        <MousePointerClick size={14} /> View History
-      </div>
-
-      {/* 1. HERO HEADER */}
-      <div 
-        className={`${mini ? 'p-4' : 'p-6'} text-white relative overflow-hidden transition-colors duration-500`}
-        style={{ backgroundColor: teamColor }}
-      >
-        <div className="absolute top-0 right-0 w-64 h-64 bg-white rounded-full blur-[80px] opacity-10 -translate-y-1/2 translate-x-1/2 pointer-events-none"></div>
+      {/* --- HERO HEADER --- */}
+      <div className="relative h-48 overflow-hidden">
+        <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${teamColor} 0%, #0f172a 100%)` }}></div>
+        <div className="absolute inset-0 opacity-30 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
         
-        <div className="flex items-center gap-6 relative z-10">
-          <div className={`${mini ? 'w-16 h-16' : 'w-24 h-24'} rounded-full border-4 border-white/20 overflow-hidden bg-slate-900/50 shadow-lg shrink-0`}>
-            {data.image ? (
-                <img src={data.image} alt={data.name} className="object-cover w-full h-full" />
-            ) : (
-                <div className="w-full h-full flex items-center justify-center text-white/50 text-xs">NO IMG</div>
-            )}
+        {/* Big Team Text Background */}
+        <h1 className="absolute -bottom-6 -left-4 text-9xl font-black text-white opacity-5 select-none tracking-tighter italic">
+          {team}
+        </h1>
+
+        <div className="absolute inset-0 flex flex-col items-center justify-center pt-4 z-10">
+          <div className="relative">
+            <div className="w-28 h-28 rounded-full p-1 bg-gradient-to-br from-white/20 to-transparent shadow-2xl backdrop-blur-md">
+               {image ? (
+                 <img src={image} alt={name} className="w-full h-full rounded-full object-cover border-4 border-white/10 bg-slate-800" />
+               ) : (
+                 <div className="w-full h-full rounded-full bg-slate-700 flex items-center justify-center text-white/50 font-bold">IMG</div>
+               )}
+            </div>
+            <div className={`absolute bottom-0 right-0 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg border border-white/20 ${getStatusColor(injury_status || 'Active')}`}>
+              {injury_status || 'Active'}
+            </div>
           </div>
-          <div>
-            <h2 className={`${mini ? 'text-xl' : 'text-3xl'} font-black tracking-tighter uppercase drop-shadow-md`}>{data.name}</h2>
-            <div className="flex items-center gap-3 mt-1">
-              <span className="px-2 py-0.5 bg-white/20 backdrop-blur rounded text-xs font-bold border border-white/10">{data.position}</span>
-              <span className="text-white/80 font-bold tracking-widest text-xs">{data.team}</span>
-              {!mini && <span className="text-white/60 text-xs ml-2 border-l border-white/30 pl-3">{data.draft}</span>}
+          
+          <div className="text-center mt-3">
+            <h2 className="text-2xl font-black text-white tracking-tight leading-none drop-shadow-md">{name}</h2>
+            <div className="flex items-center justify-center gap-2 mt-1 text-xs font-bold text-white/60 uppercase tracking-widest">
+              <span>{position}</span>
+              <span className="w-1 h-1 bg-white/40 rounded-full"></span>
+              <span>{team}</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. KEY METRICS GRID */}
-      <div className="grid grid-cols-3 divide-x divide-slate-100 dark:divide-slate-700 border-b border-slate-100 dark:border-slate-700">
-        
-        {/* Metric A: Prediction + Floor + Avg */}
-        <div className={`${mini ? 'p-3' : 'p-6'} text-center`}>
-          <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
-            <TrendingUp size={14} /> Proj
-          </div>
-          <div className={`${mini ? 'text-2xl' : 'text-4xl'} font-black text-slate-800 dark:text-slate-100`}>{data.stats.projected.toFixed(1)}</div>
+      {/* --- STATS GRID --- */}
+      <div className="p-6">
+        <div className="grid grid-cols-2 gap-4 mb-6">
           
-          <div className="flex flex-wrap justify-center gap-1 mt-1">
-              <div className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
-                Floor: {data.stats.floor.toFixed(0)}
-              </div>
-              <div className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-800">
-                Avg: {data.stats.average.toFixed(1)}
-              </div>
+          {/* Main Projection Box */}
+          <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-700/50 text-center group-hover:scale-[1.02] transition-transform duration-300 flex flex-col justify-center">
+            <div className="text-[10px] uppercase font-black text-slate-400 dark:text-slate-500 tracking-widest mb-1">Projected</div>
+            <div className="text-4xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">
+              {prediction.toFixed(1)}<span className="text-lg text-slate-400 font-bold ml-0.5">pts</span>
+            </div>
+          </div>
+
+          {/* Secondary Stats */}
+          <div className="space-y-2">
+             <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-800/30 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/30">
+                <span className="text-xs font-bold text-slate-400">Floor</span>
+                <span className="text-sm font-black text-slate-700 dark:text-slate-300">{floor.toFixed(1)}</span>
+             </div>
+             <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-800/30 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/30">
+                <span className="text-xs font-bold text-slate-400">Avg</span>
+                <span className="text-sm font-black text-slate-700 dark:text-slate-300">{average.toFixed(1)}</span>
+             </div>
+             <div className="flex justify-between items-center bg-slate-50 dark:bg-slate-800/30 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/30">
+                <span className="text-xs font-bold text-slate-400">Snap %</span>
+                <span className="text-sm font-black text-slate-700 dark:text-slate-300">{snapPct}%</span>
+             </div>
           </div>
         </div>
 
-        {/* Metric B: OVER/UNDER (Updated) */}
-        <div className={`${mini ? 'p-3' : 'p-6'} text-center bg-slate-50/50 dark:bg-slate-800/50`}>
-          <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
-            <Target size={14} /> O/U
-          </div>
-          <div className={`mt-2 ${mini ? 'text-2xl' : 'text-4xl'} font-black text-slate-800 dark:text-slate-100`}>
-            {overUnderValue}
-          </div>
-          <div className="text-[10px] text-slate-400 dark:text-slate-500 font-bold mt-1">
-            {isSpreadData ? 'TOTAL POINTS' : 'NO LINE'}
-          </div>
-        </div>
+        {/* --- PROPS SECTION --- */}
+        {showProps && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 mb-2">
+               <TrendingUp size={16} className="text-blue-500" />
+               <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Market Props</h3>
+            </div>
 
-        {/* Metric C: Snap Volume */}
-        <div className={`${mini ? 'p-3' : 'p-6'} text-center`}>
-          <div className="flex items-center justify-center gap-2 mb-1 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest">
-            <Clock size={14} /> Usage
+            {/* Main Yardage Prop */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50">
+               <span className="text-xs font-bold text-slate-600 dark:text-slate-400">{mainPropLabel}</span>
+               <div className="flex items-center gap-3">
+                  <span className="font-mono font-bold text-slate-800 dark:text-white">{mainProp?.line || '-'}</span>
+                  {mainProp?.implied_prob && (
+                    <span className={`text-[10px] font-black px-1.5 py-0.5 rounded ${mainProp.implied_prob > 50 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {mainProp.implied_prob.toFixed(1)}%
+                    </span>
+                  )}
+               </div>
+            </div>
+
+            {/* Anytime TD Prop */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50">
+               <span className="text-xs font-bold text-slate-600 dark:text-slate-400">Anytime TD</span>
+               <div className="flex items-center gap-3">
+                  {tdProp?.implied_prob ? (
+                    <>
+                      <div className="w-16 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${tdProp.implied_prob}%` }}></div>
+                      </div>
+                      <span className="font-mono font-bold text-slate-800 dark:text-white">{tdProp.implied_prob.toFixed(1)}%</span>
+                    </>
+                  ) : (
+                    <span className="text-xs text-slate-400">-</span>
+                  )}
+               </div>
+            </div>
           </div>
-          <div className={`${mini ? 'text-2xl' : 'text-4xl'} font-black text-slate-800 dark:text-slate-100`}>{data.stats.snap_count}</div>
-          <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 font-bold">
-            {(data.stats.snap_percentage * 100).toFixed(0)}% Share
-          </div>
+        )}
+
+        {/* --- FOOTER ACTION --- */}
+        <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest cursor-pointer hover:text-blue-500 transition-colors">
+           <span>View Full History</span>
+           <ExternalLink size={12} />
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default BroadcastCard;
