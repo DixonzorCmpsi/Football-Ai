@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Search } from 'lucide-react';
 import { useBroadcastCard } from '../hooks/useNflData';
-import BroadcastCard from './BroadcastCard';
+import PlayerCard from './PlayerCard'; // Using the consistent PlayerCard
+import { getTeamColor } from '../utils/nflColors'; // Import color utility
+import type { PlayerData } from '../types';
 
 interface PlayerLookupProps {
   onViewHistory: (playerId: string) => void;
@@ -49,8 +51,31 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
     setTargetPlayer(player.player_name); // Set target
   };
 
-  // FIX: Ensure this is always a boolean, never null
   const isSelected = cardData ? compareList.includes(cardData.id) : false;
+
+  // --- MAP HOOK DATA TO CARD DATA ---
+  const playerData: PlayerData | null = cardData ? {
+      player_id: cardData.id,
+      player_name: cardData.name,
+      position: cardData.position as any,
+      team: cardData.team,
+      opponent: cardData.opponent,
+      image: cardData.image,
+      week: 18, // Default context
+      prediction: cardData.stats.projected,
+      floor_prediction: cardData.stats.floor,
+      average_points: cardData.stats.average,
+      injury_status: cardData.injury_status,
+      is_injury_boosted: cardData.is_injury_boosted,
+      // Props
+      overunder: null,
+      spread: cardData.spread,
+      prop_line: cardData.props?.[0]?.line || null,
+      prop_prob: cardData.props?.[0]?.implied_prob || null,
+      pass_td_line: cardData.pass_td_line || null,
+      pass_td_prob: cardData.pass_td_prob || null,
+      anytime_td_prob: cardData.anytime_td_prob || null
+  } : null;
 
   return (
     <div className="h-full flex flex-col items-center pt-8 px-4 max-w-4xl mx-auto">
@@ -69,7 +94,6 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
               onChange={(e) => { 
                   setQuery(e.target.value); 
                   if (e.target.value === "") setTargetPlayer(null);
-                  // If user types, we clear the target so dropdown can appear again
                   if (targetPlayer && e.target.value !== targetPlayer) setTargetPlayer(null);
               }}
             />
@@ -78,7 +102,6 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
         </div>
 
         {/* DROPDOWN RESULTS */}
-        {/* FIX: Check !targetPlayer to ensure it hides after selection */}
         {results.length > 0 && !targetPlayer && (
           <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
             {results.map((p: any) => (
@@ -100,11 +123,13 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
 
       {/* --- RESULT CARD AREA --- */}
       <div className="w-full flex-1 flex flex-col items-center justify-start pb-20">
-        {cardData ? (
+        {playerData ? (
           <div className="animate-in slide-in-from-bottom-8 duration-700 w-full max-w-md relative">
-            <BroadcastCard 
-              data={cardData}
-              onClick={() => onViewHistory(cardData.id)}
+            <PlayerCard 
+              data={playerData}
+              // FIX: Explicitly pass the team color here
+              teamColor={getTeamColor(playerData.team)}
+              onClick={() => onViewHistory(playerData.player_id)}
               isSelected={isSelected}
               onToggleCompare={onToggleCompare}
             />

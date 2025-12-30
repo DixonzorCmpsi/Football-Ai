@@ -6,7 +6,7 @@ interface PlayerCardProps {
   data: PlayerData;
   teamColor?: string;
   onClick: (player: PlayerData) => void;
-  // Compare Logic Added
+  // Compare Logic
   isSelected?: boolean;
   onToggleCompare?: (id: string) => void;
 }
@@ -31,7 +31,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     return 'Rec Yds';
   };
 
-  // --- INJURY BADGE LOGIC (For current player status) ---
+  // --- INJURY BADGE LOGIC ---
   const getStatusBadge = (status?: string) => {
     if (!status || status === 'Active' || status === 'ACT' || status === 'Healthy') return null;
     
@@ -53,12 +53,18 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     );
   };
 
-  // --- OPPORTUNITY BOOST LOGIC (For teammate injury impact) ---
+  // --- OPPORTUNITY BOOST BADGE ---
   const getBoostBadge = () => {
     if (!data.is_injury_boosted) return null;
 
+    // FIX: Do not show boost if the player themselves is injured/out
+    const status = data.injury_status?.toLowerCase() || '';
+    if (status.includes('out') || status.includes('ir') || status.includes('inactive') || status.includes('doubtful')) {
+        return null;
+    }
+
     return (
-      <span className="ml-2 text-[9px] font-black px-1.5 py-0.5 rounded border border-blue-200 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-800 uppercase tracking-wide animate-pulse">
+      <span className="ml-2 text-[9px] font-black px-1.5 py-0.5 rounded border border-amber-200 bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800 uppercase tracking-wide animate-pulse shadow-[0_0_10px_rgba(251,191,36,0.2)]">
         Boost
       </span>
     );
@@ -111,16 +117,16 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
              <h4 className="text-slate-900 dark:text-white font-black truncate text-sm leading-tight">
                {data.player_name}
              </h4>
-             {/* INJURY STATUS OF THIS PLAYER */}
+             {/* INJURY STATUS */}
              {getStatusBadge(data.injury_status)}
-             {/* OPPORTUNITY BOOST (USAGE VACUUM) BADGE */}
+             {/* BOOST STATUS */}
              {getBoostBadge()}
           </div>
           
           <div className="flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-white/60 mt-0.5 truncate font-medium">
             <span className="bg-slate-100 dark:bg-white/10 border border-slate-200 dark:border-white/5 px-1.5 rounded font-bold font-mono text-slate-700 dark:text-slate-300">{data.position}</span>
             <span>•</span>
-            <span className="truncate opacity-80">{data.team}</span>
+            <span className="truncate opacity-80">{data.team} vs {data.opponent}</span>
           </div>
         </div>
 
@@ -131,7 +137,9 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
           </div>
           <div className="flex flex-col items-end justify-center min-w-[36px]">
             <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase font-bold tracking-wider">Proj</span>
-            <span className="text-base font-black text-slate-900 dark:text-white leading-none">{data.prediction}</span>
+            <span className={`text-base font-black leading-none ${data.is_injury_boosted ? 'text-amber-500 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>
+              {data.prediction}
+            </span>
           </div>
         </div>
       </div>

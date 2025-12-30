@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Swords, TrendingUp, Radar, Activity, Plus, Search, Check } from 'lucide-react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -6,10 +6,11 @@ import {
 } from 'recharts';
 import PlayerCard from './PlayerCard'; 
 import { getTeamColor } from '../utils/nflColors';
-import { usePlayerSearch } from '../hooks/useNflData'; 
+import { usePlayerSearch, useSchedule } from '../hooks/useNflData'; 
 import type { PlayerData } from '../types';
 
 interface CompareViewProps {
+  week: number;
   playerIds: string[];
   onRemove: (id: string) => void;
   onAdd: (id: string) => void;
@@ -19,17 +20,50 @@ interface CompareViewProps {
 const GRAPH_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 // --- SUB-COMPONENT: Single Player Column ---
-const LoadedPlayerCard = ({ id, onRemove, onViewHistory, colorIndex }: { id: string, onRemove: (id: string) => void, onViewHistory: (id: string) => void, colorIndex: number }) => {
+const LoadedPlayerCard = ({ 
+    id, 
+    week, 
+    schedule, // <-- Receive Schedule
+    onRemove, 
+    onViewHistory, 
+    colorIndex 
+}: { 
+    id: string, 
+    week: number, 
+    schedule: any[], 
+    onRemove: (id: string) => void, 
+    onViewHistory: (id: string) => void, 
+    colorIndex: number 
+}) => {
     const [data, setData] = useState<PlayerData | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch(`http://127.0.0.1:8000/player/${id}`)
+        fetch(`http://127.0.0.1:8000/player/${id}?week=${week}`)
             .then(res => res.json())
             .then(setData)
             .catch(console.error)
             .finally(() => setLoading(false));
-    }, [id]);
+    }, [id, week]);
+
+    // --- OPPONENT FALLBACK LOGIC ---
+    const displayData = useMemo(() => {
+        if (!data) return null;
+
+        // If API already has a valid opponent, use it
+        if (data.opponent && data.opponent !== 'BYE') return data;
+
+        // If API says "BYE" (or null), try to find the real opponent in the schedule
+        if (schedule && schedule.length > 0) {
+            const game = schedule.find((g: any) => g.home_team === data.team || g.away_team === data.team);
+            if (game) {
+                const realOpponent = game.home_team === data.team ? game.away_team : game.home_team;
+                return { ...data, opponent: realOpponent };
+            }
+        }
+        
+        return data;
+    }, [data, schedule]);
 
     if (loading) return (
         <div className="h-40 w-72 bg-slate-100 dark:bg-slate-800 rounded-xl animate-pulse flex items-center justify-center border border-slate-200 dark:border-slate-700 shrink-0">
@@ -37,7 +71,7 @@ const LoadedPlayerCard = ({ id, onRemove, onViewHistory, colorIndex }: { id: str
         </div>
     );
 
-    if (!data) return <div className="text-red-500 font-bold p-4">Error</div>;
+    if (!displayData) return <div className="text-red-500 font-bold p-4">Error</div>;
 
     return (
         <div className="relative group animate-in slide-in-from-bottom-4 duration-500 w-80 shrink-0">
@@ -50,8 +84,8 @@ const LoadedPlayerCard = ({ id, onRemove, onViewHistory, colorIndex }: { id: str
             </button>
             <div className="rounded-b-xl overflow-hidden shadow-lg border border-t-0 border-slate-200 dark:border-slate-700">
                 <PlayerCard 
-                    data={data} 
-                    teamColor={getTeamColor(data.team)}
+                    data={displayData} // Use the corrected data
+                    teamColor={getTeamColor(displayData.team)}
                     onClick={() => onViewHistory(id)}
                 />
             </div>
@@ -141,11 +175,14 @@ const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, ex
 };
 
 // --- MAIN VIEW ---
-export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd }: CompareViewProps) {
+export default function CompareView({ week, playerIds, onRemove, onViewHistory, onAdd }: CompareViewProps) {
   const [activeTab, setActiveTab] = useState<'RADAR' | 'LINE'>('RADAR');
   const [players, setPlayers] = useState<PlayerData[]>([]);
   const [histories, setHistories] = useState<any[][]>([]);
   const [loadingGraphs, setLoadingGraphs] = useState(false);
+
+  // --- FETCH SCHEDULE FOR BACKUP ---
+  const { games: schedule } = useSchedule(week);
 
   useEffect(() => {
     if (playerIds.length === 0) {
@@ -157,7 +194,7 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
 
     const fetchAll = async () => {
         try {
-            const pData = await Promise.all(playerIds.map(id => fetch(`http://127.0.0.1:8000/player/${id}`).then(res => res.json())));
+            const pData = await Promise.all(playerIds.map(id => fetch(`http://127.0.0.1:8000/player/${id}?week=${week}`).then(res => res.json())));
             setPlayers(pData);
             const hData = await Promise.all(playerIds.map(id => fetch(`http://127.0.0.1:8000/player/history/${id}`).then(res => res.json())));
             setHistories(hData);
@@ -165,7 +202,7 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
         finally { setLoadingGraphs(false); }
     };
     fetchAll();
-  }, [playerIds]);
+  }, [playerIds, week]);
 
   const radarData = React.useMemo(() => {
       if (players.length === 0 || histories.length === 0) return [];
@@ -174,7 +211,6 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
           hist.reduce((acc: number, game: any) => acc + (game.touchdowns || 0), 0)
       );
       
-      // Calculate Average Snap Count from history
       const playerAvgSnaps = histories.map(hist => {
           if (!hist || hist.length === 0) return 0;
           const totalSnaps = hist.reduce((acc: number, game: any) => acc + (game.snap_count || 0), 0);
@@ -182,13 +218,12 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
       });
 
       const maxTDs = Math.max(...playerTotalTDs, 5);
-      // Determine max snaps for scaling (default min 60 to avoid weird skew on low snap players)
       const maxSnaps = Math.max(...playerAvgSnaps, 60);
 
       const metrics = [
           { key: 'prediction', label: 'Proj', cap: 25 },
           { key: 'average_points', label: 'Avg', cap: 25 },
-          { key: 'AVG_SNAPS', label: 'Avg Snaps', cap: maxSnaps }, // CHANGED from 'snap_percentage'
+          { key: 'AVG_SNAPS', label: 'Avg Snaps', cap: maxSnaps },
           { key: 'overunder', label: 'Game Script', cap: 60 }, 
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
       ];
@@ -246,6 +281,8 @@ export default function CompareView({ playerIds, onRemove, onViewHistory, onAdd 
             <div key={id} className="snap-center">
                 <LoadedPlayerCard 
                     id={id} 
+                    week={week} 
+                    schedule={schedule} // <-- Pass Schedule Down
                     onRemove={onRemove} 
                     onViewHistory={onViewHistory} 
                     colorIndex={idx}

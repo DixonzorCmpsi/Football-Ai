@@ -27,10 +27,12 @@ export interface BroadcastCardData {
   name: string;
   position: string;
   team: string;
+  opponent: string; // Added
   spread: number | null;
   image: string;
   draft: string;
-  injury_status: string; 
+  injury_status: string;
+  is_injury_boosted: boolean; // Added
   stats: {
     projected: number;
     floor: number;
@@ -40,6 +42,10 @@ export interface BroadcastCardData {
     snap_percentage: number;
   };
   props?: PropBet[]; 
+  // Raw fields to assist with mapping
+  pass_td_line?: number | null;
+  pass_td_prob?: number | null;
+  anytime_td_prob?: number | null;
 }
 
 export interface HistoryEntry {
@@ -79,11 +85,17 @@ const transformToCardData = (d: any): BroadcastCardData => {
         name: d.player_name,
         position: d.position,
         team: d.team,
+        opponent: d.opponent || "BYE", // Map opponent
         image: d.image,
         draft: d.draft_position,
-        injury_status: d.injury_status || "Active", 
+        injury_status: d.injury_status || "Active",
+        is_injury_boosted: d.is_injury_boosted || false, // Map boost flag
         spread: d.spread !== undefined ? d.spread : null,
         props: d.props || [], 
+        // Pass through raw props for PlayerCard mapping
+        pass_td_line: d.pass_td_line,
+        pass_td_prob: d.pass_td_prob,
+        anytime_td_prob: d.anytime_td_prob,
         stats: {
             projected: d.prediction || 0,
             floor: d.floor_prediction || 0,
@@ -107,7 +119,6 @@ export const useCurrentWeek = () => {
       })
       .catch(err => {
         console.error("Failed to fetch week:", err);
-        // FIX: Do NOT default to 1. Leave as null to indicate failure/unknown.
         setWeek(null); 
         setLoading(false);
       });

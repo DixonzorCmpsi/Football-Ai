@@ -19,7 +19,9 @@ export interface PlayerData {
   pass_td_line: number | null;
   pass_td_prob: number | null;
   anytime_td_prob: number | null;
+  
   injury_status?: string;
+
 }
 
 export interface MatchupData {

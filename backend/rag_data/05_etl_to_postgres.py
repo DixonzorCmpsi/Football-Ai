@@ -156,12 +156,12 @@ PIPELINE_STEPS = [
         ]
     },
     # 10. FINAL RANKINGS
-    {
-        "script": "06_generate_rankings.py",
-        "uploads": [
-             ("weekly_rankings.csv", "weekly_rankings", "smart_append")
-        ]
-    }
+    # {
+    #     "script": "06_generate_rankings.py",
+    #     "uploads": [
+    #          ("weekly_rankings.csv", "weekly_rankings", "smart_append")
+    #     ]
+    # }
 ]
 
 def get_db_engine(): return create_engine(DB_CONNECTION_STRING)
@@ -225,21 +225,28 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
     try:
         df = pl.read_csv(file_path, ignore_errors=True)
         
-        # --- SELF-HEALING: CHECK FOR SCHEMA MISMATCH ---
+        # --- 1. HARDENED SCHEMA CHECK ---
+        # Before doing anything, check if CSV has columns that the DB lacks.
         try:
             insp = inspect(engine)
             if insp.has_table(table_name):
-                db_cols = set([col['name'] for col in insp.get_columns(table_name)])
-                csv_cols = set(df.columns)
+                # Get DB columns (normalize to lower case)
+                db_cols = set([col['name'].lower() for col in insp.get_columns(table_name)])
+                # Get CSV columns (normalize to lower case)
+                csv_cols = set([c.lower() for c in df.columns])
                 
+                # If CSV has columns that are NOT in the DB -> FORCE REPLACE
                 if not csv_cols.issubset(db_cols):
-                    print(f"      ⚠️ Schema Mismatch! CSV has new columns. Resetting '{table_name}'...")
-                    reset_db_table(table_name, engine)
-                    mode = 'replace' 
-        except Exception: 
-            pass 
+                    new_cols = csv_cols - db_cols
+                    print(f"      ⚠️ Schema Evolution Detected! Found new columns: {new_cols}")
+                    print(f"      ☢️  Switching mode to 'replace' to update table schema.")
+                    mode = 'replace'
+        except Exception as e:
+            print(f"      ⚠️ Schema check warning: {e}")
 
-        # --- MODE: IF MISSING ---
+        # --- 2. EXECUTE UPLOAD ---
+        
+        # MODE: IF MISSING
         if mode == 'if_missing':
             with engine.connect() as conn:
                 exists = conn.execute(text(f"SELECT to_regclass('public.{table_name}')")).scalar()
@@ -250,15 +257,18 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
             print(f"      - Success! Initial load complete.")
             return
 
-        # --- MODE: REPLACE ---
+        # MODE: REPLACE (or forced via Schema Check)
         if mode == 'replace':
+            # Drop explicitly to ensure clean schema recreation
+            reset_db_table(table_name, engine)
             df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
-            print(f"      - Success! Replaced table.")
+            print(f"      - Success! Replaced table with new schema.")
             
-        # --- MODE: SMART APPEND ---
+        # MODE: SMART APPEND
         elif mode == 'smart_append':
             try:
                 with engine.connect() as conn:
+                    # Only try to delete by week/season if columns actually exist in CSV
                     if 'week' in df.columns and 'season' in df.columns:
                         weeks = ",".join(map(str, df['week'].unique().to_list()))
                         conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON} AND week IN ({weeks})"))
@@ -275,22 +285,15 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
                 print(f"      - Success! Appended {len(df)} rows.")
 
             except Exception as e:
-                # FAIL-SAFE: If Append crashes due to schema (UndefinedColumn), Reset and Replace
-                error_str = str(e).lower()
-                if "column" in error_str and "does not exist" in error_str:
-                    print(f"      ⚠️ Append Failed (Schema Error). Resetting '{table_name}'...")
-                    reset_db_table(table_name, engine)
-                    df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
-                    print(f"      - Success! Replaced table (Self-Healed).")
-                elif "relation" in error_str and "does not exist" in error_str:
-                     print("      - Table likely missing (creating new)...")
-                     df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
-                     print(f"      - Success! Created table.")
-                else:
-                    print(f"      ❌ Append failed: {e}")
+                # FAIL-SAFE: If Append crashes (e.g. mismatch we missed), Default to Replace
+                print(f"      ❌ Smart Append Failed: {e}")
+                print(f"      ☢️  Falling back to REPLACE strategy...")
+                reset_db_table(table_name, engine)
+                df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
+                print(f"      - Success! Replaced table (Fail-safe).")
 
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ ERROR in push_to_postgres: {e}")
 
 def main():
     print("Starting Master ETL Orchestrator...")

@@ -5,7 +5,6 @@ import { getTeamColor } from '../utils/nflColors';
 interface Props {
   playerId: string;
   onBack: () => void;
-  // New props for compare logic
   compareList: string[];
   onToggleCompare: (id: string) => void;
 }
@@ -16,6 +15,7 @@ export default function PlayerHistory({ playerId, onBack, compareList, onToggleC
 
   const teamColor = cardData ? getTeamColor(cardData.team) : "#1e293b"; 
   const isSelected = compareList.includes(playerId);
+  const isBoosted = cardData?.is_injury_boosted;
 
   // Stats
   const totalPoints = history.reduce((acc, curr) => acc + (curr.points || 0), 0);
@@ -53,16 +53,31 @@ export default function PlayerHistory({ playerId, onBack, compareList, onToggleC
         {/* Decorative Blur Effect */}
         <div className="absolute -right-20 -top-20 w-96 h-96 bg-white/5 rounded-full blur-[100px] pointer-events-none mix-blend-overlay"></div>
         
+        {/* INJURY BOOST GLOW */}
+        {isBoosted && (
+             <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-amber-500/20 to-transparent pointer-events-none mix-blend-overlay animate-pulse"></div>
+        )}
+        
         <div className="flex flex-col xl:flex-row items-center justify-between gap-6 relative z-10">
            <div className="flex items-center gap-6 w-full xl:w-auto">
                <div className="h-24 w-24 rounded-full border-4 border-white/20 bg-black/20 overflow-hidden shadow-2xl shrink-0">
                    {cardData?.image ? <img src={cardData.image} alt={cardData.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-white/50 font-bold">...</div>}
                </div>
                <div>
-                   <h1 className="text-3xl md:text-4xl font-black tracking-tight uppercase drop-shadow-md">{cardData?.name || "Loading..."}</h1>
+                   <div className="flex items-center gap-3">
+                        <h1 className="text-3xl md:text-4xl font-black tracking-tight uppercase drop-shadow-md">{cardData?.name || "Loading..."}</h1>
+                        {isBoosted && (
+                            <div className="flex items-center gap-1 bg-amber-500/20 border border-amber-400/50 px-2 py-0.5 rounded text-[10px] font-black uppercase text-amber-200 tracking-wider shadow-[0_0_10px_rgba(251,191,36,0.3)] animate-pulse">
+                                <span>Usage Boost</span>
+                            </div>
+                        )}
+                   </div>
+                   
                    <div className="flex flex-wrap items-center gap-2 md:gap-3 text-white/90 font-bold text-sm mt-1">
                         <span className="bg-black/30 px-2 py-0.5 rounded text-white border border-white/10">{cardData?.position}</span>
                         <span>{cardData?.team}</span>
+                        <span className="text-white/50 hidden md:inline">•</span>
+                        <span>vs {cardData?.opponent}</span>
                         <span className="text-white/50 hidden md:inline">•</span>
                         <span className={`px-2 py-0.5 rounded font-black text-xs ${cardData?.injury_status === 'Active' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
                             {cardData?.injury_status || 'ACT'}
@@ -75,7 +90,9 @@ export default function PlayerHistory({ playerId, onBack, compareList, onToggleC
            <div className="w-full xl:w-auto grid grid-cols-3 md:grid-cols-5 gap-4 gap-y-6 text-center bg-black/20 p-4 rounded-xl border border-white/10 backdrop-blur-md shadow-inner">
                <div>
                    <div className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Wk Proj</div>
-                   <div className="text-xl md:text-2xl font-black text-yellow-400 drop-shadow-sm">{cardData?.stats?.projected?.toFixed(1) || "-"}</div>
+                   <div className={`text-xl md:text-2xl font-black drop-shadow-sm ${isBoosted ? 'text-amber-400 scale-110' : 'text-yellow-400'}`}>
+                       {cardData?.stats?.projected?.toFixed(1) || "-"}
+                   </div>
                </div>
                <div className="hidden md:block w-px bg-white/10 h-full mx-auto"></div>
                <div>

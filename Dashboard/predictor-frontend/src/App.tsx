@@ -340,6 +340,7 @@ export default function App() {
           {/* VIEW: COMPARE */}
           {viewMode === 'COMPARE' && (
             <CompareView 
+                week={safeWeek} // Pass week here
                 playerIds={compareList}
                 onRemove={(id) => toggleCompare(id)}
                 onAdd={(id) => toggleCompare(id)}

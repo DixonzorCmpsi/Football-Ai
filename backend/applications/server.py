@@ -128,26 +128,37 @@ def refresh_db_data():
         "df_lines": ("SELECT * FROM bovada_game_lines", f"weekly_bovada_game_lines_{CURRENT_SEASON}.csv"),
         "df_props": ("SELECT * FROM bovada_player_props", f"weekly_bovada_player_props_{CURRENT_SEASON}.csv"),
         "df_injuries": ("SELECT * FROM weekly_injuries", f"weekly_injuries_{CURRENT_SEASON}.csv"),
-        "df_defense": ("SELECT * FROM weekly_defense_stats", f"weekly_defense_stats_{CURRENT_SEASON}.csv"),
-        "df_offense": ("SELECT * FROM weekly_offense_stats", f"weekly_offense_stats_{CURRENT_SEASON}.csv"),
-        
-        # --- GOLD STANDARD FEATURE TABLE ---
         "df_features": (f"SELECT * FROM weekly_feature_set_{CURRENT_SEASON}", f"weekly_feature_set_{CURRENT_SEASON}.csv"),
     }
     
     for key, (query, csv) in sources.items():
         model_data[key] = load_data_source(query, csv)
 
-   # --- BUILD INJURY MAPS ---
+    # --- BUILD INJURY MAP (ROBUST FIX) ---
     model_data["injury_map"] = {}
     model_data["gsis_to_sleeper"] = {}
     
     if "df_injuries" in model_data and not model_data["df_injuries"].is_empty():
         try:
             df = model_data["df_injuries"]
-            rows = df.select(["player_id", "injury_status"]).to_dicts()
-            model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
-        except Exception: pass
+            
+            # 1. Check if 'week' column exists (New Format)
+            if "week" in df.columns:
+                # Find the LATEST week available in the file
+                max_wk = df.select(pl.col("week").max()).item()
+                print(f"   🚑 Filtering Injury Map to Latest Week: {max_wk}")
+                latest_report = df.filter(pl.col("week") == max_wk)
+                
+                rows = latest_report.select(["player_id", "injury_status"]).to_dicts()
+                model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
+            else:
+                # Fallback for old CSVs without week column
+                print("   ⚠️ Injury CSV lacks 'week' column. Loading all rows (Last write wins).")
+                rows = df.select(["player_id", "injury_status"]).to_dicts()
+                model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
+                
+        except Exception as e: 
+            print(f"   ❌ Injury Map Build Error: {e}")
 
     try:
         players_df = nfl.load_ff_playerids()
@@ -300,20 +311,64 @@ def calculate_fantasy_points(row):
         return ((p_yds * 0.04) + (p_tds * 4.0) + (r_yds * 0.1) + (r_tds * 6.0) + (rec_yds * 0.1) + (rec_tds * 6.0) + (receptions * 1.0) - (ints * 2.0) - (fumbles * 2.0))
     except: return 0.0
 
+def get_injury_status_for_week(player_id: str, week: int, default="Active"):
+    """
+    Intelligent Injury Lookup with DEBUGGING logs.
+    """
+    if "df_injuries" not in model_data or model_data["df_injuries"].is_empty():
+        print("   ⚠️ DEBUG: Injury DF is missing or empty!")
+        return default
+
+    df = model_data["df_injuries"]
+    
+    # Debug: Print what we are looking for
+    # print(f"   🔎 DEBUG LOOKUP: Player {player_id}, Week {week}")
+
+    # Safety Check
+    if "week" not in df.columns:
+        print("   ⚠️ DEBUG: 'week' column missing in memory DF.")
+        # Fallback logic
+        record = df.filter(pl.col("player_id") == str(player_id))
+        if not record.is_empty():
+            return record.row(0, named=True).get("injury_status", default)
+        return default
+    
+    # Check Max Week in Memory
+    max_wk = df.select(pl.col("week").max()).item()
+    target_week = int(week)
+    
+    # If Future Week, use Max
+    week_exists = not df.filter(pl.col("week") == int(week)).is_empty()
+    if not week_exists:
+        print(f"   ℹ️ DEBUG: Week {week} not in data. Falling back to Week {max_wk}")
+        target_week = max_wk
+    
+    # Filter
+    record = df.filter(
+        (pl.col("week") == target_week) & 
+        (pl.col("player_id") == str(player_id))
+    )
+    
+    if not record.is_empty():
+        status = record.row(0, named=True).get("injury_status", default)
+        # print(f"   ✅ DEBUG: Found Status '{status}' for Week {target_week}")
+        return status
+    
+    # print(f"   ❌ DEBUG: Player not found in Week {target_week}. Defaulting to Active.")
+    return default
 def run_base_prediction(pid, pos, week):
     """
     Looks up features from DB. 
     1. RECENT FORM: Calculates average of the LAST 4 NON-ZERO GAMES.
-       (Iterates back through history, skipping 0.0 scores, until 4 valid games are found).
     2. BASELINE CORRECTION: Uses that 4-game average as the starting point.
     3. LOGARITHMIC BOOST: 5.0 * ln(1 + deviation).
-    4. USAGE VACUUM: Triggers on IR/Out/Doubtful using HISTORICAL snap/production data.
+    4. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
     """
     # Initialize defaults
     features_dict = {}
     team = None
     
-    # 1. Try to get features (might be empty for future weeks)
+    # 1. Try to get features
     if "df_features" in model_data and not model_data["df_features"].is_empty():
         player_features = model_data["df_features"].filter(
             (pl.col("player_id") == str(pid)) & (pl.col("week") == int(week))
@@ -322,7 +377,7 @@ def run_base_prediction(pid, pos, week):
             features_dict = player_features.row(0, named=True)
             team = features_dict.get('team') or features_dict.get('team_abbr')
 
-    # 2. Fallback: Get Team/Pos from Profile if features missing
+    # 2. Fallback: Get Team/Pos from Profile
     if not team:
         prof = model_data["df_profile"].filter(pl.col("player_id") == str(pid))
         if not prof.is_empty():
@@ -343,17 +398,12 @@ def run_base_prediction(pid, pos, week):
         
         avg_recent_form = 0.0
         if not history_df.is_empty():
-            # Get all past games sorted by recency
             sorted_history = history_df.sort("week", descending=True)
-            
             valid_pts = []
             for row in sorted_history.iter_rows(named=True):
                 pts = calculate_fantasy_points(row)
-                # SKIP 0.0 GAMES (Injuries, Inactive, Missing Data)
                 if pts > 0.0:
                     valid_pts.append(pts)
-                
-                # Stop once we have 4 valid games
                 if len(valid_pts) >= 4:
                     break
             
@@ -370,7 +420,6 @@ def run_base_prediction(pid, pos, week):
             feats_input = {}
             for k in m_info["features"]:
                 if k == 'player_season_avg_points':
-                    # Use the Clean 4-Game Avg
                     feats_input[k] = [float(avg_recent_form)]
                 else:
                     feats_input[k] = [float(features_dict.get(k) or 0.0)]
@@ -388,7 +437,7 @@ def run_base_prediction(pid, pos, week):
         # --- 4. BASELINE CORRECTION ---
         baseline = avg_recent_form
 
-        # --- 5. USAGE VACUUM LOGIC (Historical Lookback) ---
+        # --- 5. USAGE VACUUM LOGIC (Robust Time-Aware) ---
         injury_boost = 0.0
         injury_statuses = ["IR", "Out", "Doubtful", "Inactive", "PUP"] 
         
@@ -398,10 +447,11 @@ def run_base_prediction(pid, pos, week):
         
         for mate in teammates.iter_rows(named=True):
             mate_id = mate['player_id']
-            status = model_data.get("injury_map", {}).get(mate_id, "Active")
+            
+            # USE HELPER FUNCTION for Correct Time Travel Logic
+            status = get_injury_status_for_week(mate_id, week)
             
             if any(s in status for s in injury_statuses):
-                # Check HISTORICAL stats
                 mate_stats = model_data["df_player_stats"].filter(
                     (pl.col("player_id") == mate_id) & (pl.col("week") < int(week))
                 )
@@ -419,17 +469,15 @@ def run_base_prediction(pid, pos, week):
                             m_snaps = mate_snaps_df.select(pl.col("offense_pct")).mean().item()
                             if m_snaps < 1.0: m_snaps *= 100
 
-                    if m_snaps >= 60 and m_avg >= 10:
+                    if m_snaps >= 30 and m_avg >= 10:
                         injury_boost = 2.5 if pos in ["RB", "QB"] else 1.5
+                        print(f"   💉 BOOST: {pid} boosted by {mate_id} ({status})")
                         break 
 
         # --- 6. FINAL SCORE ---
         final_score = max(0.0, baseline + amplified_dev + injury_boost)
         is_boosted = injury_boost > 0
         
-        # Return avg_recent_form (which is now the 4-game avg) 
-        # Variable name 'avg_last_3' kept in tuple position to match existing callers if needed, 
-        # or we just return it as the 4th value.
         return round(float(final_score), 2), is_boosted, features_dict, avg_recent_form
         
     except Exception as e:
@@ -460,7 +508,6 @@ async def get_player_card(player_id: str, week: int):
     team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
     # --- RUN PREDICTION ---
-    # Captures the 4-game avg into the variable (previously named avg_last_3)
     l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week)
     
     # --- GET SEASON AVERAGE ---
@@ -474,6 +521,9 @@ async def get_player_card(player_id: str, week: int):
         l0_score = season_avg if season_avg > 0 else rolling_avg_val
 
     meta_score = l0_score 
+
+    # --- INJURY STATUS (Use Same Logic as Prediction) ---
+    final_status = get_injury_status_for_week(player_id, week)
 
     # --- SNAP COUNT FALLBACK ---
     snap_pct, snap_count = 0.0, 0
@@ -582,14 +632,9 @@ async def get_player_card(player_id: str, week: int):
         "prediction": round(meta_score, 2),  
         "floor_prediction": round(meta_score * 0.8, 2),
         "average_points": round(season_avg, 1), 
-        
-        # We send the 4-game average here. 
-        # Frontend might still label it "3wk" unless we change the text in PlayerModal.tsx, 
-        # but the DATA is now the 4-week average.
-        "rolling_3wk_avg": round(rolling_avg_val, 1),
-        
+        "rolling_4wk_avg": round(rolling_avg_val, 1), 
         "is_injury_boosted": is_boosted, 
-        "injury_status": model_data.get("injury_map", {}).get(player_id, "Active"),
+        "injury_status": final_status, 
         "debug_err": None 
     }
 async def get_team_roster_cards(team_abbr: str, week: int):
