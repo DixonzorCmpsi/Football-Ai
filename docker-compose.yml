@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # 1. Database Service
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password # Change this!
+      POSTGRES_DB: football_ai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # 2. Backend Service
+  backend:
+    build: ./backend
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - DB_CONNECTION_STRING=postgresql://admin:password@db:5432/football_ai
+      # Add other env vars from your .env file here
+    ports:
+      - "8000:8000"
+
+  # 3. Frontend Service
+  frontend:
+    build: ./Dashboard/predictor-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

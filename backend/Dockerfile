@@ -1,30 +1,27 @@
-# 1. Start from a lightweight, official Python image
-FROM python:3.11-slim
+# backend/Dockerfile
+FROM python:3.10-slim
 
-# 2. Set the working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# 3. Copy just the requirements file and install dependencies
-# This is a best practice. Docker will cache this layer,
-# so it won't reinstall all your libraries every time you
-# change one line of your server code.
+# Install system dependencies (needed for some Python packages like psycopg2)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. Copy all your application code and data into the container
-# This copies your server and feature generator
-COPY applications/ ./applications/
-COPY dataPrep/feature_generator_timeseries.py ./dataPrep/feature_generator_timeseries.py
+# Copy the rest of the backend code
+COPY . .
 
-# This copies your live 2025 RAG data
-COPY rag_data/ ./rag_data/
-
-# This copies your 4 trained models and 4 feature lists
-COPY model_training/models/ ./model_training/models/
-
-# 5. Expose the port your FastAPI server runs on
+# Expose the port your server runs on (FastAPI/Uvicorn usually 8000)
 EXPOSE 8000
 
-# 6. The command to run your server
-# We use 0.0.0.0 to make it accessible from outside the container.
-CMD ["uvicorn", "applications.server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the server
+# Assuming server.py is in applications/server.py and uses uvicorn internally or directly
+CMD ["python", "applications/server.py"]
