@@ -11,8 +11,6 @@ from datetime import datetime
 load_dotenv()
 
 # --- WINDOWS CONSOLE FIX ---
-# Force UTF-8 encoding for stdout/stderr to handle emojis like 🚀
-# This prevents the "UnicodeEncodeError" when running from the server
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
@@ -69,8 +67,8 @@ PIPELINE_STEPS = [
     {
         "script": "01_create_static_files.py",
         "uploads": [
-            (f"player_profiles_{SEASON}.csv", "player_profiles", "smart_append"),
-            (f"schedule_{SEASON}.csv", "schedule", "replace") # <-- Initial Upload (Basic)
+            (f"player_profiles_{SEASON}.csv", "player_profiles", "replace"), # Profiles schema might update
+            (f"schedule_{SEASON}.csv", "schedule", "replace") 
         ]
     },
     # 2. HISTORICAL DATA
@@ -87,10 +85,8 @@ PIPELINE_STEPS = [
     {
         "script": "03_create_defense_file.py",
         "uploads": [
-             (f"weekly_defense_stats_{SEASON}.csv", "weekly_defense_stats", "smart_append"),
-             (f"weekly_offense_stats_{SEASON}.csv", "weekly_offense_stats", "smart_append"),
-             # --- CRITICAL FIX: Re-upload Schedule (Now with Over/Under) ---
-             # This ensures the 'over_under' column added by script 03 gets into the DB
+             (f"weekly_defense_stats_{SEASON}.csv", f"weekly_defense_stats_{SEASON}", "smart_append"),
+             (f"weekly_offense_stats_{SEASON}.csv", f"weekly_offense_stats_{SEASON}", "smart_append"),
              (f"schedule_{SEASON}.csv", "schedule", "replace") 
         ]
     },
@@ -98,30 +94,32 @@ PIPELINE_STEPS = [
     {
         "script": "02_update_weekly_stats.py",
         "uploads": [
-             (f"weekly_player_stats_{SEASON}.csv", "weekly_player_stats", "smart_append")
+             (f"weekly_player_stats_{SEASON}.csv", f"weekly_player_stats_{SEASON}", "smart_append")
         ]
     },
     # 5. ENRICHMENT
     {
         "script": "04_update_snap_counts.py",
         "uploads": [
-             (f"weekly_snap_counts_{SEASON}.csv", "weekly_snap_counts", "smart_append")
+             (f"weekly_snap_counts_{SEASON}.csv", f"weekly_snap_counts_{SEASON}", "smart_append")
         ]
     },
     {
         "script": "08_update_injuries.py",
         "uploads": [
-             (f"weekly_injuries_{SEASON}.csv", "weekly_injuries", "smart_append")
+             (f"weekly_injuries_{SEASON}.csv", f"weekly_injuries_{SEASON}", "smart_append")
         ]
     },
-    # 6. ODDS
-    # {
-    #     "script": "07_update_odds.py",
-    #     "uploads": [
-    #          (f"weekly_player_odds_{SEASON}.csv", "weekly_player_odds", "smart_append")
-    #     ]   
-    # },
-    # 7. MODELING DATASET
+    # 6. FEATURE ENGINEERING (DB CENTRIC)
+    # New Architecture: Script 13 pulls from DB -> Computes -> Writes to DB
+    # We include the upload step here just as a backup for the local CSV artifact
+    {
+        "script": "13_generate_production_features.py", 
+        "uploads": [
+            (f"weekly_feature_set_{SEASON}.csv", f"weekly_feature_set_{SEASON}", "replace") 
+        ]
+    },
+    # 7. MODELING DATASET (Training Prep)
     {
         "script": "../dataPrep/build_modeling_dataset.py", 
         "smart_check_file": "../dataPrep/weekly_modeling_dataset.csv",
@@ -130,7 +128,7 @@ PIPELINE_STEPS = [
             ("../dataPrep/weekly_modeling_dataset.csv", "modeling_dataset", "replace") 
         ]
     },
-    # 8. FEATURE ENGINEERING
+    # 8. FEATURE ENGINEERING (Training Prep)
     {
         "script": "../dataPrep/feature_engineering.py", 
         "smart_check_file": "../dataPrep/featured_dataset.csv",
@@ -139,7 +137,7 @@ PIPELINE_STEPS = [
             ("../dataPrep/featured_dataset.csv", "featured_dataset", "replace") 
         ]
     },
-    # 10. BOVADA CRAWLER (Get Game URLs)
+   # 10. BOVADA CRAWLER (Get Game URLs)
     {
         "script": "10_bovada_crawler.py",
         "uploads": [] 
@@ -150,8 +148,6 @@ PIPELINE_STEPS = [
         "script": "11_bovada_scraper.py",
         "uploads": []
     },
-
-    # 12. BOVADA PROCESSOR (Splits data into Game Lines & Player Props)
     {
         "script": "12_process_bovada.py",
         "uploads": [
@@ -159,7 +155,7 @@ PIPELINE_STEPS = [
              (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "replace")
         ]
     },
-    # 9. FINAL RANKINGS
+    # 10. FINAL RANKINGS
     {
         "script": "06_generate_rankings.py",
         "uploads": [
@@ -230,7 +226,6 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
         df = pl.read_csv(file_path, ignore_errors=True)
         
         # --- SELF-HEALING: CHECK FOR SCHEMA MISMATCH ---
-        # If the CSV has columns the DB is missing (like 'over_under' or 'season'), we RESET the table.
         try:
             insp = inspect(engine)
             if insp.has_table(table_name):
@@ -240,7 +235,7 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
                 if not csv_cols.issubset(db_cols):
                     print(f"      ⚠️ Schema Mismatch! CSV has new columns. Resetting '{table_name}'...")
                     reset_db_table(table_name, engine)
-                    mode = 'replace' # Force replace since we dropped it
+                    mode = 'replace' 
         except Exception: 
             pass 
 
@@ -263,7 +258,6 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
         # --- MODE: SMART APPEND ---
         elif mode == 'smart_append':
             try:
-                # Safe Delete Logic using 'with engine.connect()'
                 with engine.connect() as conn:
                     if 'week' in df.columns and 'season' in df.columns:
                         weeks = ",".join(map(str, df['week'].unique().to_list()))
@@ -306,8 +300,9 @@ def main():
         ran_script = run_external_script(step, engine)
         was_skipped = not ran_script
         
-        for csv, table, mode in step["uploads"]:
-            push_to_postgres(csv, table, mode, engine, skipped=was_skipped)
+        if "uploads" in step:
+            for csv, table, mode in step["uploads"]:
+                push_to_postgres(csv, table, mode, engine, skipped=was_skipped)
 
     print("\n" + "="*50)
     print("🎉 ETL PIPELINE COMPLETE")
