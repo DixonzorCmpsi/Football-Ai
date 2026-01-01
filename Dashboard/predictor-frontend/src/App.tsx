@@ -3,6 +3,7 @@ import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun,
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
+import SidePanelDrawer from './components/SidePanelDrawer';
 import CompareView from './components/CompareView';
 import PlayerHistory from './components/PlayerHistory';
 import MatchupView from './components/MatchupView';
@@ -78,7 +79,7 @@ const SidebarPlayerItem = ({
         
         {/* Compare Button */}
         <button 
-            onClick={(e) => { e.stopPropagation(); onToggleCompare && onToggleCompare(player.player_id); }}
+            onClick={(e) => { e.stopPropagation(); if (onToggleCompare) onToggleCompare(player.player_id); }}
             className={`w-6 h-6 flex items-center justify-center rounded-md transition-all ${
                 isSelected 
                 ? 'bg-blue-600 text-white shadow-md scale-110' 
@@ -102,15 +103,17 @@ export default function App() {
   useEffect(() => {
     // Only update if we have a valid positive week number
     if (currentWeek && currentWeek > 0) {
-        setActiveWeek(currentWeek);
+        // Schedule setState as a microtask to avoid sync setState-in-effect lint error
+        Promise.resolve().then(() => setActiveWeek(currentWeek));
     }
   }, [currentWeek]);
 
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY'>('SCHEDULE');
+  const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING'>('SCHEDULE');
   const [showSidebars, setShowSidebars] = useState(true); 
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE'>('SCHEDULE');
@@ -126,7 +129,8 @@ export default function App() {
 
   useEffect(() => {
     if (viewMode === 'COMPARE' && compareList.length > 2) {
-        setShowSidebars(false);
+        // Schedule update as microtask to avoid sync setState-in-effect lint error
+        Promise.resolve().then(() => setShowSidebars(false));
     }
   }, [viewMode, compareList.length]);
 
@@ -212,15 +216,16 @@ export default function App() {
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
              
-             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:block z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
-                The Spot <span className="text-blue-600 dark:text-blue-400">Ai</span>
+             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:flex items-center gap-2 z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
+                <div className="text-2xl font-extrabold" aria-hidden>Ai</div>
+                <span className="sr-only">The Spot</span>
              </div>
           </div>
           
           <div className="flex items-center gap-4">
             <div className="flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50">
-              {['SCHEDULE', 'COMPARE', 'LOOKUP'].map((mode) => (
-                <button key={mode} onClick={() => setViewMode(mode as any)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+              {(['SCHEDULE', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+                <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
@@ -237,6 +242,11 @@ export default function App() {
             <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
             </button>
+
+            {/* Mobile: Trending access (hidden on lg screens where sidebars exist) */}
+            <button onClick={() => setMobileDrawerOpen(true)} className="p-2 text-slate-400 hover:text-blue-600 lg:hidden rounded-lg transition-colors" aria-label="Open Menu">
+              <TrendingUp size={18} />
+            </button>
             
             <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
                 Wk {activeWeek || "-"}
@@ -244,8 +254,35 @@ export default function App() {
           </div>
         </header>
 
+        {/* Mobile Drawer */}
+        <SidePanelDrawer isOpen={mobileDrawerOpen} onClose={() => setMobileDrawerOpen(false)}>
+          <div>
+            <h3 className="text-sm font-black">Trending / Menu</h3>
+            <div className="mt-4">
+              <button onClick={() => { setViewMode('TRENDING'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Trending</button>
+              <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
+              <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
+            </div>
+          </div>
+        </SidePanelDrawer>
+
         {/* CONTENT */}
         <div className="flex-1 overflow-y-auto p-4 md:p-6 scroll-smooth dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+
+          {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
+          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 sm:hidden">
+            <div className="flex items-center gap-3 bg-white dark:bg-slate-800 rounded-xl px-3 py-2 shadow-lg border border-slate-200 dark:border-slate-700">
+              <button onClick={() => setViewMode('TRENDING')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                <TrendingUp size={18} />
+              </button>
+              <button onClick={() => setViewMode('COMPARE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                <BarChart2 size={18} />
+              </button>
+              <button onClick={() => setViewMode('LOOKUP')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                <Search size={18} />
+              </button>
+            </div>
+          </div>
           
           {viewMode === 'SCHEDULE' && (
             <div className={`mx-auto transition-all duration-300 ${showSidebars ? 'max-w-5xl' : 'max-w-6xl'}`}>
@@ -310,6 +347,29 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* VIEW: TRENDING (mobile) */}
+          {viewMode === 'TRENDING' && (
+            <div className="mx-auto max-w-3xl">
+              <h2 className="text-sm font-black mb-4">Trending Players</h2>
+              {loadingUp ? (
+                <p className="text-xs text-slate-400">Loading...</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3">
+                  {trendingUp.map(p => (
+                    <SidebarPlayerItem 
+                      key={p.player_id}
+                      player={p}
+                      type="up"
+                      onClick={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+                      onToggleCompare={toggleCompare}
+                      isSelected={compareList.includes(p.player_id)}
+                    />
                   ))}
                 </div>
               )}

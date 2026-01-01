@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -11,12 +12,31 @@ DATA_DIR = "bovada_data"
 OUTPUT_FILE = os.path.join(DATA_DIR, "games_list.json")
 
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
-
 def setup_driver():
-    options = Options()
-    # options.add_argument("--headless=new") # Uncomment for background run
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    return webdriver.Chrome(options=options)
+    options = uc.ChromeOptions()
+    
+    # 1. Universal Settings (Both Environments)
+    options.add_argument("--headless")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+
+    # 2. Docker-Specific Detection & Optimization
+    # We check for the '.dockerenv' file which exists in almost all containers
+    if os.path.exists('/.dockerenv'):
+        options.add_argument("--no-sandbox")            # Essential for Docker root
+        options.add_argument("--disable-dev-shm-usage") # Uses /tmp to avoid OOM crashes
+        print("🐳 Docker detected: Applying sandbox and memory optimizations.")
+    else:
+        print("💻 Local environment detected: Running standard profile.")
+
+    # 3. Initialize with error handling
+    try:
+        driver = uc.Chrome(options=options)
+        return driver
+    except Exception as e:
+        print(f"❌ Driver initialization failed: {e}")
+        raise
 
 def main():
     print("--- 🕷️ Starting Bovada Game Crawler ---")

@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const API_BASE_URL = 'http://127.0.0.1:8000'; 
+// Runtime-configurable API base. Defaults to relative `/api` so the frontend can be
+// served anywhere and proxy requests to the backend (nginx will proxy /api -> backend).
+// Use the typed `window.__env` declaration (see `src/types/env.d.ts`) to avoid `any`.
+const API_BASE_URL = (typeof window !== 'undefined' && window.__env && window.__env.API_BASE_URL) ? window.__env.API_BASE_URL : '/api'; 
 
 export interface PropBet {
   prop_type: string;
@@ -68,12 +71,52 @@ export interface MatchupData {
     week: number;
     home_roster: BroadcastCardData[];
     away_roster: BroadcastCardData[];
+    over_under?: number | null;
+    spread?: number | null;
+    home_win_prob?: number | null;
+    away_win_prob?: number | null;
 }
 
-const transformToCardData = (d: any): BroadcastCardData => {
+export interface ScheduleGame {
+  home_team: string;
+  away_team: string;
+  game_total?: number;
+  moneyline_home?: string;
+  moneyline_away?: string;
+  [key: string]: unknown;
+}
+
+interface RawPlayerData {
+    player_id?: string;
+    player_name?: string;
+    position?: string;
+    team?: string;
+    opponent?: string;
+    image?: string;
+    draft_position?: string;
+    injury_status?: string;
+    is_injury_boosted?: boolean;
+    spread?: number | null;
+    props?: unknown[];
+    pass_td_line?: number | null;
+    pass_td_prob?: number | null;
+    anytime_td_prob?: number | null;
+    prediction?: number;
+    floor_prediction?: number;
+    average_points?: number;
+    snap_count?: number;
+    snap_percentage?: number;
+    odds?: {
+        prop_passing_yards?: number;
+        prop_rushing_yards?: number;
+        prop_receiving_yards?: number;
+    };
+}
+
+const transformToCardData = (d: RawPlayerData): BroadcastCardData => {
     let oddsDisplay = "No Lines";
     if (d.odds) {
-        const lines = [];
+        const lines: string[] = [];
         if (d.odds.prop_passing_yards) lines.push(`${d.odds.prop_passing_yards} Pass`);
         if (d.odds.prop_rushing_yards) lines.push(`${d.odds.prop_rushing_yards} Rush`);
         if (d.odds.prop_receiving_yards) lines.push(`${d.odds.prop_receiving_yards} Rec`);
@@ -81,17 +124,17 @@ const transformToCardData = (d: any): BroadcastCardData => {
     }
 
     return {
-        id: d.player_id,
-        name: d.player_name,
-        position: d.position,
-        team: d.team,
+        id: d.player_id || "",
+        name: d.player_name || "",
+        position: d.position || "",
+        team: d.team || "",
         opponent: d.opponent || "BYE", // Map opponent
-        image: d.image,
-        draft: d.draft_position,
+        image: d.image || "",
+        draft: d.draft_position || "",
         injury_status: d.injury_status || "Active",
         is_injury_boosted: d.is_injury_boosted || false, // Map boost flag
         spread: d.spread !== undefined ? d.spread : null,
-        props: d.props || [], 
+        props: (d.props as PropBet[]) || [], 
         // Pass through raw props for PlayerCard mapping
         pass_td_line: d.pass_td_line,
         pass_td_prob: d.pass_td_prob,
@@ -133,14 +176,14 @@ export const usePastRankings = (week: number) => {
 
   useEffect(() => {
     if (!week || week < 1) {
-        setLoading(false);
+        Promise.resolve().then(() => setLoading(false));
         return;
     }
-    setLoading(true);
+    Promise.resolve().then(() => setLoading(true));
     axios.get(`${API_BASE_URL}/rankings/past/${week}`)
       .then(res => setData(res.data))
       .catch(err => console.error("Error fetching trending down:", err))
-      .finally(() => setLoading(false));
+      .finally(() => Promise.resolve().then(() => setLoading(false)));
   }, [week]);
 
   return { pastRankings: data, loadingPast: loading };
@@ -152,39 +195,39 @@ export const useFutureRankings = (week: number) => {
 
   useEffect(() => {
     if (!week || week < 1) {
-        setLoading(false);
+        Promise.resolve().then(() => setLoading(false));
         return;
     }
-    setLoading(true);
+    Promise.resolve().then(() => setLoading(true));
     axios.get(`${API_BASE_URL}/rankings/future/${week}`)
       .then(res => setData(res.data))
       .catch(err => console.error("Error fetching trending up:", err))
-      .finally(() => setLoading(false));
+      .finally(() => Promise.resolve().then(() => setLoading(false)));
   }, [week]);
 
   return { futureRankings: data, loadingFuture: loading };
 };
 
 export const useSchedule = (week: number) => {
-  const [games, setGames] = useState<any[]>([]);
+  const [games, setGames] = useState<ScheduleGame[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!week || week < 1) {
-        setGames([]);
+        Promise.resolve().then(() => setGames([]));
         return; 
     }
     
-    setLoading(true);
-    setGames([]); // Clear old games immediately
+    Promise.resolve().then(() => setLoading(true));
+    Promise.resolve().then(() => setGames([])); // Clear old games immediately
 
     axios.get(`${API_BASE_URL}/schedule/${week}`)
       .then(res => setGames(res.data))
       .catch(err => {
           console.error("Error fetching schedule:", err);
-          setGames([]); // Ensure empty array on error
+          Promise.resolve().then(() => setGames([])); // Ensure empty array on error
       })
-      .finally(() => setLoading(false));
+      .finally(() => Promise.resolve().then(() => setLoading(false)));
   }, [week]); 
 
   return { games, loadingSchedule: loading };
@@ -196,11 +239,11 @@ export const usePlayerHistory = (playerId: string | null) => {
   
     useEffect(() => {
       if (!playerId) return;
-      setLoading(true);
+      Promise.resolve().then(() => setLoading(true));
       axios.get(`${API_BASE_URL}/player/history/${playerId}`)
         .then(res => setHistory(res.data))
         .catch(err => console.error("History error:", err))
-        .finally(() => setLoading(false));
+        .finally(() => Promise.resolve().then(() => setLoading(false)));
     }, [playerId]);
   
     return { history, loadingHistory: loading };
@@ -212,7 +255,7 @@ export const useBroadcastCard = (playerName: string | null, week?: number) => {
 
   useEffect(() => {
     if (!playerName) return;
-    setLoading(true);
+    Promise.resolve().then(() => setLoading(true));
     
     axios.post(`${API_BASE_URL}/predict`, { player_name: playerName, week: week })
       .then(res => {
@@ -222,7 +265,7 @@ export const useBroadcastCard = (playerName: string | null, week?: number) => {
           console.error("Broadcast card error:", err);
           setCardData(null);
       })
-      .finally(() => setLoading(false));
+      .finally(() => Promise.resolve().then(() => setLoading(false)));
   }, [playerName, week]);
 
   return { cardData, loadingCard: loading };
@@ -234,7 +277,7 @@ export const usePlayerProfileById = (playerId: string | null) => {
   
     useEffect(() => {
       if (!playerId) return;
-      setLoading(true);
+      Promise.resolve().then(() => setLoading(true));
       
       axios.get(`${API_BASE_URL}/player/${playerId}`)
         .then(res => {
@@ -244,7 +287,7 @@ export const usePlayerProfileById = (playerId: string | null) => {
             console.error("Profile by ID error:", err);
             setCardData(null);
         })
-        .finally(() => setLoading(false));
+        .finally(() => Promise.resolve().then(() => setLoading(false)));
     }, [playerId]);
   
     return { cardData, loadingProfile: loading };
@@ -257,7 +300,7 @@ export const useMatchupDeepDive = (week: number, home: string, away: string | nu
     useEffect(() => {
       if (!home || !away) return;
       
-      setLoading(true);
+      Promise.resolve().then(() => setLoading(true));
       axios.get(`${API_BASE_URL}/matchup/${week}/${home}/${away}`)
         .then(res => {
             const raw = res.data;
@@ -265,12 +308,16 @@ export const useMatchupDeepDive = (week: number, home: string, away: string | nu
                 matchup: raw.matchup,
                 week: raw.week,
                 home_roster: Array.isArray(raw.home_roster) ? raw.home_roster.map(transformToCardData) : [],
-                away_roster: Array.isArray(raw.away_roster) ? raw.away_roster.map(transformToCardData) : []
+                away_roster: Array.isArray(raw.away_roster) ? raw.away_roster.map(transformToCardData) : [],
+                over_under: raw.over_under,
+                spread: raw.spread,
+                home_win_prob: raw.home_win_prob,
+                away_win_prob: raw.away_win_prob
             };
             setMatchupData(cleanData);
         })
         .catch(err => console.error("Failed to fetch matchup deep dive:", err))
-        .finally(() => setLoading(false));
+        .finally(() => Promise.resolve().then(() => setLoading(false)));
     }, [week, home, away]);
   
     return { matchupData, loadingMatchup: loading };
@@ -280,7 +327,7 @@ export const usePlayerSearch = (query: string) => {
     const [results, setResults] = useState<Player[]>([]);
     
     useEffect(() => {
-        if (query.length < 2) { setResults([]); return; }
+        if (query.length < 2) { Promise.resolve().then(() => setResults([])); return; }
         const delayDebounce = setTimeout(() => {
             axios.get(`${API_BASE_URL}/players/search?q=${query}`)
                 .then(res => setResults(res.data))

@@ -15,10 +15,11 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
 
   useEffect(() => {
     if (player) {
-      fetch(`http://127.0.0.1:8000/player/history/${player.player_id}`)
-        .then(res => res.json())
-        .then(data => setHistory(data))
-        .catch(err => console.error(err));
+      import('../lib/api').then(({ fetchPlayerHistory }) => {
+        fetchPlayerHistory(player.player_id)
+          .then(data => setHistory(data))
+          .catch(err => console.error(err));
+      }).catch(console.error);
     }
   }, [player]);
 
@@ -104,7 +105,7 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.rushing_yds || '-'}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.passing_yds || '-'}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.receiving_yds || '-'}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.touchdowns || '-'}</td>
+                    <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.touchdowns !== undefined && game.touchdowns !== null ? game.touchdowns : '-'}</td>
                     <td className="px-4 py-3 text-right bg-slate-50 dark:bg-slate-900/30">
                       <span className={`font-black ${game.points >= 15 ? 'text-green-600 dark:text-green-400' : 'text-slate-800 dark:text-white'}`}>
                         {game.points}

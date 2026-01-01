@@ -66,3 +66,16 @@ Once the server is running, open your web browser and go to this URL:
 
 You will see the automatic FastAPI documentation. From there, you can use the interactive UI to test your `/predict` and `/compare` endpoints.
 
+run this: docker exec -it football-ai-backend-1 python dataPrep/build_modeling_dataset.py
+
+Note: Frontend updates — made the UI more mobile-friendly (responsive card widths and chart heights) and fixed Total TDs normalization in Compare view / Comparison history to scale consistently across players.
+
+Testing: added a small unit test for normalization (`src/utils/normalize.ts`) using Vitest. To run frontend tests locally:
+
+```bash
+cd Dashboard/predictor-frontend
+npm install
+npm run test
+```
+
+(If you use Docker/CI, install `vitest` in your CI pipeline.)

@@ -6,16 +6,47 @@ from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+import undetected_chromedriver as uc
+
 
 # --- CONFIG ---
 DATA_DIR = "bovada_data"
-INPUT_LIST = os.path.join(DATA_DIR, "games_list.json")
+# Allow tests to override the input list via env var BOVADA_INPUT_LIST
+INPUT_LIST = os.path.join(DATA_DIR, os.getenv('BOVADA_INPUT_LIST', "games_list.json"))
 
 def setup_driver():
-    options = Options()
-    # options.add_argument("--headless=new") 
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    return webdriver.Chrome(options=options)
+    options = uc.ChromeOptions()
+    
+    # 1. Universal Settings (Both Environments)
+    options.add_argument("--headless=new")
+    options.add_argument("--window-size=1280,720")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-breakpad")
+    options.add_argument("--disable-client-side-phishing-detection")
+
+    # 2. Docker-Specific Detection & Optimization
+    # We check for the '.dockerenv' file which exists in almost all containers
+    if os.path.exists('/.dockerenv'):
+        options.add_argument("--no-sandbox")            # Essential for Docker root
+        options.add_argument("--disable-dev-shm-usage") # Uses /tmp to avoid OOM crashes
+        options.add_argument("--single-process")
+        options.add_argument("--no-zygote")
+        print("🐳 Docker detected: Applying sandbox and memory optimizations.")
+    else:
+        print("💻 Local environment detected: Running standard profile. To reduce memory, set BOVADA_CHUNK_SIZE smaller or enable swap on the host.")
+
+    # 3. Initialize with error handling
+    try:
+        driver = uc.Chrome(options=options)
+        return driver
+    except Exception as e:
+        print(f"❌ Driver initialization failed: {e}")
+        raise
 
 def clean_filename(text):
     return re.sub(r'[^a-zA-Z0-9]', '_', text)
@@ -102,12 +133,35 @@ def main():
         print("⚠️ No games in list.")
         return
 
-    driver = setup_driver()
-    try:
-        for url in urls:
-            scrape_game(driver, url)
-    finally:
-        driver.quit()
+    # Batch processing to limit Chromium memory growth and allow periodic restarts
+    chunk_size = int(os.getenv('BOVADA_CHUNK_SIZE', '10'))
+    delay_seconds = float(os.getenv('BOVADA_DELAY_SECONDS', '2'))
+
+    print(f"Starting scraping in batches of {chunk_size} with {delay_seconds}s delay")
+
+    for start in range(0, len(urls), chunk_size):
+        batch = urls[start:start + chunk_size]
+        print(f"\n--- Processing batch {start//chunk_size + 1} (size {len(batch)}) ---")
+
+        driver = setup_driver()
+        try:
+            for url in batch:
+                try:
+                    scrape_game(driver, url)
+                    time.sleep(delay_seconds)
+                except Exception as e:
+                    print(f"  ⚠️ Error scraping {url}: {e} -- restarting driver for next batch item")
+                    try:
+                        driver.quit()
+                    except: pass
+                    time.sleep(1)
+                    driver = setup_driver()
+        finally:
+            try:
+                driver.quit()
+            except: pass
+
+    print("\n✅ Finished scraping all batches")
 
 if __name__ == "__main__":
     main()

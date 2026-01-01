@@ -128,6 +128,15 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
             <span>•</span>
             <span className="truncate opacity-80">{data.team} vs {data.opponent}</span>
           </div>
+
+          {/* Show Headshot with fallback to team logo for compactness on mobile */}
+          <div className="mt-2">
+            {data.image ? (
+                <img src={data.image} alt="headshot" className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700" />
+            ) : (
+                <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-xs">{data.team}</div>
+            )}
+          </div>
         </div>
 
         <div className="flex gap-2 text-right pl-2 border-l border-slate-200 dark:border-white/10 mr-6">

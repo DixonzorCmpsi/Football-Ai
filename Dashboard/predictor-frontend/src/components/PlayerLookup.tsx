@@ -18,7 +18,8 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
 }) => {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [results, setResults] = useState<any[]>([]); 
+  interface SearchResult { player_id: string; player_name: string; position?: string; team?: string; team_abbr?: string; headshot?: string }
+  const [results, setResults] = useState<SearchResult[]>([]); 
   
   const [targetPlayer, setTargetPlayer] = useState<string | null>(null);
 
@@ -38,14 +39,13 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
     }
     // Don't search if we already selected this player
     if (debouncedQuery !== targetPlayer) {
-        fetch(`http://127.0.0.1:8000/players/search?q=${debouncedQuery}`)
-        .then(res => res.json())
-        .then(setResults)
-        .catch(console.error);
+            import('../lib/api').then(({ searchPlayers }) => {
+                searchPlayers(debouncedQuery).then((res: unknown[]) => setResults(res as SearchResult[])).catch(console.error);
+            }).catch(console.error);
     }
   }, [debouncedQuery, targetPlayer]);
 
-  const handleSelect = (player: any) => {
+  const handleSelect = (player: SearchResult) => {
     setQuery(player.player_name); 
     setResults([]); // Clear results immediately
     setTargetPlayer(player.player_name); // Set target
@@ -57,7 +57,7 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
   const playerData: PlayerData | null = cardData ? {
       player_id: cardData.id,
       player_name: cardData.name,
-      position: cardData.position as any,
+      position: (cardData.position as PlayerData['position']) || 'FLEX',
       team: cardData.team,
       opponent: cardData.opponent,
       image: cardData.image,
@@ -104,7 +104,7 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
         {/* DROPDOWN RESULTS */}
         {results.length > 0 && !targetPlayer && (
           <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-            {results.map((p: any) => (
+            {results.map((p: SearchResult) => (
               <div 
                 key={p.player_id}
                 onClick={() => handleSelect(p)}

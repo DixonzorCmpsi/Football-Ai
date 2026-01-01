@@ -6,9 +6,11 @@ from dotenv import load_dotenv
 from pathlib import Path
 import subprocess
 from datetime import datetime
+import logging
 
 # --- Configuration ---
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # --- WINDOWS CONSOLE FIX ---
 if sys.platform == "win32":
@@ -26,15 +28,23 @@ def get_current_season():
     else: return now.year - 1
 
 SEASON = get_current_season()
-print(f"Dynamic Season Detected: {SEASON}")
+logger.info(f"Dynamic Season Detected: {SEASON}")
 
-# --- Helper: Check if Schema Matches ---
+# --- Per-file schema overrides (Polars) ---
+SCHEMA_OVERRIDES_BY_FILE = {
+    # defense CSV sometimes contains fractional values for two-point attempt averages
+    "weekly_team_stats_defense.csv": {"average_defensive_two_point_attempt": pl.Float64}
+}
+
+# --- Helper: Check if Schema Matches --
+
 def check_schema_match(file_path_str, table_name, engine):
     """
     Returns True if:
     1. Local file exists.
     2. DB Table exists.
-    3. DB Table columns match CSV columns (Schema Check).
+    3. DB Table columns match CSV columns.
+    4. NEW: DB Table is NOT empty.
     """
     current_dir = Path(__file__).parent
     file_path = (current_dir / file_path_str).resolve() if file_path_str.startswith("../") else current_dir / file_path_str
@@ -47,18 +57,24 @@ def check_schema_match(file_path_str, table_name, engine):
         if not insp.has_table(table_name):
             return False 
 
-        # Read header only
+        # --- Check if table is empty ---
+        with engine.connect() as conn:
+            # Efficient check: If at least one row exists, result will not be None
+            # Using SELECT 1 ... LIMIT 1 is faster than COUNT(*) on large tables
+            result = conn.execute(text(f"SELECT 1 FROM {table_name} LIMIT 1")).fetchone()
+            if result is None:
+                logger.warning(f"Table '{table_name}' exists but is EMPTY.")
+                return False
+
+        # Read header only for schema check
         df_head = pl.read_csv(file_path, n_rows=0)
         csv_cols = set(df_head.columns)
         db_cols = set([col['name'] for col in insp.get_columns(table_name)])
         
-        # If CSV cols are inside DB cols, we are good.
-        if csv_cols.issubset(db_cols):
-            return True 
-        else:
-            return False
+        return csv_cols.issubset(db_cols)
 
     except Exception as e:
+        logger.exception(f"Error checking schema/emptiness for {table_name}: {e}")
         return False
 
 # --- Pipeline Configuration ---
@@ -81,6 +97,7 @@ PIPELINE_STEPS = [
             ("../dataPrep/data/weekly_team_stats_defense.csv", "training_team_defense", "if_missing")
         ]
     },
+    
     # 3. CURRENT SEASON CONTEXT
     {
         "script": "03_create_defense_file.py",
@@ -121,20 +138,20 @@ PIPELINE_STEPS = [
     },
     # 7. MODELING DATASET (Training Prep)
     {
-        "script": "../dataPrep/build_modeling_dataset.py", 
-        "smart_check_file": "../dataPrep/weekly_modeling_dataset.csv",
+        "script": "../dataPrep/build_modeling_dataset_avg.py", 
+        "smart_check_file": "../dataPrep/weekly_modeling_dataset_avg.csv",
         "smart_check_table": "modeling_dataset",
         "uploads": [
-            ("../dataPrep/weekly_modeling_dataset.csv", "modeling_dataset", "replace") 
+            ("../dataPrep/weekly_modeling_dataset_avg.csv", "modeling_dataset", "replace") 
         ]
     },
     # 8. FEATURE ENGINEERING (Training Prep)
     {
-        "script": "../dataPrep/feature_engineering.py", 
-        "smart_check_file": "../dataPrep/featured_dataset.csv",
+        "script": "../dataPrep/feature_engineering_avg.py", 
+        "smart_check_file": "../dataPrep/featured_dataset_avg.csv",
         "smart_check_table": "featured_dataset",
         "uploads": [
-            ("../dataPrep/featured_dataset.csv", "featured_dataset", "replace") 
+            ("../dataPrep/featured_dataset_avg.csv", "featured_dataset", "replace") 
         ]
     },
    # 10. BOVADA CRAWLER (Get Game URLs)
@@ -156,12 +173,12 @@ PIPELINE_STEPS = [
         ]
     },
     # 10. FINAL RANKINGS
-    # {
-    #     "script": "06_generate_rankings.py",
-    #     "uploads": [
-    #          ("weekly_rankings.csv", "weekly_rankings", "smart_append")
-    #     ]
-    # }
+    {
+        "script": "06_generate_rankings.py",
+        "uploads": [
+             ("weekly_rankings.csv", "weekly_rankings", "smart_append")
+        ]
+    }
 ]
 
 def get_db_engine(): return create_engine(DB_CONNECTION_STRING)
@@ -208,98 +225,245 @@ def reset_db_table(table_name, engine):
     except Exception as e:
         print(f"      ❌ Error dropping table: {e}")
 
+
 def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
     current_dir = Path(__file__).parent
     file_path = (current_dir / file_path_str).resolve() if file_path_str.startswith("../") else current_dir / file_path_str
-    
+
     if skipped:
-        print(f"   -> Skipping upload for {table_name} (Smart Check Passed).")
+        logger.info(f"Skipping upload for {table_name} (Smart Check Passed).")
         return
 
     if not file_path.exists():
-        print(f"⚠️ Warning: Output file {file_path_str} not found. Skipping upload.")
+        logger.warning(f"Output file {file_path_str} not found at {file_path}. Skipping upload.")
         return
 
-    print(f"   -> Uploading {file_path.name} to '{table_name}' ({mode})...")
-    
+    # Log file size for quick diagnostics
     try:
-        df = pl.read_csv(file_path, ignore_errors=True)
-        
-        # --- 1. HARDENED SCHEMA CHECK ---
-        # Before doing anything, check if CSV has columns that the DB lacks.
+        size = file_path.stat().st_size
+        logger.debug(f"Found {file_path.name} (size: {size} bytes)")
+    except Exception:
+        size = 0
+
+    logger.info(f"Uploading {file_path.name} to '{table_name}' ({mode})...")
+
+    # Helper: streaming COPY upload (low-memory)
+    overrides = SCHEMA_OVERRIDES_BY_FILE.get(file_path.name, None)
+    logger.debug(f"resolved overrides for {file_path.name}: {overrides}")
+    if overrides:
+        logger.info(f"Applying schema overrides for {file_path.name}: {list(overrides.keys())}")
+    else:
+        logger.info("No schema overrides configured for this file.")
+
+    def fast_csv_upload(path, tbl, mode):
+        # 1) If replacing, create the table schema from a small sample
+        if mode == 'replace':
+            logger.info('Creating/Resetting table via small sample for COPY...')
+            if overrides:
+                sample = pl.read_csv(path, n_rows=1000, schema_overrides=overrides).to_pandas()
+            else:
+                sample = pl.read_csv(path, n_rows=1000).to_pandas()
+            reset_db_table(tbl, engine)
+            sample.to_sql(tbl, engine, if_exists='replace', index=False)
+
+        # 2) Use COPY FROM STDIN to stream the CSV directly into Postgres
+        logger.info('Streaming CSV into Postgres via COPY (low-memory)')
+        conn = engine.raw_connection()
+        try:
+            cur = conn.cursor()
+            with open(path, 'r', encoding='utf-8') as f:
+                cur.copy_expert(f"COPY {tbl} FROM STDIN WITH CSV HEADER", f)
+            conn.commit()
+            logger.info(f"Success: Streamed file to {tbl}.")
+        except Exception as e:
+            conn.rollback()
+            raise
+        finally:
+            cur.close()
+            conn.close()
+
+    try:
+        # For very large files, avoid reading into memory and use streaming COPY
+            logger.debug(f"size variable = {size}, threshold = {50_000_000}")
+        if size > 50_000_000:
+            logger.debug('taking fast streaming path')
+            try:
+                import subprocess
+                header = subprocess.check_output(['head', '-n', '1', str(file_path)], text=True).strip()
+                cols = len(header.split(','))
+                linecount = int(subprocess.check_output(['wc', '-l', str(file_path)], text=True).split()[0])
+                rows = max(linecount - 1, 0)
+            except Exception:
+                rows = None
+                cols = None
+            print(f"      - Detected large file (>{50_000_000} bytes). Rows ~ {rows}, Cols ~ {cols}")
+
+            fast_csv_upload(file_path, table_name, mode)
+            print(f"      - Completed streaming upload for {rows} rows.")
+            return
+
+        # 1) Read CSV without silently dropping rows for small files
+        try:
+            if overrides:
+                print(f"      - Reading CSV with schema_overrides: {list(overrides.keys())}")
+                df = pl.read_csv(file_path, infer_schema_length=10000, schema_overrides=overrides)
+            else:
+                df = pl.read_csv(file_path, infer_schema_length=10000)
+        except Exception as e:
+            msg = str(e)
+            print(f"      ⚠️ Polars read_csv failed: {msg}")
+            # If Polars complains about parsing into i64, try re-reading with a Float override
+            if 'could not parse' in msg and 'as dtype `i64`' in msg:
+                import re
+                m = re.search(r"at column '([^']+)'", msg)
+                if m:
+                    bad_col = m.group(1)
+                    print(f"      ↪️ Detected problematic column '{bad_col}'. Retrying with Float override.")
+                    local_overrides = dict(overrides or {})
+                    local_overrides[bad_col] = pl.Float64
+                    df = pl.read_csv(file_path, infer_schema_length=10000, schema_overrides=local_overrides)
+                else:
+                    print("      ↪️ Could not determine offending column, retrying with ignore_errors=True")
+                    df = pl.read_csv(file_path, infer_schema_length=10000, ignore_errors=True)
+            else:
+                # Re-raise for other unexpected errors
+                raise
+
+        rows = df.height
+        cols = df.width
+        print(f"      - Parsed CSV: {rows} rows, {cols} cols")
+
+        # 1a) Abort if empty
+        if rows == 0:
+            print(f"      ⚠️ DataFrame is empty. Aborting upload to '{table_name}' to avoid emptying the table.")
+            return
+
+        # 2) Hardened schema check
         try:
             insp = inspect(engine)
             if insp.has_table(table_name):
-                # Get DB columns (normalize to lower case)
                 db_cols = set([col['name'].lower() for col in insp.get_columns(table_name)])
-                # Get CSV columns (normalize to lower case)
                 csv_cols = set([c.lower() for c in df.columns])
-                
-                # If CSV has columns that are NOT in the DB -> FORCE REPLACE
                 if not csv_cols.issubset(db_cols):
                     new_cols = csv_cols - db_cols
-                    print(f"      ⚠️ Schema Evolution Detected! Found new columns: {new_cols}")
+                    print(f"      ⚠️ Schema Evolution Detected! New columns: {new_cols}")
                     print(f"      ☢️  Switching mode to 'replace' to update table schema.")
                     mode = 'replace'
         except Exception as e:
             print(f"      ⚠️ Schema check warning: {e}")
 
-        # --- 2. EXECUTE UPLOAD ---
-        
+        # Convert once for pandas/to_sql (fallback)
+        pdf = df.to_pandas()
+
         # MODE: IF MISSING
         if mode == 'if_missing':
             with engine.connect() as conn:
                 exists = conn.execute(text(f"SELECT to_regclass('public.{table_name}')")).scalar()
-                if exists and conn.execute(text(f"SELECT 1 FROM {table_name} LIMIT 1")).fetchone():
+                populated = False
+                if exists:
+                    populated = conn.execute(text(f"SELECT 1 FROM {table_name} LIMIT 1")).fetchone() is not None
+                if exists and populated:
                     print(f"      - Table exists & populated. SKIPPING.")
                     return
-            df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
-            print(f"      - Success! Initial load complete.")
+            pdf.to_sql(table_name, engine, if_exists='append', index=False, chunksize=10000)
+            print(f"      - Success! Initial load complete ({rows} rows).")
             return
 
-        # MODE: REPLACE (or forced via Schema Check)
+        # MODE: REPLACE
         if mode == 'replace':
-            # Drop explicitly to ensure clean schema recreation
             reset_db_table(table_name, engine)
-            df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
-            print(f"      - Success! Replaced table with new schema.")
-            
+            pdf.to_sql(table_name, engine, if_exists='replace', index=False, chunksize=10000)
+            print(f"      - Success! Replaced table with new schema ({rows} rows).")
+            return
+
         # MODE: SMART APPEND
         elif mode == 'smart_append':
             try:
                 with engine.connect() as conn:
-                    # Only try to delete by week/season if columns actually exist in CSV
+                    # Delete only when we have keys and df is non-empty
                     if 'week' in df.columns and 'season' in df.columns:
-                        weeks = ",".join(map(str, df['week'].unique().to_list()))
-                        conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON} AND week IN ({weeks})"))
-                        conn.commit()
+                        weeks = df['week'].unique().to_list()
+                        if len(weeks) > 0:
+                            weeks_str = ",".join(map(str, weeks))
+                            conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON} AND week IN ({weeks_str})"))
+                            conn.commit()
+                            print(f"      - Deleted existing rows for season={SEASON}, weeks={weeks}")
                     elif 'game_date' in df.columns:
-                        dates = ",".join([f"'{d}'" for d in df['game_date'].unique().to_list()])
-                        conn.execute(text(f"DELETE FROM {table_name} WHERE game_date IN ({dates})"))
-                        conn.commit()
+                        dates = df['game_date'].unique().to_list()
+                        if len(dates) > 0:
+                            dates_str = ",".join([f"'{d}'" for d in dates])
+                            conn.execute(text(f"DELETE FROM {table_name} WHERE game_date IN ({dates_str})"))
+                            conn.commit()
+                            print(f"      - Deleted existing rows for game_date in {dates}")
                     elif 'season' in df.columns:
                         conn.execute(text(f"DELETE FROM {table_name} WHERE season = {SEASON}"))
                         conn.commit()
-                
-                df.to_pandas().to_sql(table_name, engine, if_exists='append', index=False)
-                print(f"      - Success! Appended {len(df)} rows.")
+                        print(f"      - Deleted existing rows for season={SEASON}")
+
+                pdf.to_sql(table_name, engine, if_exists='append', index=False, chunksize=10000)
+                print(f"      - Success! Appended {rows} rows.")
 
             except Exception as e:
-                # FAIL-SAFE: If Append crashes (e.g. mismatch we missed), Default to Replace
                 print(f"      ❌ Smart Append Failed: {e}")
                 print(f"      ☢️  Falling back to REPLACE strategy...")
                 reset_db_table(table_name, engine)
-                df.to_pandas().to_sql(table_name, engine, if_exists='replace', index=False)
-                print(f"      - Success! Replaced table (Fail-safe).")
+                pdf.to_sql(table_name, engine, if_exists='replace', index=False)
+                print(f"      - Success! Replaced table (Fail-safe) with {rows} rows.")
 
     except Exception as e:
-        print(f"❌ ERROR in push_to_postgres: {e}")
+        print(f"   ❌ Upload failed for {table_name}: {e}")
+        return
+
+
+def check_system_memory_and_swap():
+    # Print quick summary of system memory and swap; recommend enabling swap if missing
+    try:
+        meminfo = {}
+        with open('/proc/meminfo') as f:
+            for line in f:
+                k, v = line.split(':', 1)
+                meminfo[k.strip()] = v.strip()
+        mem_total_kb = int(meminfo.get('MemTotal', '0 kB').split()[0])
+        swap_total_kb = int(meminfo.get('SwapTotal', '0 kB').split()[0])
+        print(f"System Memory: {mem_total_kb//1024} MB; Swap: {swap_total_kb//1024} MB")
+        if swap_total_kb == 0:
+            print("⚠️ No swap detected. On low-memory VMs this can cause OOM kills during ETL. Consider adding swap (e.g. sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile)")
+    except Exception as e:
+        print(f"Could not read /proc/meminfo: {e}")
+
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run ETL pipeline or a subset of steps")
+    parser.add_argument("--only-scripts", nargs="+", help="Only run these script basenames (e.g. 09_upload_training_data.py or 09_upload_training_data)")
+    parser.add_argument("--skip-scripts", nargs="+", help="Skip these script basenames entirely")
+    args = parser.parse_args()
+
+    only = set()
+    skip = set()
+    if args.only_scripts:
+        for s in args.only_scripts:
+            only.add(s if s.endswith('.py') else f"{s}.py")
+    if args.skip_scripts:
+        for s in args.skip_scripts:
+            skip.add(s if s.endswith('.py') else f"{s}.py")
+
     print("Starting Master ETL Orchestrator...")
+    check_system_memory_and_swap()
     engine = get_db_engine()
     
-    for step in PIPELINE_STEPS:
+    # If user passed --only-scripts, filter pipeline steps accordingly
+    steps_to_run = PIPELINE_STEPS
+    if only:
+        print(f"⚙️ Running only these scripts: {sorted(list(only))}")
+        steps_to_run = [s for s in PIPELINE_STEPS if s["script"] in only]
+
+    if skip:
+        print(f"⚙️ Skipping these scripts: {sorted(list(skip))}")
+        steps_to_run = [s for s in steps_to_run if s["script"] not in skip]
+
+    for step in steps_to_run:
         ran_script = run_external_script(step, engine)
         was_skipped = not ran_script
         

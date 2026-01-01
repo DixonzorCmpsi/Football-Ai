@@ -25,16 +25,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
   const [filterPos, setFilterPos] = useState<PositionFilter>('ALL');
 
   useEffect(() => {
-    fetch(`http://127.0.0.1:8000/matchup/${week}/${home}/${away}`)
-      .then(res => res.json())
-      .then(data => {
-        setData(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Matchup Fetch Error:", err);
-        setLoading(false);
-      });
+    import('../lib/api').then(({ fetchMatchup }) => {
+      fetchMatchup(week, home, away)
+        .then(d => {
+          setData(d);
+          setLoading(false);
+        })
+        .catch(err => { console.error("Matchup Fetch Error:", err); setLoading(false); });
+    }).catch(err => { console.error(err); setLoading(false); });
   }, [week, home, away]);
 
   if (loading) return <div className="flex h-full items-center justify-center"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
@@ -59,7 +57,13 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
       </div>
 
       <div className="mb-4 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
-        <MatchupBanner matchup={data.matchup} overUnder={data.over_under} homeWinProb={data.home_win_prob} awayWinProb={data.away_win_prob} />
+        <MatchupBanner 
+          matchup={data.matchup} 
+          overUnder={data.over_under || null}
+          spread={data.spread || null}
+          homeWinProb={data.home_win_prob || null}
+          awayWinProb={data.away_win_prob || null}
+        />
       </div>
 
       <div className="flex flex-1 min-h-0 relative overflow-visible">

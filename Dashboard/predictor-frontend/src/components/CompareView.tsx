@@ -6,7 +6,8 @@ import {
 } from 'recharts';
 import PlayerCard from './PlayerCard'; 
 import { getTeamColor } from '../utils/nflColors';
-import { usePlayerSearch, useSchedule } from '../hooks/useNflData'; 
+import { usePlayerSearch, useSchedule } from '../hooks/useNflData';
+import type { ScheduleGame, HistoryEntry, Player } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
 
 interface CompareViewProps {
@@ -30,7 +31,7 @@ const LoadedPlayerCard = ({
 }: { 
     id: string, 
     week: number, 
-    schedule: any[], 
+    schedule: ScheduleGame[], 
     onRemove: (id: string) => void, 
     onViewHistory: (id: string) => void, 
     colorIndex: number 
@@ -39,11 +40,12 @@ const LoadedPlayerCard = ({
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch(`http://127.0.0.1:8000/player/${id}?week=${week}`)
-            .then(res => res.json())
-            .then(setData)
-            .catch(console.error)
-            .finally(() => setLoading(false));
+        import('../lib/api').then(({ fetchPlayerById }) => {
+            fetchPlayerById(id, week)
+                .then(setData)
+                .catch(console.error)
+                .finally(() => setLoading(false));
+        }).catch(err => { console.error(err); setLoading(false); });
     }, [id, week]);
 
     // --- OPPONENT FALLBACK LOGIC ---
@@ -55,7 +57,7 @@ const LoadedPlayerCard = ({
 
         // If API says "BYE" (or null), try to find the real opponent in the schedule
         if (schedule && schedule.length > 0) {
-            const game = schedule.find((g: any) => g.home_team === data.team || g.away_team === data.team);
+            const game = schedule.find((g: ScheduleGame) => g.home_team === data.team || g.away_team === data.team);
             if (game) {
                 const realOpponent = game.home_team === data.team ? game.away_team : game.home_team;
                 return { ...data, opponent: realOpponent };
@@ -74,7 +76,7 @@ const LoadedPlayerCard = ({
     if (!displayData) return <div className="text-red-500 font-bold p-4">Error</div>;
 
     return (
-        <div className="relative group animate-in slide-in-from-bottom-4 duration-500 w-80 shrink-0">
+        <div className="relative group animate-in slide-in-from-bottom-4 duration-500 w-64 sm:w-80 shrink-0">
             <div className="h-2 w-full rounded-t-xl mb-[-2px] z-10 relative shadow-sm" style={{ backgroundColor: GRAPH_COLORS[colorIndex % GRAPH_COLORS.length] }}></div>
             <button 
                 onClick={(e) => { e.stopPropagation(); onRemove(id); }}
@@ -97,7 +99,7 @@ const LoadedPlayerCard = ({
 const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, existingIds: string[] }) => {
     const [isSearching, setIsSearching] = useState(false);
     const [query, setQuery] = useState("");
-    const results = usePlayerSearch(query);
+    const results = usePlayerSearch(query) as Player[];
 
     if (!isSearching) {
         return (
@@ -134,7 +136,7 @@ const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, ex
             <div className="flex-1 overflow-y-auto p-1 max-h-60 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-700">
                 {results.length > 0 ? (
                     <div className="space-y-0.5">
-                        {results.map(p => {
+                        {results.map((p: Player) => {
                             const isAdded = existingIds.includes(p.player_id);
                             return (
                                 <button
@@ -178,7 +180,7 @@ const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, ex
 export default function CompareView({ week, playerIds, onRemove, onViewHistory, onAdd }: CompareViewProps) {
   const [activeTab, setActiveTab] = useState<'RADAR' | 'LINE'>('RADAR');
   const [players, setPlayers] = useState<PlayerData[]>([]);
-  const [histories, setHistories] = useState<any[][]>([]);
+  const [histories, setHistories] = useState<HistoryEntry[][]>([]);
   const [loadingGraphs, setLoadingGraphs] = useState(false);
 
   // --- FETCH SCHEDULE FOR BACKUP ---
@@ -194,10 +196,11 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
 
     const fetchAll = async () => {
         try {
-            const pData = await Promise.all(playerIds.map(id => fetch(`http://127.0.0.1:8000/player/${id}?week=${week}`).then(res => res.json())));
-            setPlayers(pData);
-            const hData = await Promise.all(playerIds.map(id => fetch(`http://127.0.0.1:8000/player/history/${id}`).then(res => res.json())));
-            setHistories(hData);
+            const api = await import('../lib/api');
+            const pData = await Promise.all(playerIds.map(id => api.fetchPlayerById(id, week)));
+            setPlayers(pData as PlayerData[]);
+            const hData = await Promise.all(playerIds.map(id => api.fetchPlayerHistory(id)));
+            setHistories(hData as HistoryEntry[][]);
         } catch (e) { console.error(e); } 
         finally { setLoadingGraphs(false); }
     };
@@ -208,17 +211,17 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
       if (players.length === 0 || histories.length === 0) return [];
       
       const playerTotalTDs = histories.map(hist => 
-          hist.reduce((acc: number, game: any) => acc + (game.touchdowns || 0), 0)
+          hist.reduce((acc: number, game: HistoryEntry) => acc + (game.touchdowns || 0), 0)
       );
       
       const playerAvgSnaps = histories.map(hist => {
           if (!hist || hist.length === 0) return 0;
-          const totalSnaps = hist.reduce((acc: number, game: any) => acc + (game.snap_count || 0), 0);
+          const totalSnaps = hist.reduce((acc: number, game: HistoryEntry) => acc + (game.snap_count || 0), 0);
           return totalSnaps / hist.length;
       });
 
-      const maxTDs = Math.max(...playerTotalTDs, 5);
-      const maxSnaps = Math.max(...playerAvgSnaps, 60);
+      const maxTDs = Math.max(...playerTotalTDs, 1); // ensure at least 1 to avoid division by zero
+      const maxSnaps = Math.max(...playerAvgSnaps, 1);
 
       const metrics = [
           { key: 'prediction', label: 'Proj', cap: 25 },
@@ -228,20 +231,28 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
       ];
 
+      const getPlayerMetric = (p: PlayerData, key: string) => {
+          switch (key) {
+              case 'prediction': return p.prediction || 0;
+              case 'average_points': return p.average_points || 0;
+              // non-numeric or unsupported metrics default to 0
+              default: return 0;
+          }
+      };
+
       return metrics.map(m => {
-          const point: any = { subject: m.label, fullMark: 100 };
+          const point: { subject: string; fullMark: number; [player: string]: number | string } = { subject: m.label, fullMark: 100 };
           players.forEach((p, idx) => {
               let val = 0;
               if (m.key === 'TOTAL_TDS') {
-                  val = playerTotalTDs[idx] || 0;
-                  val = (val / m.cap) * 100;
+                  // Normalize by observed max TDS across selected players
+                  const tds = playerTotalTDs[idx] || 0;
+                  val = m.cap ? (tds / m.cap) * 100 : 0;
               } else if (m.key === 'AVG_SNAPS') {
-                  val = playerAvgSnaps[idx] || 0;
-                  val = (val / m.cap) * 100;
+                  val = m.cap ? (playerAvgSnaps[idx] / m.cap) * 100 : 0;
               } else {
-                  // @ts-ignore
-                  val = p[m.key] || 0;
-                  val = (val / m.cap) * 100;
+                  const base = getPlayerMetric(p, m.key);
+                  val = m.cap ? (base / m.cap) * 100 : 0;
               }
               point[`player_${idx}`] = Math.min(Math.max(val, 0), 100);
           });
@@ -252,12 +263,12 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
   const lineData = React.useMemo(() => {
       if (histories.length === 0) return [];
       const allWeeks = new Set<number>();
-      histories.forEach(h => h.forEach((game: any) => allWeeks.add(game.week)));
+      histories.forEach(h => h.forEach((game: HistoryEntry) => allWeeks.add(game.week)));
       const sortedWeeks = Array.from(allWeeks).sort((a, b) => a - b);
       return sortedWeeks.map(week => {
-          const point: any = { week: `Wk ${week}` };
+          const point: Record<string, number | string | null> = { week: `Wk ${week}` };
           histories.forEach((hist, idx) => {
-              const game = hist.find((g: any) => g.week === week);
+              const game = hist.find((g: HistoryEntry) => g.week === week);
               point[`player_${idx}`] = game ? game.points : null;
           });
           return point;
@@ -296,7 +307,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
 
       {/* VISUALIZATION SECTION */}
       {playerIds.length > 0 ? (
-          <div className="mt-2 bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex-1 flex flex-col min-h-[600px] mb-20">
+          <div className="mt-2 bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex-1 flex flex-col min-h-[320px] sm:min-h-[420px] md:min-h-[600px] mb-20">
             
             {/* TAB BAR */}
             <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
@@ -323,7 +334,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
             </div>
 
             {/* CHART AREA */}
-            <div className="flex-1 w-full h-full min-h-[500px] pt-16 px-4">
+            <div className="flex-1 w-full h-full min-h-[320px] sm:min-h-[500px] pt-12 px-4">
                 {loadingGraphs ? (
                     <div className="h-full flex items-center justify-center text-slate-400 font-bold animate-pulse">Running Simulation...</div>
                 ) : (

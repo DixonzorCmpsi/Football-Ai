@@ -1,6 +1,9 @@
 // File: src/lib/api.ts
 
-const API_BASE_URL = 'http://127.0.0.1:8000';
+// Runtime-configurable API base (supports proxy `/api` by default and also allows
+// injection via `window.__env.API_BASE_URL`). This keeps the build portable behind
+// a CDN or reverse proxy (e.g., Cloudflare Tunnel).
+export const API_BASE_URL = (typeof window !== 'undefined' && window.__env && window.__env.API_BASE_URL) ? window.__env.API_BASE_URL : '/api';
 
 // --- 1. Fetch Player by ID (Fixes "Failed to fetch player by id") ---
 export const fetchPlayerById = async (playerId: string, week?: number) => {
@@ -68,5 +71,17 @@ export const fetchPlayerHistory = async (playerId: string) => {
   } catch (e) {
     console.error("fetchPlayerHistory failed:", e);
     return [];
+  }
+};
+
+// Fetch matchup details
+export const fetchMatchup = async (week: number, home: string, away: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/matchup/${week}/${home}/${away}`);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (e) {
+    console.error("fetchMatchup failed:", e);
+    return null;
   }
 };

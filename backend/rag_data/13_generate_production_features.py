@@ -146,6 +146,8 @@ def main():
     # 7. Engineer Player Lags & Baseline
     print("7. Engineering Player Lags & Baseline...")
     df_player.sort_values(['player_id', 'week'], inplace=True)
+    # df_player['rolling_4wk_avg'] = df_player.groupby('player_id')['y_fantasy_points_ppr'] \
+    #     .transform(lambda x: x.shift(1).rolling(window=4, min_periods=1).mean()).fillna(0)
     
     df_player['player_season_avg_points'] = df_player.groupby('player_id')['y_fantasy_points_ppr']\
         .transform(lambda x: x.expanding().mean().shift(1)).fillna(0)

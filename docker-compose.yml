@@ -17,6 +17,7 @@ services:
   # 2. Backend Service
   backend:
     build: ./backend
+    shm_size: '2gb'
     restart: always
     depends_on:
       - db
@@ -27,8 +28,11 @@ services:
       - "8000:8000"
 
   # 3. Frontend Service
+ # 3. Frontend Service
   frontend:
-    build: ./Dashboard/predictor-frontend
+    build:
+      context: ./Dashboard/predictor-frontend
+      dockerfile: Dockerfile
     restart: always
     ports:
       - "80:80"

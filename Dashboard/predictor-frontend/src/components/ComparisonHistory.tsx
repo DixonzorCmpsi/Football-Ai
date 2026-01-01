@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { usePlayerHistory } from '../hooks/useNflData';
+import type { HistoryEntry } from '../hooks/useNflData';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis 
@@ -56,8 +57,8 @@ export default function ComparisonHistory({
   const { history: h1, loadingHistory: l1 } = usePlayerHistory(p1Id);
   const { history: h2, loadingHistory: l2 } = usePlayerHistory(p2Id);
   
-  const [chartData, setChartData] = useState<any[]>([]);
-  const [radarData, setRadarData] = useState<any[]>([]);
+  const [chartData, setChartData] = useState<Array<Record<string, number | string>>>([]);
+  const [radarData, setRadarData] = useState<Array<Record<string, number | string>>>([]);
   const [activeTab, setActiveTab] = useState<'LINE' | 'RADAR'>('RADAR'); 
 
   // 1. First ensure the base colors are visible against dark mode
@@ -83,10 +84,10 @@ export default function ComparisonHistory({
           [p2Name]: stats2?.points || 0,
         };
       });
-      setChartData(merged);
+      Promise.resolve().then(() => setChartData(merged));
 
       // --- 2. PREPARE RADAR CHART DATA ---
-      const calcStats = (hist: any[], ou: number, proj: number) => {
+      const calcStats = (hist: HistoryEntry[], ou: number, proj: number) => {
           if (!hist.length) return { avg: 0, tds: 0, snapPct: 0, script: 0, proj: 0 };
           
           const points = hist.map(h => h.points || 0);
@@ -104,13 +105,16 @@ export default function ComparisonHistory({
       const s1 = calcStats(h1, p1OU, p1Proj);
       const s2 = calcStats(h2, p2OU, p2Proj);
 
-      setRadarData([
+      // Normalize Touchdowns relative to the higher of the two players (avoid hard-coded multipliers)
+      const maxTds = Math.max(s1.tds, s2.tds, 1);
+
+      Promise.resolve().then(() => setRadarData([
         { subject: 'Avg Points', A: Math.min(s1.avg * 4, 100), B: Math.min(s2.avg * 4, 100), fullMark: 100 },
-        { subject: 'Touchdowns', A: Math.min(s1.tds * 5, 100), B: Math.min(s2.tds * 5, 100), fullMark: 100 }, 
+        { subject: 'Touchdowns', A: Math.min((s1.tds / maxTds) * 100, 100), B: Math.min((s2.tds / maxTds) * 100, 100), fullMark: 100 }, 
         { subject: 'Snap %', A: Math.min(s1.snapPct, 100), B: Math.min(s2.snapPct, 100), fullMark: 100 },
         { subject: 'Game Script', A: Math.min((s1.script / 60) * 100, 100), B: Math.min((s2.script / 60) * 100, 100), fullMark: 100 }, 
         { subject: 'Projection', A: Math.min(s1.proj * 4, 100), B: Math.min(s2.proj * 4, 100), fullMark: 100 },
-      ]);
+      ]));
     }
   }, [h1, h2, p1Name, p2Name, p1OU, p2OU, p1Proj, p2Proj]);
 
