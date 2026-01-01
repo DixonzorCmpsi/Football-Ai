@@ -69,8 +69,8 @@ export interface HistoryEntry {
 export interface MatchupData {
     matchup: string;
     week: number;
-    home_roster: BroadcastCardData[];
-    away_roster: BroadcastCardData[];
+    home_roster: any[];
+    away_roster: any[];
     over_under?: number | null;
     spread?: number | null;
     home_win_prob?: number | null;

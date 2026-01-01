@@ -4,7 +4,8 @@ import MatchupBanner from './MatchupBanner';
 import PlayerCard from './PlayerCard';
 import PlayerModal from './PlayerModal';
 import { getTeamColor } from '../utils/nflColors';
-import type { MatchupData, PlayerData } from '../types';
+import type { MatchupData } from '../hooks/useNflData';
+import type { PlayerData } from '../types';
 
 interface MatchupViewProps {
   week: number;
