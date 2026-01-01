@@ -12,17 +12,15 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, sprea
   const [away, home] = matchup.split(' @ ');
 
   // Calculate implied scores based on spread when available
-  // spread > 0 means home is favored
-  // total = home_score + away_score
-  // home_score = (total + spread) / 2
-  // away_score = (total - spread) / 2
-  // TODO: Spread data integration pending - currently returning null from backend
+  // Standard convention: Negative spread means favored (e.g. -6.5)
+  // Home Score = (Total - Spread) / 2  => (Total - (-6.5))/2 = (Total + 6.5)/2 (Higher)
+  // Away Score = (Total + Spread) / 2  => (Total + (-6.5))/2 = (Total - 6.5)/2 (Lower)
   const calculateImpliedScores = () => {
     if (!overUnder) return { home: null, away: null };
     // If spread is available, use it for accurate implied scores
     if (spread !== null && spread !== undefined) {
-      const homeScore = (overUnder + spread) / 2;
-      const awayScore = (overUnder - spread) / 2;
+      const homeScore = (overUnder - spread) / 2;
+      const awayScore = (overUnder + spread) / 2;
       return { home: homeScore.toFixed(1), away: awayScore.toFixed(1) };
     }
     // Fallback: if spread unavailable, show total with equal split hint

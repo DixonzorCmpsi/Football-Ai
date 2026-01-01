@@ -749,10 +749,12 @@ async def get_player_card(player_id: str, week: int):
                 
                 # Calculate spread relative to player's team
                 h_team = get_team_abbr(row.get("home_team"))
+                p_team = get_team_abbr(team) # Ensure player team is also normalized
+                
                 if raw_spread is not None:
                     try:
                         s = float(raw_spread)
-                        spread_val = s if h_team == team else -s
+                        spread_val = s if h_team == p_team else -s
                         
                         # Calculate implied team total
                         if total_line:
@@ -785,20 +787,28 @@ async def get_player_card(player_id: str, week: int):
                 elif pos in ['WR', 'TE']: target_prop = "Receiving Yards"
                 
                 if target_prop:
-                    main_p = p_props.filter(pl.col("prop_type").str.contains(target_prop))
+                    # Case-insensitive search
+                    main_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(target_prop.lower()))
+                    
+                    # If RB and Rushing Yards not found, try Rushing & Receiving Yards
+                    if main_p.is_empty() and pos == 'RB':
+                         main_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("rushing & receiving yards"))
+
                     if not main_p.is_empty():
+                        # Sort to prefer exact match if possible (though contains is broad)
+                        # Just take the first one for now
                         row = main_p.row(0, named=True)
                         prop_line = row['line']
                         prop_prob = row['implied_prob'] 
                 
                 if pos == 'QB':
-                    td_pass = p_props.filter(pl.col("prop_type").str.contains("Passing Touchdowns"))
+                    td_pass = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("passing touchdowns"))
                     if not td_pass.is_empty():
                         row = td_pass.row(0, named=True)
                         pass_td_line = row['line']
                         pass_td_prob = row['implied_prob']
 
-                td_p = p_props.filter(pl.col("prop_type").str.contains("Anytime TD"))
+                td_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("anytime td"))
                 if not td_p.is_empty():
                     anytime_td_prob = td_p.row(0, named=True)['implied_prob']
 
