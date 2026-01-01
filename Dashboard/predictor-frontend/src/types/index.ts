@@ -21,6 +21,7 @@ export interface PlayerData {
   snap_percentage?: number;
   overunder?: number | null;
   spread?: number | null;
+  implied_total?: number | null;
   props?: PropBet[];
   prop_line?: number | null;
   prop_prob?: number | null;

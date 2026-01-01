@@ -43,7 +43,7 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, sprea
         <div className="flex items-center gap-6 flex-1 justify-center md:justify-start">
           <div className="text-center flex items-center gap-3">
             <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
-              <img src={`/assets/logos/${away}.svg`} alt={`${away} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${away.toLowerCase()}.png`} alt={`${away} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
             </div>
             <div>
               <h2 className="text-2xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">{away}</h2>
@@ -67,7 +67,7 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, sprea
               )}
             </div>
             <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
-              <img src={`/assets/logos/${home}.svg`} alt={`${home} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${home.toLowerCase()}.png`} alt={`${home} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
             </div>
           </div>
         </div>

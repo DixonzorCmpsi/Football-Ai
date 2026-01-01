@@ -227,7 +227,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           { key: 'prediction', label: 'Proj', cap: 25 },
           { key: 'average_points', label: 'Avg', cap: 25 },
           { key: 'AVG_SNAPS', label: 'Avg Snaps', cap: maxSnaps },
-          { key: 'overunder', label: 'Game Script', cap: 60 }, 
+          { key: 'implied_total', label: 'Game Script', cap: 35 }, 
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
       ];
 
@@ -235,6 +235,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           switch (key) {
               case 'prediction': return p.prediction || 0;
               case 'average_points': return p.average_points || 0;
+              case 'implied_total': return (p as any).implied_total || (p.overunder ? p.overunder / 2 : 0);
               // non-numeric or unsupported metrics default to 0
               default: return 0;
           }

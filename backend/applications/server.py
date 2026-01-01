@@ -726,6 +726,8 @@ async def get_player_card(player_id: str, week: int):
     if snap_pct < 1.0 and snap_pct > 0: snap_pct *= 100
 
     total_line = None 
+    spread_val = None
+    implied_total = None
     props_data = [] 
     prop_line = None
     prop_prob = None
@@ -741,7 +743,22 @@ async def get_player_card(player_id: str, week: int):
                  (pl.col("away_team").map_elements(get_team_abbr, return_dtype=pl.Utf8) == team))
             )
             if not lines.is_empty():
-                total_line = lines.row(0, named=True).get("total_over")
+                row = lines.row(0, named=True)
+                total_line = row.get("total_over")
+                raw_spread = row.get("home_spread")
+                
+                # Calculate spread relative to player's team
+                h_team = get_team_abbr(row.get("home_team"))
+                if raw_spread is not None:
+                    try:
+                        s = float(raw_spread)
+                        spread_val = s if h_team == team else -s
+                        
+                        # Calculate implied team total
+                        if total_line:
+                            t = float(total_line)
+                            implied_total = (t / 2) - (spread_val / 2)
+                    except: pass
     except Exception: pass
 
     try:
@@ -833,7 +850,8 @@ async def get_player_card(player_id: str, week: int):
         "snap_count": snap_count,
         "snap_percentage": snap_pct,
         "overunder": float(total_line) if total_line else None,
-        "spread": float(total_line) if total_line else None,
+        "spread": spread_val,
+        "implied_total": round(implied_total, 1) if implied_total else None,
         "props": props_data,
         "prop_line": prop_line, 
         "prop_prob": prop_prob,

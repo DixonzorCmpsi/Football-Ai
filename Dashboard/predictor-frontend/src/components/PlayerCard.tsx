@@ -73,7 +73,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
   return (
     <div 
       onClick={() => onClick(data)}
-      className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col h-32 overflow-hidden border bg-white dark:bg-slate-900 ${
+      className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col min-h-[9rem] h-auto overflow-hidden border bg-white dark:bg-slate-900 ${
         isSelected 
           ? 'border-blue-500 ring-2 ring-blue-500/20 dark:ring-blue-500/40' 
           : 'border-slate-200 dark:border-white/10 hover:border-blue-300 dark:hover:border-blue-700'
@@ -127,15 +127,6 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
             <span className="bg-slate-100 dark:bg-white/10 border border-slate-200 dark:border-white/5 px-1.5 rounded font-bold font-mono text-slate-700 dark:text-slate-300">{data.position}</span>
             <span>•</span>
             <span className="truncate opacity-80">{data.team} vs {data.opponent}</span>
-          </div>
-
-          {/* Show Headshot with fallback to team logo for compactness on mobile */}
-          <div className="mt-2">
-            {data.image ? (
-                <img src={data.image} alt="headshot" className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700" />
-            ) : (
-                <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-xs">{data.team}</div>
-            )}
           </div>
         </div>
 

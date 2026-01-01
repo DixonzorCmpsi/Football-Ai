@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -272,6 +272,9 @@ export default function App() {
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
             <div className="flex items-center gap-3 bg-white dark:bg-slate-800 rounded-xl px-3 py-2 shadow-lg border border-slate-200 dark:border-slate-700">
+              <button onClick={() => setViewMode('SCHEDULE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Schedule">
+                <Calendar size={18} />
+              </button>
               <button onClick={() => setViewMode('TRENDING')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Trending">
                 <TrendingUp size={18} />
               </button>
