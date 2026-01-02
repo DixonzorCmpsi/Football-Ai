@@ -72,7 +72,8 @@ async def get_player_history(player_id: str):
 
             snap_count, snap_pct, team_snaps = 0, 0.0, 0
             if not player_snaps.is_empty():
-                s_row = player_snaps.filter(pl.col('week') == wk)
+                # Filter by week AND player_id
+                s_row = player_snaps.filter((pl.col('week') == wk) & (pl.col('player_id') == player_id))
                 if not s_row.is_empty():
                     s0 = s_row.row(0, named=True)
                     snap_count = int(s0.get('offense_snaps', 0))
