@@ -29,6 +29,10 @@ Environment variables you can set:
   npm install
   npm run dev
 
+  # To build for production:
+  npm run build
+  # Output will be in `build/` (not `dist/` to avoid Docker permission issues).
+
 4) Useful checks
   - Health endpoint: curl http://localhost:8000/health
   - Check ETL presence: curl http://localhost:8000/health | jq .etl_script_exists
