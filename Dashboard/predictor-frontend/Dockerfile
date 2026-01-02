@@ -14,18 +14,18 @@ RUN npm install --omit=dev
 # Copy source code
 COPY . .
 
-# Build the app (creates /app/dist)
+# Build the app (creates /app/build)
 RUN npm run build
 
 # Inject runtime env loader script tag into built index.html so that
 # `env.js` (written at container start) is loaded before the app.
-RUN sed -i '/<\/head>/i <script src="/env.js"></script>' /app/dist/index.html || true
+RUN sed -i '/<\/head>/i <script src="/env.js"></script>' /app/build/index.html || true
 
 # --- Stage 2: Serve ---
 FROM nginx:alpine
 
 # Copy build artifacts from Stage 1 to Nginx
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/build /usr/share/nginx/html
 
 # Copy custom nginx config (proxies /api to backend service)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
