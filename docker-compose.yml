@@ -23,7 +23,10 @@ services:
       - db
     environment:
       - DB_CONNECTION_STRING=postgresql://admin:password@db:5432/football_ai
+      - ALLOW_CSV_FALLBACK=false
       # Add other env vars from your .env file here
+    volumes:
+      - ./backend:/app
     ports:
       - "8000:8000"
 

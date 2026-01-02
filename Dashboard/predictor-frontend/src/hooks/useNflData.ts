@@ -32,10 +32,14 @@ export interface BroadcastCardData {
   team: string;
   opponent: string; // Added
   spread: number | null;
+  overunder?: number | null;
+  implied_total?: number | null;
   image: string;
   draft: string;
   injury_status: string;
   is_injury_boosted: boolean; // Added
+  prop_line?: number | null;
+  prop_prob?: number | null;
   stats: {
     projected: number;
     floor: number;
@@ -49,6 +53,13 @@ export interface BroadcastCardData {
   pass_td_line?: number | null;
   pass_td_prob?: number | null;
   anytime_td_prob?: number | null;
+  // New Props
+  pass_att_line?: number | null;
+  pass_att_prob?: number | null;
+  rec_line?: number | null;
+  rec_prob?: number | null;
+  rush_att_line?: number | null;
+  rush_att_prob?: number | null;
 }
 
 export interface HistoryEntry {
@@ -61,6 +72,7 @@ export interface HistoryEntry {
   touchdowns: number;
   snap_count: number;
   snap_percentage: number;
+  team_total_snaps?: number;
   receptions: number;
   targets: number;
   carries: number;
@@ -96,11 +108,22 @@ interface RawPlayerData {
     draft_position?: string;
     injury_status?: string;
     is_injury_boosted?: boolean;
+    overunder?: number | null;
+    implied_total?: number | null;
     spread?: number | null;
     props?: unknown[];
+    prop_line?: number | null;
+    prop_prob?: number | null;
     pass_td_line?: number | null;
     pass_td_prob?: number | null;
     anytime_td_prob?: number | null;
+    // New Props
+    pass_att_line?: number | null;
+    pass_att_prob?: number | null;
+    rec_line?: number | null;
+    rec_prob?: number | null;
+    rush_att_line?: number | null;
+    rush_att_prob?: number | null;
     prediction?: number;
     floor_prediction?: number;
     average_points?: number;
@@ -123,22 +146,49 @@ const transformToCardData = (d: RawPlayerData): BroadcastCardData => {
         if (lines.length > 0) oddsDisplay = lines.join(" | ");
     }
 
+    // Prefer backend-selected prop line/prob, but fall back to the best matching prop in the payload
+    let mainPropLine: number | null = d.prop_line ?? null;
+    let mainPropProb: number | null = d.prop_prob ?? null;
+    if (mainPropLine === null && Array.isArray(d.props) && d.props.length > 0) {
+      const targets = d.position === 'QB'
+        ? ['passing yards', 'pass yards', 'pass yds']
+        : d.position === 'RB'
+          ? ['rushing yards', 'rush yards', 'rush yds', 'rushing & receiving yards']
+          : ['receiving yards', 'rec yards', 'rec yds'];
+      const match = (d.props as PropBet[]).find(p => targets.some(t => p.prop_type?.toLowerCase().includes(t)));
+      if (match) {
+        mainPropLine = match.line ?? null;
+        mainPropProb = match.implied_prob ?? null;
+      }
+    }
+
     return {
         id: d.player_id || "",
         name: d.player_name || "",
         position: d.position || "",
         team: d.team || "",
         opponent: d.opponent || "BYE", // Map opponent
+      overunder: d.overunder ?? null,
+      implied_total: d.implied_total ?? null,
         image: d.image || "",
         draft: d.draft_position || "",
         injury_status: d.injury_status || "Active",
         is_injury_boosted: d.is_injury_boosted || false, // Map boost flag
         spread: d.spread !== undefined ? d.spread : null,
+      prop_line: mainPropLine,
+      prop_prob: mainPropProb,
         props: (d.props as PropBet[]) || [], 
         // Pass through raw props for PlayerCard mapping
         pass_td_line: d.pass_td_line,
         pass_td_prob: d.pass_td_prob,
         anytime_td_prob: d.anytime_td_prob,
+        // New Props
+        pass_att_line: d.pass_att_line,
+        pass_att_prob: d.pass_att_prob,
+        rec_line: d.rec_line,
+        rec_prob: d.rec_prob,
+        rush_att_line: d.rush_att_line,
+        rush_att_prob: d.rush_att_prob,
         stats: {
             projected: d.prediction || 0,
             floor: d.floor_prediction || 0,

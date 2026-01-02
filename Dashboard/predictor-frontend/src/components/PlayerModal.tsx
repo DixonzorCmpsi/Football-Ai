@@ -86,8 +86,7 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                   <th className="px-4 py-3">Opp</th>
                   <th className="px-4 py-3 text-center">Snaps</th>
                   <th className="px-4 py-3 text-center">Rec/Tgt</th>
-                  <th className="px-4 py-3 text-right">Rush Att</th>
-                  <th className="px-4 py-3 text-right">Rush Yds</th>
+                  <th className="px-4 py-3 text-center">Rush Yds/Att</th>
                   <th className="px-4 py-3 text-right">Pass Yds</th>
                   <th className="px-4 py-3 text-right">Rec Yds</th>
                   <th className="px-4 py-3 text-right">TDs</th>
@@ -99,10 +98,14 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                   <tr key={game.week} className="hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors">
                     <td className="px-4 py-3 font-mono text-slate-500 sticky left-0 bg-white dark:bg-slate-950 border-r border-slate-100 dark:border-slate-800">W{game.week}</td>
                     <td className="px-4 py-3 font-bold text-slate-700 dark:text-slate-400">{game.opponent}</td>
-                    <td className="px-4 py-3 text-center font-mono">{game.snap_percentage ? (game.snap_percentage * 100).toFixed(0) + '%' : '-'}</td>
+                    <td className="px-4 py-3 text-center">
+                      <div className="flex flex-col items-center">
+                        <span className="font-mono font-bold text-slate-700 dark:text-slate-300">{game.snap_percentage ? (game.snap_percentage * 100).toFixed(0) + '%' : '-'}</span>
+                        <span className="text-[9px] text-slate-400 font-mono">{game.snap_count} / {game.team_total_snaps || "-"}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-center font-mono">{game.receptions}/{game.targets}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-400 dark:text-slate-500">{game.carries || '-'}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.rushing_yds || '-'}</td>
+                    <td className="px-4 py-3 text-center font-mono text-slate-500 dark:text-slate-400">{game.rushing_yds || '-'} / {game.carries || '-'}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.passing_yds || '-'}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.receiving_yds || '-'}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-500 dark:text-slate-400">{game.touchdowns !== undefined && game.touchdowns !== null ? game.touchdowns : '-'}</td>

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Search } from 'lucide-react';
-import { useBroadcastCard } from '../hooks/useNflData';
+import { Search, X } from 'lucide-react';
+import { usePlayerProfileById } from '../hooks/useNflData';
 import PlayerCard from './PlayerCard'; // Using the consistent PlayerCard
 import { getTeamColor } from '../utils/nflColors'; // Import color utility
+import { searchPlayers } from '../lib/api';
 import type { PlayerData } from '../types';
 
 interface PlayerLookupProps {
@@ -21,9 +22,9 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
   interface SearchResult { player_id: string; player_name: string; position?: string; team?: string; team_abbr?: string; headshot?: string }
   const [results, setResults] = useState<SearchResult[]>([]); 
   
-  const [targetPlayer, setTargetPlayer] = useState<string | null>(null);
+  const [targetPlayerId, setTargetPlayerId] = useState<string | null>(null);
 
-  const { cardData, loadingCard } = useBroadcastCard(targetPlayer);
+  const { cardData, loadingProfile: loadingCard } = usePlayerProfileById(targetPlayerId);
 
   // Debounce
   useEffect(() => {
@@ -37,18 +38,25 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
       setResults([]);
       return;
     }
-    // Don't search if we already selected this player
-    if (debouncedQuery !== targetPlayer) {
-            import('../lib/api').then(({ searchPlayers }) => {
-                searchPlayers(debouncedQuery).then((res: unknown[]) => setResults(res as SearchResult[])).catch(console.error);
-            }).catch(console.error);
+    
+    // If we have a target player selected and the query matches the name (roughly), don't search
+    // But since we track ID now, we can just check if we are editing
+    if (targetPlayerId) {
+        return;
     }
-  }, [debouncedQuery, targetPlayer]);
+
+    let active = true;
+    searchPlayers(debouncedQuery).then((res: any[]) => {
+        if (active) setResults(res as SearchResult[]);
+    }).catch(console.error);
+
+    return () => { active = false; };
+  }, [debouncedQuery, targetPlayerId]);
 
   const handleSelect = (player: SearchResult) => {
     setQuery(player.player_name); 
     setResults([]); // Clear results immediately
-    setTargetPlayer(player.player_name); // Set target
+    setTargetPlayerId(player.player_id); // Set target ID
   };
 
   const isSelected = cardData ? compareList.includes(cardData.id) : false;
@@ -67,14 +75,22 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
       average_points: cardData.stats.average,
       injury_status: cardData.injury_status,
       is_injury_boosted: cardData.is_injury_boosted,
+      overunder: cardData.overunder ?? null,
+      implied_total: cardData.implied_total ?? null,
       // Props
-      overunder: null,
       spread: cardData.spread,
-      prop_line: cardData.props?.[0]?.line || null,
-      prop_prob: cardData.props?.[0]?.implied_prob || null,
+      prop_line: cardData.prop_line ?? cardData.props?.[0]?.line ?? null,
+      prop_prob: cardData.prop_prob ?? cardData.props?.[0]?.implied_prob ?? null,
       pass_td_line: cardData.pass_td_line || null,
       pass_td_prob: cardData.pass_td_prob || null,
-      anytime_td_prob: cardData.anytime_td_prob || null
+      anytime_td_prob: cardData.anytime_td_prob || null,
+      // New Props
+      pass_att_line: cardData.pass_att_line || null,
+      pass_att_prob: cardData.pass_att_prob || null,
+      rec_line: cardData.rec_line || null,
+      rec_prob: cardData.rec_prob || null,
+      rush_att_line: cardData.rush_att_line || null,
+      rush_att_prob: cardData.rush_att_prob || null
   } : null;
 
   return (
@@ -92,17 +108,27 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
               placeholder="Search Player..." 
               value={query}
               onChange={(e) => { 
-                  setQuery(e.target.value); 
-                  if (e.target.value === "") setTargetPlayer(null);
-                  if (targetPlayer && e.target.value !== targetPlayer) setTargetPlayer(null);
+                  const val = e.target.value;
+                  setQuery(val); 
+                  if (targetPlayerId) {
+                      setTargetPlayerId(null);
+                  }
               }}
             />
+            {query && (
+              <button 
+                onClick={() => { setQuery(''); setTargetPlayerId(null); setResults([]); }}
+                className="mr-2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            )}
             {loadingCard && <div className="mr-4 w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>}
           </div>
         </div>
 
         {/* DROPDOWN RESULTS */}
-        {results.length > 0 && !targetPlayer && (
+        {results.length > 0 && !targetPlayerId && (
           <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
             {results.map((p: SearchResult) => (
               <div 

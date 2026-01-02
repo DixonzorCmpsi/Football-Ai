@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { X, Swords, TrendingUp, Radar, Activity, Plus, Search, Check } from 'lucide-react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
-  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar as RechartRadar 
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar as RechartRadar,
+  BarChart, Bar
 } from 'recharts';
 import PlayerCard from './PlayerCard'; 
 import { getTeamColor } from '../utils/nflColors';
@@ -178,7 +179,7 @@ const AddPlayerCard = ({ onAdd, existingIds }: { onAdd: (id: string) => void, ex
 
 // --- MAIN VIEW ---
 export default function CompareView({ week, playerIds, onRemove, onViewHistory, onAdd }: CompareViewProps) {
-  const [activeTab, setActiveTab] = useState<'RADAR' | 'LINE'>('RADAR');
+  const [activeTab, setActiveTab] = useState<'RADAR' | 'LINE' | 'DEPENDENCY'>('RADAR');
   const [players, setPlayers] = useState<PlayerData[]>([]);
   const [histories, setHistories] = useState<HistoryEntry[][]>([]);
   const [loadingGraphs, setLoadingGraphs] = useState(false);
@@ -214,19 +215,21 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           hist.reduce((acc: number, game: HistoryEntry) => acc + (game.touchdowns || 0), 0)
       );
       
-      const playerAvgSnaps = histories.map(hist => {
+      const playerRollingSnaps = histories.map(hist => {
           if (!hist || hist.length === 0) return 0;
-          const totalSnaps = hist.reduce((acc: number, game: HistoryEntry) => acc + (game.snap_count || 0), 0);
-          return totalSnaps / hist.length;
+          // Take last 4 games (hist is sorted desc by week)
+          const recentGames = hist.slice(0, 4);
+          const totalSnaps = recentGames.reduce((acc: number, game: HistoryEntry) => acc + (game.snap_count || 0), 0);
+          return totalSnaps / recentGames.length;
       });
 
       const maxTDs = Math.max(...playerTotalTDs, 1); // ensure at least 1 to avoid division by zero
-      const maxSnaps = Math.max(...playerAvgSnaps, 1);
+      const maxSnaps = Math.max(...playerRollingSnaps, 1);
 
       const metrics = [
           { key: 'prediction', label: 'Proj', cap: 25 },
           { key: 'average_points', label: 'Avg', cap: 25 },
-          { key: 'AVG_SNAPS', label: 'Avg Snaps', cap: maxSnaps },
+          { key: 'ROLLING_SNAPS', label: 'Rolling Snaps (4wk)', cap: maxSnaps },
           { key: 'implied_total', label: 'Game Script', cap: 35 }, 
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
       ];
@@ -249,8 +252,8 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
                   // Normalize by observed max TDS across selected players
                   const tds = playerTotalTDs[idx] || 0;
                   val = m.cap ? (tds / m.cap) * 100 : 0;
-              } else if (m.key === 'AVG_SNAPS') {
-                  val = m.cap ? (playerAvgSnaps[idx] / m.cap) * 100 : 0;
+              } else if (m.key === 'ROLLING_SNAPS') {
+                  val = m.cap ? (playerRollingSnaps[idx] / m.cap) * 100 : 0;
               } else {
                   const base = getPlayerMetric(p, m.key);
                   val = m.cap ? (base / m.cap) * 100 : 0;
@@ -275,6 +278,37 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           return point;
       });
   }, [histories]);
+
+  const dependencyData = React.useMemo(() => {
+      if (players.length === 0 || histories.length === 0) return [];
+      
+      return players.map((p, idx) => {
+          const hist = histories[idx] || [];
+          if (hist.length === 0) return { name: p.player_name, yards: 0, tds: 0, other: 0 };
+
+          const totalGames = hist.length;
+          const totalPts = hist.reduce((acc, g) => acc + (g.points || 0), 0);
+          
+          // Calculate components (Standard Scoring approx)
+          const totalYardsPts = hist.reduce((acc, g) => 
+              acc + ((g.passing_yds || 0) * 0.04) + ((g.rushing_yds || 0) * 0.1) + ((g.receiving_yds || 0) * 0.1), 0);
+          
+          const totalTDPts = hist.reduce((acc, g) => acc + ((g.touchdowns || 0) * 6), 0);
+          
+          const avgYards = totalYardsPts / totalGames;
+          const avgTDs = totalTDPts / totalGames;
+          const avgTotal = totalPts / totalGames;
+          // "Other" captures PPR, Bonuses, or scoring diffs
+          const avgOther = Math.max(0, avgTotal - avgYards - avgTDs);
+
+          return {
+              name: p.player_name,
+              yards: parseFloat(avgYards.toFixed(1)),
+              tds: parseFloat(avgTDs.toFixed(1)),
+              other: parseFloat(avgOther.toFixed(1))
+          };
+      });
+  }, [players, histories]);
 
   return (
     <div className="h-full flex flex-col px-4 pt-4 max-w-[1400px] mx-auto text-slate-900 dark:text-slate-100 pb-10 overflow-y-auto">
@@ -311,39 +345,37 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           <div className="mt-2 bg-white dark:bg-slate-800 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex-1 flex flex-col min-h-[320px] sm:min-h-[420px] md:min-h-[600px] mb-20">
             
             {/* TAB BAR */}
-            <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
-                <button 
-                    onClick={() => setActiveTab('RADAR')}
-                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-colors ${
-                        activeTab === 'RADAR' 
-                        ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border-b-2 border-blue-600 dark:border-blue-400' 
-                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    }`}
-                >
-                    <Radar size={14} /> Metric Radar
-                </button>
-                <button 
-                    onClick={() => setActiveTab('LINE')}
-                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-colors ${
-                        activeTab === 'LINE' 
-                        ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border-b-2 border-blue-600 dark:border-blue-400' 
-                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    }`}
-                >
-                    <Activity size={14} /> Performance Trends
-                </button>
+            <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-x-auto w-full">
+                {[
+                    { id: 'RADAR', label: 'Metric Radar', icon: Radar },
+                    { id: 'LINE', label: 'Performance', icon: Activity },
+                    { id: 'DEPENDENCY', label: 'Scoring Mix', icon: TrendingUp }
+                ].map(tab => (
+                    <button 
+                        key={tab.id}
+                        onClick={() => setActiveTab(tab.id as any)}
+                        className={`flex-1 py-3 text-[10px] sm:text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-colors whitespace-nowrap px-1 ${
+                            activeTab === tab.id 
+                            ? 'text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border-b-2 border-blue-600 dark:border-blue-400' 
+                            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                        }`}
+                    >
+                        <tab.icon size={14} className="shrink-0" /> 
+                        <span>{tab.label}</span>
+                    </button>
+                ))}
             </div>
 
             {/* CHART AREA */}
-            <div className="flex-1 w-full h-full min-h-[320px] sm:min-h-[500px] pt-12 px-4">
+            <div className="flex-1 w-full h-full min-h-[320px] sm:min-h-[500px] pt-4 sm:pt-12 px-2 sm:px-4">
                 {loadingGraphs ? (
                     <div className="h-full flex items-center justify-center text-slate-400 font-bold animate-pulse">Running Simulation...</div>
                 ) : (
                     <ResponsiveContainer width="100%" height="100%">
                         {activeTab === 'RADAR' ? (
-                            <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
+                            <RadarChart cx="50%" cy="50%" outerRadius="70%" data={radarData}>
                                 <PolarGrid stroke="#64748b" strokeOpacity={0.2} />
-                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 'bold' }} />
+                                <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 'bold' }} />
                                 <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
                                 <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '8px', color: '#fff' }} />
                                 {players.map((_, idx) => (
@@ -357,15 +389,15 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
                                         fillOpacity={0.2}
                                     />
                                 ))}
-                                <Legend />
+                                <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
                             </RadarChart>
-                        ) : (
-                            <LineChart data={lineData}>
+                        ) : activeTab === 'LINE' ? (
+                            <LineChart data={lineData} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.2} />
                                 <XAxis dataKey="week" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
                                 <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
                                 <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '8px', color: '#fff' }} />
-                                <Legend />
+                                <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
                                 {players.map((_, idx) => (
                                     <Line 
                                         key={idx}
@@ -374,11 +406,22 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
                                         name={players[idx]?.player_name}
                                         stroke={GRAPH_COLORS[idx % GRAPH_COLORS.length]} 
                                         strokeWidth={3}
-                                        dot={{ r: 4 }}
+                                        dot={{ r: 3 }}
                                         connectNulls
                                     />
                                 ))}
                             </LineChart>
+                        ) : (
+                            <BarChart data={dependencyData} layout="vertical" margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.2} horizontal={false} />
+                                <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
+                                <YAxis dataKey="name" type="category" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 'bold' }} width={70} axisLine={false} tickLine={false} />
+                                <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '8px', color: '#fff' }} />
+                                <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                                <Bar dataKey="yards" name="Yards" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="tds" name="TDs" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="other" name="Other" stackId="a" fill="#64748b" radius={[0, 4, 4, 0]} />
+                            </BarChart>
                         )}
                     </ResponsiveContainer>
                 )}

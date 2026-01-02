@@ -55,10 +55,10 @@ def main():
     tables_to_load = {
         "player_profiles": f"SELECT * FROM player_profiles WHERE season = {SEASON}",
         "schedule": f"SELECT * FROM schedule WHERE season = {SEASON}",
-        "weekly_player_stats": f"SELECT * FROM weekly_player_stats WHERE season = {SEASON}",
-        "weekly_defense_stats": f"SELECT * FROM weekly_defense_stats WHERE season = {SEASON}",
-        "weekly_offense_stats": f"SELECT * FROM weekly_offense_stats WHERE season = {SEASON}",
-        "weekly_snap_counts": f"SELECT * FROM weekly_snap_counts WHERE season = {SEASON}"
+        "weekly_player_stats": f"SELECT * FROM weekly_player_stats_{SEASON}",
+        "weekly_defense_stats": f"SELECT * FROM weekly_defense_stats_{SEASON}",
+        "weekly_offense_stats": f"SELECT * FROM weekly_offense_stats_{SEASON}",
+        "weekly_snap_counts": f"SELECT * FROM weekly_snap_counts_{SEASON}"
     }
     
     data_frames = {}

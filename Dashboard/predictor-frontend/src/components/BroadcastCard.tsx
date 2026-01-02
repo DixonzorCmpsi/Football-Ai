@@ -45,10 +45,18 @@ const BroadcastCard: React.FC<BroadcastCardProps> = ({
   // Removed unused 'snapCount' variable
   
   // Props Logic (Find specific props in the array)
-  const passProp = props?.find(p => p.prop_type === 'Passing Yards');
-  const rushProp = props?.find(p => p.prop_type === 'Rushing Yards');
-  const recProp = props?.find(p => p.prop_type === 'Receiving Yards');
-  const tdProp = props?.find(p => p.prop_type === 'Anytime TD');
+  const findProp = (keywords: string[]) => {
+    if (!props) return undefined;
+    return props.find(p => {
+        const type = p.prop_type.toLowerCase();
+        return keywords.some(k => type.includes(k.toLowerCase()));
+    });
+  };
+
+  const passProp = findProp(['Passing Yards', 'Pass Yards', 'Pass Yds']);
+  const rushProp = findProp(['Rushing Yards', 'Rush Yards', 'Rush Yds']);
+  const recProp = findProp(['Receiving Yards', 'Rec Yards', 'Rec Yds']);
+  const tdProp = findProp(['Anytime TD', 'Anytime Touchdown']);
 
   // Determine Main Prop to Show
   let mainProp = recProp;

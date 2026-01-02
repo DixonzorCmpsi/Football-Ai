@@ -147,6 +147,13 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
       {/* --- VEGAS PROPS GRID --- */}
       <div className="bg-slate-50 dark:bg-black/20 rounded-lg px-2 py-1.5 space-y-1 border border-slate-100 dark:border-white/5 mt-auto relative z-10 backdrop-blur-sm">
         
+        <div className="flex justify-between items-center text-[10px] border-b border-slate-200 dark:border-white/10 pb-1 mb-1">
+          <span className="text-slate-500 dark:text-white/60 font-medium">Implied Total</span>
+          <span className="font-mono text-slate-700 dark:text-white">
+            {data.implied_total ? data.implied_total : '-'}
+          </span>
+        </div>
+
         <div className="flex justify-between items-center text-[10px]">
           <span className="text-slate-500 dark:text-white/60 font-medium">{getMainPropLabel()}</span>
           <div className="flex items-center gap-2">
@@ -168,6 +175,49 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
               </span>
               <span className={`min-w-[28px] text-right ${getProbColor(data.pass_td_prob)}`}>
                 {data.pass_td_prob ? `${data.pass_td_prob}%` : ''}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* --- NEW PROPS --- */}
+        {data.position === 'QB' && (
+          <div className="flex justify-between items-center text-[10px]">
+            <span className="text-slate-500 dark:text-white/60 font-medium">Pass Att</span>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
+                {data.pass_att_line ? `${data.pass_att_line}` : '-'}
+              </span>
+              <span className={`min-w-[28px] text-right ${getProbColor(data.pass_att_prob ?? null)}`}>
+                {data.pass_att_prob ? `${data.pass_att_prob}%` : ''}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {data.position === 'RB' && (
+          <div className="flex justify-between items-center text-[10px]">
+            <span className="text-slate-500 dark:text-white/60 font-medium">Rush Att</span>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
+                {data.rush_att_line ? `${data.rush_att_line}` : '-'}
+              </span>
+              <span className={`min-w-[28px] text-right ${getProbColor(data.rush_att_prob ?? null)}`}>
+                {data.rush_att_prob ? `${data.rush_att_prob}%` : ''}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {(data.position === 'WR' || data.position === 'TE') && (
+          <div className="flex justify-between items-center text-[10px]">
+            <span className="text-slate-500 dark:text-white/60 font-medium">Receptions</span>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
+                {data.rec_line ? `${data.rec_line}` : '-'}
+              </span>
+              <span className={`min-w-[28px] text-right ${getProbColor(data.rec_prob ?? null)}`}>
+                {data.rec_prob ? `${data.rec_prob}%` : ''}
               </span>
             </div>
           </div>

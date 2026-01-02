@@ -13,12 +13,20 @@ export interface PlayerData {
   // Game Context
   overunder: number | null;
   spread: number | null;
+  implied_total?: number | null;
   // Props
   prop_line: number | null; 
   prop_prob: number | null;
   pass_td_line: number | null;
   pass_td_prob: number | null;
   anytime_td_prob: number | null;
+  // New Props
+  pass_att_line?: number | null;
+  pass_att_prob?: number | null;
+  rec_line?: number | null;
+  rec_prob?: number | null;
+  rush_att_line?: number | null;
+  rush_att_prob?: number | null;
   
   injury_status?: string;
 
@@ -47,4 +55,6 @@ export interface HistoryItem {
   receptions?: number;
   targets?: number;
   carries?: number;
+  snap_count?: number;
+  team_total_snaps?: number;
 }

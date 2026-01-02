@@ -87,6 +87,46 @@ def scrape_page_text(driver):
     except:
         return driver.find_element(By.TAG_NAME, "body").text
 
+def click_and_scrape_tabs(driver, current_text):
+    # Keywords for tabs we want to visit
+    keywords = ["Touchdown", "Quarterback", "Passing", "Rushing", "Receiving"]
+    
+    collected_text = current_text
+    
+    for key in keywords:
+        try:
+            # Find elements containing the keyword
+            xpath = f"//*[contains(text(), '{key}')]"
+            elements = driver.find_elements(By.XPATH, xpath)
+            
+            clicked = False
+            for el in elements:
+                # Filter for likely clickable items (buttons, tabs, list items)
+                try:
+                    tag = el.tag_name.lower()
+                    # Check if it's a button or inside a clickable container
+                    if tag in ['button', 'sp-tab-button', 'a', 'li', 'span', 'div']:
+                        if el.is_displayed():
+                            # Scroll and click
+                            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", el)
+                            time.sleep(0.5)
+                            driver.execute_script("arguments[0].click();", el)
+                            
+                            print(f"    [+] Clicked tab: {key}")
+                            time.sleep(2) # Wait for content load
+                            
+                            expand_visible_accordions(driver)
+                            new_text = scrape_page_text(driver)
+                            collected_text += "\n" + new_text
+                            clicked = True
+                            break
+                except: continue
+            
+        except Exception as e:
+            print(f"    [!] Error processing tab {key}: {e}")
+            
+    return collected_text
+
 def scrape_game(driver, url):
     print(f"\n🚀 Processing: {url}")
     driver.get(url)
@@ -97,16 +137,16 @@ def scrape_game(driver, url):
     game_folder = os.path.join(DATA_DIR, game_id)
     if not os.path.exists(game_folder): os.makedirs(game_folder)
 
-    # 2. Find Tabs (We generally want 'Anytime Touchdown' or 'Player Props')
-    # For this architecture, we scrape the *current active view* which defaults to main lines + some props
-    # To get everything, we might need to click tabs. For now, let's grab the MAIN view which covers 80% of needs.
-    
-    # Expand everything
+    # 2. Expand default view
     expand_visible_accordions(driver)
     
-    # Scrape Text
+    # 3. Scrape Default Text
     raw_text = scrape_page_text(driver)
-    lines = [l.strip() for l in raw_text.split('\n') if len(l.strip()) > 0]
+    
+    # 4. Click Tabs and Scrape More
+    full_text = click_and_scrape_tabs(driver, raw_text)
+    
+    lines = [l.strip() for l in full_text.split('\n') if len(l.strip()) > 0]
 
     # Save Menu.json
     output_file = os.path.join(game_folder, "Menu.json")

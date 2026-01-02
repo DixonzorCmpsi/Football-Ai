@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 import polars as pl
 from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
@@ -87,16 +88,16 @@ PIPELINE_STEPS = [
             (f"schedule_{SEASON}.csv", "schedule", "replace") 
         ]
     },
-    # 2. HISTORICAL DATA
-    {
-        "script": "09_upload_training_data.py", 
-        "uploads": [
-            ("../dataPrep/data/yearly_player_stats_offense.csv", "training_player_yearly", "if_missing"),
-            ("../dataPrep/data/weekly_player_stats_offense.csv", "training_player_weekly", "if_missing"),
-            ("../dataPrep/data/weekly_team_stats_offense.csv", "training_team_offense", "if_missing"),
-            ("../dataPrep/data/weekly_team_stats_defense.csv", "training_team_defense", "if_missing")
-        ]
-    },
+    # 2. HISTORICAL DATA (SKIPPED - Local Only)
+    # {
+    #     "script": "09_upload_training_data.py", 
+    #     "uploads": [
+    #         ("../dataPrep/data/yearly_player_stats_offense.csv", "training_player_yearly", "if_missing"),
+    #         ("../dataPrep/data/weekly_player_stats_offense.csv", "training_player_weekly", "if_missing"),
+    #         ("../dataPrep/data/weekly_team_stats_offense.csv", "training_team_offense", "if_missing"),
+    #         ("../dataPrep/data/weekly_team_stats_defense.csv", "training_team_defense", "if_missing")
+    #     ]
+    # },
     
     # 3. CURRENT SEASON CONTEXT
     {
@@ -136,24 +137,24 @@ PIPELINE_STEPS = [
             (f"weekly_feature_set_{SEASON}.csv", f"weekly_feature_set_{SEASON}", "replace") 
         ]
     },
-    # 7. MODELING DATASET (Training Prep)
-    {
-        "script": "../dataPrep/build_modeling_dataset_avg.py", 
-        "smart_check_file": "../dataPrep/weekly_modeling_dataset_avg.csv",
-        "smart_check_table": "modeling_dataset",
-        "uploads": [
-            ("../dataPrep/weekly_modeling_dataset_avg.csv", "modeling_dataset", "replace") 
-        ]
-    },
-    # 8. FEATURE ENGINEERING (Training Prep)
-    {
-        "script": "../dataPrep/feature_engineering_avg.py", 
-        "smart_check_file": "../dataPrep/featured_dataset_avg.csv",
-        "smart_check_table": "featured_dataset",
-        "uploads": [
-            ("../dataPrep/featured_dataset_avg.csv", "featured_dataset", "replace") 
-        ]
-    },
+    # 7. MODELING DATASET (Training Prep) (SKIPPED - Local Only)
+    # {
+    #     "script": "../dataPrep/build_modeling_dataset_avg.py", 
+    #     "smart_check_file": "../dataPrep/weekly_modeling_dataset_avg.csv",
+    #     "smart_check_table": "modeling_dataset",
+    #     "uploads": [
+    #         ("../dataPrep/weekly_modeling_dataset_avg.csv", "modeling_dataset", "replace") 
+    #     ]
+    # },
+    # 8. FEATURE ENGINEERING (Training Prep) (SKIPPED - Local Only)
+    # {
+    #     "script": "../dataPrep/feature_engineering_avg.py", 
+    #     "smart_check_file": "../dataPrep/featured_dataset_avg.csv",
+    #     "smart_check_table": "featured_dataset",
+    #     "uploads": [
+    #         ("../dataPrep/featured_dataset_avg.csv", "featured_dataset", "replace") 
+    #     ]
+    # },
    # 10. BOVADA CRAWLER (Get Game URLs)
     {
         "script": "10_bovada_crawler.py",
@@ -241,8 +242,9 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
     # Log file size for quick diagnostics
     try:
         size = file_path.stat().st_size
-        logger.debug(f"Found {file_path.name} (size: {size} bytes)")
-    except Exception:
+        print(f"      [DEBUG] Found {file_path.name} (size: {size} bytes)")
+    except Exception as e:
+        print(f"      [DEBUG] Error getting size for {file_path}: {e}")
         size = 0
 
     logger.info(f"Uploading {file_path.name} to '{table_name}' ({mode})...")
@@ -256,17 +258,44 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
         logger.info("No schema overrides configured for this file.")
 
     def fast_csv_upload(path, tbl, mode):
-        # 1) If replacing, create the table schema from a small sample
-        if mode == 'replace':
-            logger.info('Creating/Resetting table via small sample for COPY...')
+        insp = inspect(engine)
+        table_exists = insp.has_table(tbl)
+
+        # 1) If replacing OR table missing, create the table schema from a small sample
+        if mode == 'replace' or not table_exists:
+            logger.info(f"Creating/Resetting table '{tbl}' via small sample for COPY...")
             if overrides:
                 sample = pl.read_csv(path, n_rows=1000, schema_overrides=overrides).to_pandas()
             else:
                 sample = pl.read_csv(path, n_rows=1000).to_pandas()
             reset_db_table(tbl, engine)
             sample.to_sql(tbl, engine, if_exists='replace', index=False)
+            # Truncate to avoid duplicates from sample when we COPY full file
+            with engine.connect() as conn:
+                conn.execute(text(f"TRUNCATE TABLE {tbl}"))
+                conn.commit()
 
-        # 2) Use COPY FROM STDIN to stream the CSV directly into Postgres
+        # 2) Smart Append Logic (Delete overlaps)
+        elif mode == 'smart_append' and table_exists:
+            try:
+                # Peek at columns first
+                # We use read_csv with n_rows=0 to get schema quickly
+                schema = pl.read_csv(path, n_rows=0).columns
+                if 'season' in schema and 'week' in schema:
+                    df_keys = pl.read_csv(path, columns=['season', 'week']).unique()
+                    if not df_keys.is_empty():
+                        season = df_keys['season'][0]
+                        weeks = df_keys['week'].to_list()
+                        if weeks:
+                            with engine.connect() as conn:
+                                weeks_str = ",".join(map(str, weeks))
+                                conn.execute(text(f"DELETE FROM {tbl} WHERE season = {season} AND week IN ({weeks_str})"))
+                                conn.commit()
+                                logger.info(f"Smart Append: Deleted existing rows for season={season}, weeks={weeks}")
+            except Exception as e:
+                logger.warning(f"Smart Append pre-delete failed (continuing): {e}")
+
+        # 3) Use COPY FROM STDIN to stream the CSV directly into Postgres
         logger.info('Streaming CSV into Postgres via COPY (low-memory)')
         conn = engine.raw_connection()
         try:
@@ -284,9 +313,9 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
 
     try:
         # For very large files, avoid reading into memory and use streaming COPY
-            logger.debug(f"size variable = {size}, threshold = {50_000_000}")
-        if size > 50_000_000:
-            logger.debug('taking fast streaming path')
+        # Lower threshold to 1MB to be safe
+        if size > 1_000_000:
+            print(f"      [DEBUG] Taking fast streaming path (size > 1MB)")
             try:
                 import subprocess
                 header = subprocess.check_output(['head', '-n', '1', str(file_path)], text=True).strip()
@@ -296,7 +325,7 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
             except Exception:
                 rows = None
                 cols = None
-            print(f"      - Detected large file (>{50_000_000} bytes). Rows ~ {rows}, Cols ~ {cols}")
+            print(f"      - Detected large file (>{1_000_000} bytes). Rows ~ {rows}, Cols ~ {cols}")
 
             fast_csv_upload(file_path, table_name, mode)
             print(f"      - Completed streaming upload for {rows} rows.")
@@ -438,6 +467,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run ETL pipeline or a subset of steps")
     parser.add_argument("--only-scripts", nargs="+", help="Only run these script basenames (e.g. 09_upload_training_data.py or 09_upload_training_data)")
     parser.add_argument("--skip-scripts", nargs="+", help="Skip these script basenames entirely")
+    parser.add_argument("--import-data", type=str, help="Path to a folder containing CSVs to import (skips generation if found)")
     args = parser.parse_args()
 
     only = set()
@@ -448,6 +478,11 @@ def main():
     if args.skip_scripts:
         for s in args.skip_scripts:
             skip.add(s if s.endswith('.py') else f"{s}.py")
+            
+    import_dir = Path(args.import_data).resolve() if args.import_data else None
+    if import_dir and not import_dir.exists():
+        print(f"❌ Error: Import directory not found: {import_dir}")
+        sys.exit(1)
 
     print("Starting Master ETL Orchestrator...")
     check_system_memory_and_swap()
@@ -463,9 +498,41 @@ def main():
         print(f"⚙️ Skipping these scripts: {sorted(list(skip))}")
         steps_to_run = [s for s in steps_to_run if s["script"] not in skip]
 
+    current_dir = Path(__file__).parent
+
     for step in steps_to_run:
-        ran_script = run_external_script(step, engine)
-        was_skipped = not ran_script
+        script_needed = True
+        was_skipped = False
+        
+        # --- IMPORT LOGIC ---
+        if import_dir and "uploads" in step:
+            # Check if all artifacts for this step exist in the import folder
+            all_artifacts_found = True
+            for csv_name, _, _ in step["uploads"]:
+                src = import_dir / csv_name
+                if not src.exists():
+                    all_artifacts_found = False
+                    break
+            
+            if all_artifacts_found:
+                print(f"\n📦 Found artifacts for {step['script']} in import folder. Importing...")
+                for csv_name, _, _ in step["uploads"]:
+                    src = import_dir / csv_name
+                    dst = current_dir / csv_name
+                    try:
+                        shutil.copy2(src, dst)
+                        print(f"   - Copied {csv_name} to local workspace")
+                    except Exception as e:
+                        print(f"   ❌ Failed to copy {csv_name}: {e}")
+                
+                script_needed = False # Skip generation since we have the data
+                was_skipped = False   # Force upload (don't treat as skipped)
+            else:
+                print(f"   ⚠️ Import requested but artifacts missing for {step['script']}. Falling back to generation.")
+
+        if script_needed:
+            ran_script = run_external_script(step, engine)
+            was_skipped = not ran_script
         
         if "uploads" in step:
             for csv, table, mode in step["uploads"]:

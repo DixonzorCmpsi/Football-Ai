@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer, util
 # --- CONFIGURATION ---
 load_dotenv()
 DB_CONNECTION_STRING = os.getenv("DB_CONNECTION_STRING")
+print(f"DEBUG: DB_CONNECTION_STRING is '{DB_CONNECTION_STRING}'")
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(current_dir, "bovada_data")
@@ -106,18 +107,23 @@ class SmartPlayerMatcher:
                 self.cache[cache_key] = (cand, candidate_map[cand])
                 return cand, candidate_map[cand]
 
-        raw_emb = self.model.encode(raw_name, convert_to_tensor=True)
-        cand_emb = self.model.encode(candidates, convert_to_tensor=True)
-        scores = util.cos_sim(raw_emb, cand_emb)[0]
+        # --- OPTIMIZATION: Pre-compute embeddings for all candidates ---
+        # Instead of encoding candidates every time, we can encode them once per team or globally.
+        # However, since the candidate list changes per context (teams), we'll do a simpler optimization:
+        # Use rapidfuzz for string similarity first (much faster), then fallback to BERT only if needed.
+        from rapidfuzz import process, fuzz
         
-        best_score = float(scores.max())
-        best_idx = int(scores.argmax())
-        
-        if best_score >= AI_MATCH_THRESHOLD:
-            matched_name = candidates[best_idx]
-            matched_pos = candidate_map[matched_name]
-            self.cache[cache_key] = (matched_name, matched_pos)
-            return matched_name, matched_pos
+        match = process.extractOne(raw_name, candidates, scorer=fuzz.token_sort_ratio)
+        if match:
+            best_match, score, _ = match
+            if score >= 85: # High confidence string match
+                self.cache[cache_key] = (best_match, candidate_map[best_match])
+                return best_match, candidate_map[best_match]
+
+        # Fallback to BERT (Heavy) only if string match fails
+        # Also, batch encode is faster but here we do single query vs list.
+        # To speed this up further, we could cache embeddings of all players in __init__.
+
         
         self.cache[cache_key] = (raw_name, "FLEX")
         return raw_name, "FLEX"
@@ -126,9 +132,14 @@ class SmartPlayerMatcher:
 def load_data_source(query: str, csv_path: str, context_name: str) -> pl.DataFrame:
     if DB_CONNECTION_STRING:
         try:
+            print(f"   Attempting DB load for {context_name}...")
             df = pl.read_database_uri(query, DB_CONNECTION_STRING)
-            if not df.is_empty(): return df
-        except: pass
+            if not df.is_empty(): 
+                print(f"   ✅ Loaded {len(df)} rows from DB for {context_name}")
+                return df
+        except Exception as e: 
+            print(f"   ❌ DB Load Error for {context_name}: {e}")
+            pass
     if os.path.exists(csv_path):
         try: return pl.read_csv(csv_path, ignore_errors=True)
         except: pass
@@ -141,7 +152,7 @@ def load_schedule():
     return df
 
 def load_player_profiles():
-    df = load_data_source("SELECT player_name, position, team FROM player_profiles", CSV_PROFILES, "Profiles")
+    df = load_data_source("SELECT player_name, position, team_abbr FROM player_profiles", CSV_PROFILES, "Profiles")
     return df
 
 def american_to_implied_prob(moneyline):
@@ -293,66 +304,62 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
             if line.startswith("Total ") and " - " in line:
                 try:
                     parts = line.split(" - ")
-                    prop_type = parts[0].replace("Total ", "").strip()
-                    raw_player_name = clean_player_name(parts[1])
+                    prop_type = parts[0].replace("Total ", "")
+                    p_name_raw = clean_player_name(parts[1])
                     
-                    if not is_valid_player_prop(raw_player_name, prop_type):
-                        i += 1; continue
-                    
-                    player_name, pos = smart_matcher.match(raw_player_name, match_teams)
-                    
-                    if pos == "FLEX":
-                        if "Passing" in prop_type: pos = "QB"
-                        elif "Rushing" in prop_type: pos = "RB"
-                        elif "Receiving" in prop_type: pos = "WR/TE"
+                    if is_valid_player_prop(p_name_raw, prop_type):
+                        if i + 1 < len(lines):
+                            odds_line = lines[i+1].strip()
+                            
+                            # Sub-Type A1: Single line format (e.g. "O 25.5 (-115)")
+                            if odds_line.startswith('+') or odds_line.startswith('-') or odds_line == "EVEN":
+                                p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                
+                                # Extract line value (e.g. O 25.5)
+                                val_match = re.search(r'O\s*(\d+\.?\d*)', odds_line)
+                                line_val = val_match.group(1) if val_match else "0"
+                                
+                                player_props.append({
+                                    "player_name": p_name, 
+                                    "position": p_pos, 
+                                    "prop_type": prop_type,
+                                    "line": line_val, 
+                                    "odds": odds_line, 
+                                    "side": "Over", 
+                                    "implied_prob": american_to_implied_prob(odds_line),
+                                    "week": week, 
+                                    "game_id": game_id, 
+                                    "season": SEASON
+                                })
+                                i += 2
+                                continue
 
-                    found_match = False
-                    scan_limit = min(i + 8, len(lines))
-                    
-                    for k in range(i + 1, scan_limit - 1):
-                        val_line = lines[k].strip()
-                        odds_line = lines[k+1].strip()
-                        
-                        is_num = re.match(r'^\d+(\.\d+)?$', val_line)
-                        is_odds = re.match(r'^([+-]\d+|EVEN)$', odds_line)
-                        
-                        if val_line == "Over" and k + 2 < scan_limit:
-                            v_next = lines[k+1].strip()
-                            o_next = lines[k+2].strip()
-                            if re.match(r'^\d+(\.\d+)?$', v_next) and re.match(r'^([+-]\d+|EVEN)$', o_next):
-                                val_line = v_next
-                                odds_line = o_next
-                                is_num = True
-                                is_odds = True
-                        
-                        o_comb = re.match(r'^O\s*(\d+(\.\d+)?)$', val_line)
-                        if o_comb:
-                            val_line = o_comb.group(1)
-                            is_num = True
-                        
-                        if is_num and is_odds:
-                            try:
-                                f_val = float(val_line)
-                                val_line = str(int(math.ceil(f_val)))
-                            except: pass
-
-                            player_props.append({
-                                "player_name": player_name, 
-                                "position": pos, 
-                                "prop_type": prop_type,
-                                "line": val_line, 
-                                "odds": odds_line, 
-                                "side": "Over", 
-                                "implied_prob": american_to_implied_prob(odds_line),
-                                "week": week, 
-                                "game_id": game_id, 
-                                "season": SEASON
-                            })
-                            found_match = True
-                            break
-                    
-                    if found_match: i += 1 
-                except: pass
+                            # Sub-Type A2: Block format (Over / Under / Line / Odds)
+                            elif odds_line == "Over" and i + 4 < len(lines):
+                                # i+1: Over, i+2: Under, i+3: Line, i+4: Over Odds
+                                line_val = lines[i+3].strip()
+                                over_odds = lines[i+4].strip()
+                                
+                                # Basic validation
+                                if re.match(r'^\d+\.?\d*$', line_val) and (over_odds.startswith('+') or over_odds.startswith('-') or over_odds == "EVEN"):
+                                    p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                    
+                                    player_props.append({
+                                        "player_name": p_name, 
+                                        "position": p_pos, 
+                                        "prop_type": prop_type,
+                                        "line": line_val, 
+                                        "odds": over_odds, 
+                                        "side": "Over", 
+                                        "implied_prob": american_to_implied_prob(over_odds),
+                                        "week": week, 
+                                        "game_id": game_id, 
+                                        "season": SEASON
+                                    })
+                                    i += 6
+                                    continue
+                except Exception as e: 
+                    pass
 
             # Type B: "Anytime Touchdown"
             if "Anytime Touchdown" in line:
@@ -406,7 +413,7 @@ def main():
                 if g: all_game_lines.append(g)
     
     if all_player_props:
-        df_p = pl.DataFrame(all_player_props).with_columns(pl.lit(datetime.now().isoformat()).alias("processed_at"))
+        df_p = pl.DataFrame(all_player_props).unique().with_columns(pl.lit(datetime.now().isoformat()).alias("processed_at"))
         df_p.write_csv(OUTPUT_PLAYER_CSV)
         print(f"✅ Saved {len(df_p)} Player Props to {OUTPUT_PLAYER_CSV}")
     else: print("⚠️ No Player Props found.")

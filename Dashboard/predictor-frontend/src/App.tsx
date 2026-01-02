@@ -212,17 +212,18 @@ export default function App() {
         <header className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
           
           <div className="flex items-center gap-1 pr-8">
-             <button onClick={() => setShowSidebars(!showSidebars)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+             <button onClick={() => setShowSidebars(!showSidebars)} className="hidden lg:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
              
-             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:flex items-center gap-2 z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
-                <div className="text-2xl font-extrabold" aria-hidden>Ai</div>
-                <span className="sr-only">The Spot</span>
+             <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:flex items-center gap-1 z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
+                <span className="text-2xl font-black text-slate-800 dark:text-slate-100">THE SPOT</span>
+                <span className="text-2xl font-black text-blue-600 dark:text-blue-500">AI</span>
+                <span className="sr-only">The Spot Ai</span>
              </div>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
               {(['SCHEDULE', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
@@ -239,18 +240,20 @@ export default function App() {
               ))}
             </div>
 
-            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
-              {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-            </button>
+            <div className={`flex items-center gap-2 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm ${showSidebars ? 'lg:hidden' : ''}`}>
+                <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
+                  {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
+                </button>
+                
+                <div className="text-xs font-black text-slate-900 dark:text-slate-100 px-2 py-1 rounded bg-slate-100 dark:bg-slate-700">
+                    Wk {activeWeek || "-"}
+                </div>
+            </div>
 
             {/* Mobile: Trending access (hidden on lg screens where sidebars exist) */}
             <button onClick={() => setMobileDrawerOpen(true)} className="p-2 text-slate-400 hover:text-blue-600 lg:hidden rounded-lg transition-colors" aria-label="Open Menu">
               <TrendingUp size={18} />
             </button>
-            
-            <div className="text-sm font-black text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-800 px-3 py-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
-                Wk {activeWeek || "-"}
-            </div>
           </div>
         </header>
 
@@ -433,12 +436,25 @@ export default function App() {
       {/* RIGHT SIDEBAR */}
       {showSidebars && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
-          <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
-            <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-1">
-                <TrendingUp size={16} />
-                <h2 className="text-xs font-black uppercase tracking-widest">Trending Up</h2>
+          <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-1">
+                  <TrendingUp size={16} />
+                  <h2 className="text-xs font-black uppercase tracking-widest">Trending Up</h2>
+              </div>
+              <p className="text-xs text-slate-400 dark:text-slate-500">Most Added Players (24h)</p>
             </div>
-            <p className="text-xs text-slate-400 dark:text-slate-500">Most Added Players (24h)</p>
+
+            {/* Theme + Week Toggle (Desktop Sidebar) */}
+            <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
+                <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
+                  {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
+                
+                <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
+                    Wk {activeWeek || "-"}
+                </div>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             {loadingUp ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
