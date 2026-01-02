@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { getTeamColor } from '../utils/nflColors';
 import { Trophy } from 'lucide-react';
 import { useSchedule } from '../hooks/useNflData';
+import type { ScheduleGame } from '../hooks/useNflData';
 
 // Team to Conference Mapping
 const TEAM_CONFERENCE: Record<string, 'AFC' | 'NFC'> = {
@@ -16,7 +17,7 @@ const TEAM_CONFERENCE: Record<string, 'AFC' | 'NFC'> = {
 };
 
 interface PlayoffGameProps {
-    game?: any;
+    game?: ScheduleGame;
     label: string;
     isSuperBowl?: boolean;
 }
@@ -79,7 +80,7 @@ const PlayoffView = () => {
     const { games: sbGames } = useSchedule(22);
 
     // Filter by conference (except Super Bowl which is both)
-    const filterByConf = (games: any[]) => games.filter(g => 
+    const filterByConf = (games: ScheduleGame[]) => games.filter(g => 
         TEAM_CONFERENCE[g.home_team] === conference || TEAM_CONFERENCE[g.away_team] === conference
     );
 

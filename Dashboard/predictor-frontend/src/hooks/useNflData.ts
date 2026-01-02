@@ -105,6 +105,10 @@ export interface MatchupData {
 export interface ScheduleGame {
   home_team: string;
   away_team: string;
+  home_score?: number | null;
+  away_score?: number | null;
+  gameday?: string;
+  gametime?: string;
   game_total?: number;
   moneyline_home?: string;
   moneyline_away?: string;
