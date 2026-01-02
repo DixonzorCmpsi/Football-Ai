@@ -78,11 +78,24 @@ export interface HistoryEntry {
   carries: number;
 }
 
+export interface InjuryData {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string;
+  status: string;
+  avg_snaps: number;
+  avg_pct?: number;
+  headshot?: string;
+}
+
 export interface MatchupData {
     matchup: string;
     week: number;
     home_roster: any[];
     away_roster: any[];
+    home_injuries?: InjuryData[];
+    away_injuries?: InjuryData[];
     over_under?: number | null;
     spread?: number | null;
     home_win_prob?: number | null;

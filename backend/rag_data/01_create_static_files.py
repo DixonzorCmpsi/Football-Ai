@@ -122,16 +122,17 @@ def create_schedule(season):
         schedule = nfl.load_schedules(seasons=season)
         if schedule.is_empty(): print("No schedule data found."); return
         
-        schedule_reg = schedule.filter(pl.col('game_type') == 'REG')
+        # Include playoffs (WC, DIV, CON, SB)
+        schedule_filtered = schedule.filter(pl.col('game_type').is_in(['REG', 'WC', 'DIV', 'CON', 'SB']))
         
         schedule_columns = [
-            'game_id', 'week', 'season',
+            'game_id', 'week', 'season', 'game_type',
             'home_team', 'away_team', 'home_score', 'away_score', 
-            'result', 'gameday'
+            'result', 'gameday', 'gametime'
         ]
         available_columns = [col for col in schedule_columns if col in schedule.columns]
         
-        schedule_clean = schedule_reg.select(available_columns)
+        schedule_clean = schedule_filtered.select(available_columns)
         
         output_file = f'schedule_{season}.csv'
         schedule_clean.write_csv(output_file)

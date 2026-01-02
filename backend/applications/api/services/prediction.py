@@ -1,4 +1,5 @@
 import polars as pl
+import asyncio
 import math
 import numpy as np
 from difflib import get_close_matches
@@ -266,6 +267,8 @@ async def get_player_card(player_id: str, week: int):
     p_row = profile.row(0, named=True)
     
     pos = p_row['position']
+    if pos: pos = pos.strip().upper()
+    
     p_name = p_row['player_name']
     team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
@@ -564,11 +567,16 @@ async def get_team_roster_cards(team_abbr: str, week: int):
         ).select(["player_id", "position"])
         ranked = candidates
 
+    # --- OPTIMIZATION: Parallelize Player Card Fetching ---
+    # Fetch all player cards concurrently to reduce wait time
+    tasks = []
     for pos, limit in composition.items():
         pos_candidates = ranked.filter(pl.col("position") == pos).head(limit)
         for row in pos_candidates.iter_rows(named=True):
-            card = await get_player_card(row['player_id'], week)
-            if card: roster_result.append(card)
+            tasks.append(get_player_card(row['player_id'], week))
+    
+    results = await asyncio.gather(*tasks)
+    roster_result = [card for card in results if card is not None]
             
     order = {"QB": 1, "RB": 2, "WR": 3, "TE": 4}
     roster_result.sort(key=lambda x: order.get(x["position"], 99))
@@ -639,3 +647,176 @@ def find_usage_boost_reason(player_id: str, week: int):
 
     except Exception as e:
         return {"found": False, "error": str(e)}
+
+def get_team_injury_report(team_abbr: str, week: int):
+    """
+    Returns a list of injured players for a team with their snap counts.
+    """
+    if "df_injuries" not in model_data or model_data["df_injuries"].is_empty():
+        return []
+
+    df_inj = model_data["df_injuries"]
+    
+    # Determine target week (latest available if current is missing)
+    target_week = week
+    if "week" in df_inj.columns:
+        max_wk = df_inj.select(pl.col("week").max()).item()
+        if week > max_wk:
+            target_week = max_wk
+        elif df_inj.filter(pl.col("week") == int(week)).is_empty():
+            target_week = max_wk
+        
+        # Filter by week first
+        weekly_injuries = df_inj.filter(pl.col("week") == int(target_week))
+        
+        # Join with profiles to get team_abbr if missing
+        if "team_abbr" not in weekly_injuries.columns and "team" not in weekly_injuries.columns:
+             if "df_profile" in model_data:
+                df_prof = model_data["df_profile"]
+                weekly_injuries = weekly_injuries.join(
+                    df_prof.select(["player_id", "team_abbr"]), 
+                    on="player_id", 
+                    how="left"
+                )
+        
+        # Now filter by team
+        team_col = "team" if "team" in weekly_injuries.columns else "team_abbr"
+        if team_col in weekly_injuries.columns:
+            team_injuries = weekly_injuries.filter(pl.col(team_col) == team_abbr)
+        else:
+            return [] # Cannot filter by team
+            
+    else:
+        # Fallback for old schema
+        team_col = "team" if "team" in df_inj.columns else "team_abbr"
+        if team_col in df_inj.columns:
+            team_injuries = df_inj.filter(pl.col(team_col) == team_abbr)
+        else:
+             return []
+
+    if team_injuries.is_empty():
+        return []
+        
+    # --- DEDUPLICATION ---
+    # Ensure unique player_ids in the report
+    team_injuries = team_injuries.unique(subset=["player_id"])
+
+    # Get Profiles for names and positions
+    df_prof = model_data.get("df_profile", pl.DataFrame())
+    
+    # Get Snap Counts
+    df_snaps = model_data.get("df_snap_counts", pl.DataFrame())
+    
+    # --- OPTIMIZATION: Batch Process Snaps ---
+    # Instead of filtering df_snaps inside the loop (O(N*M)), we filter once for all relevant players.
+    player_ids = [row['player_id'] for row in team_injuries.iter_rows(named=True)]
+    
+    snap_map = {}
+    pct_map = {}
+    
+    if not df_snaps.is_empty() and player_ids:
+        # 3-Week Rolling Window (Last 3 weeks before current week)
+        start_week = max(1, int(week) - 3)
+        
+        batch_snaps = df_snaps.filter(
+            (pl.col("player_id").is_in(player_ids)) & 
+            (pl.col("week") >= start_week) &
+            (pl.col("week") < int(week))
+        )
+        
+        if not batch_snaps.is_empty():
+            # Ensure columns exist
+            has_off = "offense_snaps" in batch_snaps.columns
+            has_def = "defense_snaps" in batch_snaps.columns
+            has_off_pct = "offense_pct" in batch_snaps.columns
+            has_def_pct = "defense_pct" in batch_snaps.columns
+            
+            # Fill nulls
+            if has_off: batch_snaps = batch_snaps.with_columns(pl.col("offense_snaps").fill_null(0))
+            if has_def: batch_snaps = batch_snaps.with_columns(pl.col("defense_snaps").fill_null(0))
+            if has_off_pct: batch_snaps = batch_snaps.with_columns(pl.col("offense_pct").fill_null(0.0))
+            if has_def_pct: batch_snaps = batch_snaps.with_columns(pl.col("defense_pct").fill_null(0.0))
+            
+            # Calculate Total Snaps and Max Pct per row
+            exprs = []
+            
+            # Total Snaps
+            if has_off and has_def:
+                exprs.append((pl.col("offense_snaps") + pl.col("defense_snaps")).alias("total_snaps"))
+            elif has_off:
+                exprs.append(pl.col("offense_snaps").alias("total_snaps"))
+            elif has_def:
+                exprs.append(pl.col("defense_snaps").alias("total_snaps"))
+            else:
+                exprs.append(pl.lit(0).alias("total_snaps"))
+                
+            # Total Pct (Sum of Offense + Defense Pct)
+            if has_off_pct and has_def_pct:
+                exprs.append((pl.col("offense_pct") + pl.col("defense_pct")).alias("total_pct"))
+            elif has_off_pct:
+                exprs.append(pl.col("offense_pct").alias("total_pct"))
+            elif has_def_pct:
+                exprs.append(pl.col("defense_pct").alias("total_pct"))
+            else:
+                exprs.append(pl.lit(0.0).alias("total_pct"))
+                
+            batch_snaps = batch_snaps.with_columns(exprs)
+            
+            # Group by player and calculate mean
+            avgs = batch_snaps.group_by("player_id").agg([
+                pl.col("total_snaps").mean().alias("avg_snaps"),
+                pl.col("total_pct").mean().alias("avg_pct")
+            ])
+            
+            # Create lookup map
+            for r in avgs.iter_rows(named=True):
+                snap_map[r['player_id']] = r['avg_snaps']
+                pct_map[r['player_id']] = r['avg_pct']
+
+    # Define Position Groups for Filtering
+    OL_POSITIONS = {'T', 'G', 'C', 'OT', 'OG', 'OL'}
+    DEF_POSITIONS = {'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'}
+
+    report = []
+    for row in team_injuries.iter_rows(named=True):
+        pid = row['player_id']
+        status = row.get('injury_status')
+        if not status: continue # Skip if no status
+        
+        # Get Profile Info
+        name = "Unknown"
+        position = "Unknown"
+        headshot = None
+        
+        if not df_prof.is_empty():
+            prof = df_prof.filter(pl.col("player_id") == pid)
+            if not prof.is_empty():
+                p_row = prof.row(0, named=True)
+                name = p_row.get('player_name', name)
+                position = p_row.get('position', position)
+                if position: position = position.strip().upper()
+                headshot = p_row.get('headshot')
+        
+        # Get Avg Snaps from Map
+        avg_snaps = snap_map.get(pid, 0.0)
+        avg_pct = pct_map.get(pid, 0.0)
+        
+        # Filter Logic: Only render players with > 35% snap percentage for O-Line and Defense
+        if position in OL_POSITIONS or position in DEF_POSITIONS:
+            if avg_pct < 0.35:
+                continue
+
+        report.append({
+            "player_id": pid,
+            "name": name,
+            "position": position,
+            "team": team_abbr,
+            "status": status,
+            "avg_snaps": round(avg_snaps if avg_snaps else 0.0, 1),
+            "avg_pct": round(avg_pct * 100, 1) if avg_pct else 0.0,
+            "headshot": headshot
+        })
+        
+    # Sort by avg_snaps descending (importance)
+    report.sort(key=lambda x: x['avg_snaps'] or 0, reverse=True)
+    return report

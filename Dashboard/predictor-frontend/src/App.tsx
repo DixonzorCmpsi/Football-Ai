@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -7,6 +7,8 @@ import SidePanelDrawer from './components/SidePanelDrawer';
 import CompareView from './components/CompareView';
 import PlayerHistory from './components/PlayerHistory';
 import MatchupView from './components/MatchupView';
+import MyPicksList from './components/MyPicksList';
+import PlayoffView from './components/PlayoffView';
 import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
@@ -94,8 +96,10 @@ const SidebarPlayerItem = ({
 };
 
 // --- MAIN APP ---
+
 export default function App() {
   const { currentWeek, loadingWeek } = useCurrentWeek();
+  const [sidebarTab, setSidebarTab] = useState<'TRENDING' | 'PICKS'>('TRENDING');
   
   // FIX: Initialize to NULL. Do not default to 1.
   const [activeWeek, setActiveWeek] = useState<number | null>(null);
@@ -111,7 +115,7 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING'>('SCHEDULE');
+  const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS'>('SCHEDULE');
   const [showSidebars, setShowSidebars] = useState(true); 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
@@ -178,29 +182,52 @@ export default function App() {
       {showSidebars && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
-            <div className="flex items-center gap-2 text-red-600 dark:text-red-400 mb-1">
-                <TrendingDown size={16} />
-                <h2 className="text-xs font-black uppercase tracking-widest">Trending Down</h2>
-            </div>
-            <p className="text-xs text-slate-400 dark:text-slate-500">Most Dropped Players (24h)</p>
+             <div className="flex items-center justify-between mb-3">
+                {/* Title Area */}
+                <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+                    <TrendingDown size={16} />
+                    <h2 className="text-xs font-black uppercase tracking-widest">Trending Down</h2>
+                </div>
+
+                {/* My Picks Toggle */}
+                <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
+                    <button 
+                        onClick={() => setSidebarTab(sidebarTab === 'PICKS' ? 'TRENDING' : 'PICKS')}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold transition-all ${sidebarTab === 'PICKS' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'}`}
+                    >
+                        <Check size={12} strokeWidth={3} />
+                        <span>My Picks</span>
+                    </button>
+                </div>
+             </div>
+
+             {/* Subtitle / Description */}
+             {sidebarTab === 'TRENDING' ? (
+                <p className="text-xs text-slate-400 dark:text-slate-500">Most Dropped Players (24h)</p>
+             ) : (
+                <p className="text-xs text-slate-400 dark:text-slate-500">Your Saved Predictions</p>
+             )}
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
-            {loadingDown ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
-              trendingDown.map(p => (
-                <SidebarPlayerItem 
-                    key={p.player_id} 
-                    player={p} 
-                    type="down" 
-                    isSelected={compareList.includes(p.player_id)}
-                    onToggleCompare={toggleCompare}
-                    onClick={(id) => { 
-                        setSelectedHistoryId(id); 
-                        setHistoryFrom('SCHEDULE'); 
-                        setViewMode('HISTORY'); 
-                    }} 
-                />
-              ))
-            }
+            {sidebarTab === 'TRENDING' ? (
+                loadingDown ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
+                trendingDown.map(p => (
+                    <SidebarPlayerItem 
+                        key={p.player_id} 
+                        player={p} 
+                        type="down" 
+                        isSelected={compareList.includes(p.player_id)}
+                        onToggleCompare={toggleCompare}
+                        onClick={(id) => { 
+                            setSelectedHistoryId(id); 
+                            setHistoryFrom('SCHEDULE'); 
+                            setViewMode('HISTORY'); 
+                        }} 
+                    />
+                ))
+            ) : (
+                <MyPicksList />
+            )}
           </div>
         </aside>
       )}
@@ -225,9 +252,10 @@ export default function App() {
           
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
-              {(['SCHEDULE', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+              {(['SCHEDULE', 'PLAYOFFS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
+                  {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
                           <BarChart2 size={14}/>
@@ -235,7 +263,7 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  {mode === 'COMPARE' ? 'COMPARE' : mode}
+                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode}</span>
                 </button>
               ))}
             </div>
@@ -263,6 +291,8 @@ export default function App() {
             <h3 className="text-sm font-black">Trending / Menu</h3>
             <div className="mt-4">
               <button onClick={() => { setViewMode('TRENDING'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Trending</button>
+              <button onClick={() => { setViewMode('PICKS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Picks</button>
+              <button onClick={() => { setViewMode('PLAYOFFS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Playoffs</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
             </div>
@@ -280,6 +310,9 @@ export default function App() {
               </button>
               <button onClick={() => setViewMode('TRENDING')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Trending">
                 <TrendingUp size={18} />
+              </button>
+              <button onClick={() => setViewMode('PICKS')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="My Picks">
+                <Check size={18} />
               </button>
               <button onClick={() => setViewMode('COMPARE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Compare">
                 <BarChart2 size={18} />
@@ -380,6 +413,19 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* VIEW: PICKS (mobile) */}
+          {viewMode === 'PICKS' && (
+            <div className="mx-auto max-w-3xl">
+              <h2 className="text-sm font-black mb-4">My Picks</h2>
+              <MyPicksList />
+            </div>
+          )}
+
+          {/* VIEW: PLAYOFFS */}
+          {viewMode === 'PLAYOFFS' && (
+            <PlayoffView />
           )}
 
           {/* VIEW: GAME ROSTERS */}
