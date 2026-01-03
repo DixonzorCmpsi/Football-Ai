@@ -2,14 +2,27 @@ import React from 'react';
 
 interface MatchupBannerProps {
   matchup: string;
+  gameTime?: string;
+  gameDay?: string;
   overUnder: number | null;
   spread?: number | null;
   homeWinProb: number | null;
   awayWinProb: number | null;
 }
 
-const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, spread, homeWinProb, awayWinProb }) => {
+const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUnder, spread, homeWinProb, awayWinProb }) => {
   const [away, home] = matchup.split(' @ ');
+
+  // Convert 24-hour time to 12-hour format (e.g., "16:25" -> "4:25 PM")
+  const formatGameTime = (time: string | undefined): string => {
+    if (!time) return '';
+    const [hourStr, minute] = time.split(':');
+    let hour = parseInt(hourStr, 10);
+    if (isNaN(hour)) return time;
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    hour = hour % 12 || 12;
+    return `${hour}:${minute} ${ampm}`;
+  };
 
   // Calculate implied scores based on spread when available
   // Standard convention: Negative spread means favored (e.g. -6.5)
@@ -28,6 +41,7 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, sprea
   };
 
   const impliedScores = calculateImpliedScores();
+  const formattedTime = formatGameTime(gameTime);
 
   return (
     <div className="w-full relative overflow-hidden p-4">
@@ -53,7 +67,14 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, overUnder, sprea
             </div>
           </div>
 
-          <div className="text-slate-300 dark:text-slate-600 font-mono text-xl font-thin">@</div>
+          <div className="flex flex-col items-center">
+            <div className="text-slate-300 dark:text-slate-600 font-mono text-xl font-thin">@</div>
+            {formattedTime && (
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                {formattedTime}
+              </span>
+            )}
+          </div>
 
           <div className="text-center flex items-center gap-3">
             <div>

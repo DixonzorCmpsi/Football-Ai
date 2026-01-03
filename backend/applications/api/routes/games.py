@@ -73,6 +73,34 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
         away_injuries = get_team_injury_report(away_team, week)
         
         over_under, home_win, away_win, spread = None, None, None, None
+        gametime, gameday = None, None
+
+        # Fetch Game Time from Schedule
+        if "df_schedule" in model_data and not model_data["df_schedule"].is_empty():
+            # Try to match by team abbreviations first
+            sched_game = model_data["df_schedule"].filter(
+                (pl.col("week") == int(week)) & 
+                (pl.col("home_team") == home_team) & 
+                (pl.col("away_team") == away_team)
+            )
+            
+            if sched_game.is_empty():
+                # Fallback: Try to match by checking if the abbreviation is contained in the full name (if schedule uses full names)
+                # This is a simple heuristic; ideally we should have a mapping.
+                # But first, let's check if we can find it by just one team if the other mismatches
+                # Also strip whitespace just in case
+                sched_game = model_data["df_schedule"].filter(
+                    (pl.col("week") == int(week)) & 
+                    ((pl.col("home_team").str.strip_chars() == home_team) | (pl.col("away_team").str.strip_chars() == away_team))
+                )
+
+            if not sched_game.is_empty():
+                row = sched_game.row(0, named=True)
+                gametime = row.get("gametime")
+                gameday = row.get("gameday")
+                # logger.info(f"Found gametime for {away_team}@{home_team}: {gameday} {gametime}")
+            else:
+                logger.warning(f"Could not find schedule entry for {away_team}@{home_team} Week {week}. Available games: {model_data['df_schedule'].filter(pl.col('week')==int(week)).select(['home_team', 'away_team']).to_dicts()}")
         
         # Use the same approach as the schedule endpoint to fetch game odds
         if "df_lines" in model_data and not model_data["df_lines"].is_empty():
@@ -99,6 +127,8 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
         return {
             "matchup": f"{away_team} @ {home_team}",
             "week": week,
+            "gametime": gametime,
+            "gameday": gameday,
             "over_under": over_under,
             "spread": spread,
             "home_win_prob": home_win,

@@ -92,6 +92,8 @@ export interface InjuryData {
 export interface MatchupData {
     matchup: string;
     week: number;
+    gametime?: string;
+    gameday?: string;
     home_roster: any[];
     away_roster: any[];
     home_injuries?: InjuryData[];

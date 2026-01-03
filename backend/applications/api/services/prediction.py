@@ -31,11 +31,15 @@ def get_injury_status_for_week(player_id: str, week: int, default="Active"):
     max_wk = df.select(pl.col("week").max()).item()
     target_week = int(week)
     
-    # If Future Week, use Max
+    # If Future Week, use Max. If Past Week is missing, assume Active (don't use future data).
     week_exists = not df.filter(pl.col("week") == int(week)).is_empty()
     if not week_exists:
-        logger.debug(f"Week {week} not in injury data; falling back to latest known week {max_wk}")
-        target_week = max_wk
+        if int(week) > max_wk:
+            logger.debug(f"Week {week} not in injury data; falling back to latest known week {max_wk}")
+            target_week = max_wk
+        else:
+            # Week is within range but missing -> likely no injuries reported -> Active
+            return default
     
     # Filter
     record = df.filter(
@@ -180,6 +184,62 @@ def run_base_prediction(pid, pos, week):
             if not any(s.lower() in status_norm for s in injury_statuses):
                 continue  # skip teammates who are not injured
 
+            # Check if teammate has been injured for > 2 weeks (i.e. injured in week-1 AND week-2)
+            # If so, we assume the team has adapted and we do NOT apply a boost.
+            try:
+                w_prev1 = int(week) - 1
+                w_prev2 = int(week) - 2
+                if w_prev2 > 0:
+                    st_1 = str(get_injury_status_for_week(mate_id, w_prev1))
+                    st_2 = str(get_injury_status_for_week(mate_id, w_prev2))
+                    
+                    # Use a stricter list for historical checks - only skip if they were definitely OUT
+                    # "Doubtful" or "Questionable" in the past shouldn't disqualify a current boost if they ended up playing
+                    strict_missing = ["IR", "Out", "Inactive", "PUP"]
+                    
+                    is_inj_1 = any(s.lower() in st_1.lower() for s in strict_missing)
+                    is_inj_2 = any(s.lower() in st_2.lower() for s in strict_missing)
+                    
+                    if is_inj_1 and is_inj_2:
+                        logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate has been out for >2 weeks (W{w_prev1}:{st_1}, W{w_prev2}:{st_2})")
+                        continue
+                    
+                    # --- Check Snap Counts for "Silent" Absence ---
+                    # If no snap data exists for last 2 weeks, check when they last played
+                    if "df_snap_counts" in model_data:
+                        # First check last 2 weeks
+                        snaps_prev = model_data["df_snap_counts"].filter(
+                            (pl.col("player_id") == mate_id) & 
+                            (pl.col("week").is_in([w_prev1, w_prev2]))
+                        )
+                        
+                        if snaps_prev.is_empty():
+                            # No snap data for last 2 weeks - check when they last played
+                            all_snaps = model_data["df_snap_counts"].filter(
+                                (pl.col("player_id") == mate_id) & 
+                                (pl.col("week") < int(week))
+                            )
+                            if not all_snaps.is_empty():
+                                last_week_played = all_snaps.select(pl.col("week").max()).item()
+                                weeks_since_played = int(week) - last_week_played
+                                if weeks_since_played > 2:
+                                    logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate hasn't played in {weeks_since_played} weeks (last: W{last_week_played})")
+                                    continue
+                        else:
+                            # Check if they played meaningful snaps in last 2 weeks
+                            played_recently = False
+                            for row in snaps_prev.iter_rows(named=True):
+                                if row.get('offense_snaps', 0) > 5: # Threshold for "played"
+                                    played_recently = True
+                                    break
+                            
+                            if not played_recently:
+                                logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate has 0 snaps in last 2 weeks (Silent Absence)")
+                                continue
+
+            except Exception as e:
+                logger.warning(f"Error checking historical injury for {mate_id}: {e}")
+
             # Fetch teammate historical stats to ensure they were a meaningful contributor
             mate_stats = pl.DataFrame()
             if "df_player_stats" in model_data and not model_data["df_player_stats"].is_empty() and 'player_id' in model_data['df_player_stats'].columns and 'week' in model_data['df_player_stats'].columns:
@@ -205,8 +265,8 @@ def run_base_prediction(pid, pos, week):
                     if not mate_snaps_df.is_empty():
                         try:
                             m_snaps = float(mate_snaps_df.select(pl.col("offense_pct")).mean().item())
-                            # Normalize fraction -> percent
-                            if m_snaps < 1.0: m_snaps *= 100
+                            # Normalize fraction -> percent (Handle 1.0 as 100%)
+                            if m_snaps <= 1.0: m_snaps *= 100
                             # Reject obviously invalid values
                             if math.isnan(m_snaps) or m_snaps < 0 or m_snaps > 200:
                                 logger.debug(f"Unexpected mate_snaps value for {mate_id}: {m_snaps}; resetting to 0")

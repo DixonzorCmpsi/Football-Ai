@@ -127,6 +127,8 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
       <div className="mb-4 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
         <MatchupBanner 
           matchup={data.matchup} 
+          gameTime={data.gametime}
+          gameDay={data.gameday}
           overUnder={data.over_under || null}
           spread={data.spread || null}
           homeWinProb={data.home_win_prob || null}
