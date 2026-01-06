@@ -12,9 +12,11 @@ const MyPicksList = ({ currentWeek }: MyPicksListProps) => {
   const week = currentWeek ?? 19; // Default to 19 if null
 
   // Refresh pick statuses when component mounts or week changes
+  // refreshPickStatuses is now stable (empty deps) so this won't cause loops
   useEffect(() => {
     refreshPickStatuses(week);
-  }, [week, refreshPickStatuses]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [week]);
 
   const handleRefresh = () => {
     refreshPickStatuses(week);

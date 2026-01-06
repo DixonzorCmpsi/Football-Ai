@@ -94,12 +94,14 @@ async def get_player_history(player_id: str):
                 "rushing_yds": int(row.get('rushing_yards') or 0),
                 "receiving_yds": int(row.get('receiving_yards') or 0),
                 "touchdowns": int((row.get('passing_touchdown') or 0) + (row.get('rush_touchdown') or 0) + (row.get('receiving_touchdown') or 0)),
+                "passing_tds": int(row.get('passing_touchdown') or 0),
                 "snap_count": snap_count,
                 "snap_percentage": snap_pct,
                 "team_total_snaps": team_snaps,
                 "receptions": int(row.get('receptions') or 0),
                 "targets": int(row.get('targets') or 0),
-                "carries": int(row.get('rush_attempts') or 0)
+                "carries": int(row.get('rush_attempts') or 0),
+                "pass_attempts": int(row.get('attempts') or row.get('pass_attempts') or 0)
             })
         return history
     except Exception as e:

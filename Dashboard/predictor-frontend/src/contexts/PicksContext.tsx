@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 export interface Pick {
   id: string;
@@ -31,7 +31,7 @@ const getStatFromPropType = (propType: string, historyEntry: any): number | null
   if (pt.includes('rush') && pt.includes('yd')) return historyEntry.rushing_yds ?? null;
   if (pt.includes('rec') && pt.includes('yd')) return historyEntry.receiving_yds ?? null;
   if (pt.includes('reception')) return historyEntry.receptions ?? null;
-  if (pt.includes('pass') && pt.includes('td')) return historyEntry.passing_tds ?? historyEntry.touchdowns ?? null; // approximate
+  if (pt.includes('pass') && pt.includes('td')) return historyEntry.passing_tds ?? historyEntry.touchdowns ?? null;
   if (pt.includes('pass') && pt.includes('att')) return historyEntry.pass_attempts ?? null;
   if (pt.includes('rush') && pt.includes('att')) return historyEntry.carries ?? null;
   return null;
@@ -54,46 +54,66 @@ export const PicksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return [];
     }
   });
+  
+  // Use ref to track if refresh is in progress to avoid loops
+  const isRefreshing = useRef(false);
+  // Use ref to access latest picks in refresh function without triggering re-creation
+  const picksRef = useRef(picks);
+  picksRef.current = picks;
 
-  const savePicks = (newPicks: Pick[]) => {
-    setPicks(newPicks);
-    localStorage.setItem('user_picks', JSON.stringify(newPicks));
-  };
-
-  const addPick = (pick: Omit<Pick, 'id' | 'timestamp'>) => {
+  const addPick = useCallback((pick: Omit<Pick, 'id' | 'timestamp'>) => {
     const id = `${pick.playerId}-${pick.propType}-${pick.week}`;
     const newPick: Pick = { ...pick, id, timestamp: Date.now(), status: 'PENDING' };
     
     // Remove existing pick for same prop/player/week if exists
-    const filtered = picks.filter(p => p.id !== id);
-    savePicks([newPick, ...filtered]);
-  };
-
-  const removePick = (id: string) => {
-    savePicks(picks.filter(p => p.id !== id));
-  };
-
-  const getPick = (playerId: string, propType: string, week: number) => {
-    return picks.find(p => p.playerId === playerId && p.propType === propType && p.week === week);
-  };
-
-  const updatePickResult = (id: string, actual: number) => {
-    const updated = picks.map(p => {
-      if (p.id !== id) return p;
-      const status = determineStatus(p.choice, p.line, actual);
-      return { ...p, actual, status };
+    setPicks(prev => {
+      const filtered = prev.filter(p => p.id !== id);
+      const updated = [newPick, ...filtered];
+      localStorage.setItem('user_picks', JSON.stringify(updated));
+      return updated;
     });
-    savePicks(updated);
-  };
+  }, []);
+
+  const removePick = useCallback((id: string) => {
+    setPicks(prev => {
+      const updated = prev.filter(p => p.id !== id);
+      localStorage.setItem('user_picks', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const getPick = useCallback((playerId: string, propType: string, week: number) => {
+    return picksRef.current.find(p => p.playerId === playerId && p.propType === propType && p.week === week);
+  }, []);
+
+  const updatePickResult = useCallback((id: string, actual: number) => {
+    setPicks(prev => {
+      const updated = prev.map(p => {
+        if (p.id !== id) return p;
+        const status = determineStatus(p.choice, p.line, actual);
+        return { ...p, actual, status };
+      });
+      localStorage.setItem('user_picks', JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
 
   // Fetch history for each pending pick and update status
+  // Use empty dependency array to create stable function reference
   const refreshPickStatuses = useCallback(async (currentWeek: number) => {
-    const pendingPicks = picks.filter(p => p.status === 'PENDING' && p.week < currentWeek);
+    // Prevent concurrent refreshes
+    if (isRefreshing.current) return;
+    
+    const currentPicks = picksRef.current;
+    const pendingPicks = currentPicks.filter(p => p.status === 'PENDING' && p.week < currentWeek);
     if (pendingPicks.length === 0) return;
+    
+    isRefreshing.current = true;
 
     const API_BASE_URL = (typeof window !== 'undefined' && (window as any).__env?.API_BASE_URL) || '/api';
     
-    const updates: Pick[] = [...picks];
+    const updates: Pick[] = [...currentPicks];
+    let hasChanges = false;
     
     for (const pick of pendingPicks) {
       try {
@@ -113,6 +133,7 @@ export const PicksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 actual,
                 status: determineStatus(pick.choice, pick.line, actual)
               };
+              hasChanges = true;
             }
           }
         }
@@ -121,8 +142,13 @@ export const PicksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
     
-    savePicks(updates);
-  }, [picks]);
+    if (hasChanges) {
+      setPicks(updates);
+      localStorage.setItem('user_picks', JSON.stringify(updates));
+    }
+    
+    isRefreshing.current = false;
+  }, []);
 
   return (
     <PicksContext.Provider value={{ picks, addPick, removePick, getPick, updatePickResult, refreshPickStatuses }}>
