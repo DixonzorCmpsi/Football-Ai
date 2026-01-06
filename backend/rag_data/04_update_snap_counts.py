@@ -23,11 +23,12 @@ SEASON = get_current_season()
 OUTPUT_FILE = f"weekly_snap_counts_{SEASON}.csv"
 PROFILES_FILE = "player_profiles.csv" # Fallback local file
 
-OFFENSIVE_POSITIONS = [
+TRACKED_POSITIONS = [
     'QB', 'RB', 'WR', 'TE', 'FB', 
     'T', 'G', 'C', 'OT', 'OG', 'OL',
     'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'
 ]
+OFFENSIVE_POSITIONS = TRACKED_POSITIONS  # Backwards-compatible alias
 MODEL_NAME = 'all-MiniLM-L6-v2' 
 AI_MATCH_THRESHOLD = 0.80 
 
