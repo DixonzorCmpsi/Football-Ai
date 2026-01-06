@@ -113,12 +113,47 @@ def refresh_app_state():
     logger.info("Refreshing app state (scheduler) ...")
     try:
         base_week = nfl.get_current_week()
-        if datetime.now().weekday() == 1: 
+        
+        # Smart week detection: Only advance the week if ALL games in base_week have been played
+        # (i.e., have scores). This prevents prematurely jumping to next week during bye weeks
+        # or if games haven't started yet (e.g., playoffs on Saturday).
+        should_advance = False
+        
+        if "df_schedule" in model_data and not model_data["df_schedule"].is_empty():
+            sched = model_data["df_schedule"]
+            week_games = sched.filter(pl.col("week") == base_week)
+            
+            if not week_games.is_empty():
+                # Check if all games have scores (home_score is not null)
+                if "home_score" in week_games.columns:
+                    games_with_scores = week_games.filter(pl.col("home_score").is_not_null())
+                    all_played = len(games_with_scores) == len(week_games)
+                    
+                    if all_played:
+                        should_advance = True
+                        logger.info(f"All {len(week_games)} games in Week {base_week} have been played. Advancing to next week.")
+                    else:
+                        logger.info(f"Week {base_week}: {len(games_with_scores)}/{len(week_games)} games played. Staying on Week {base_week}.")
+                else:
+                    # If no home_score column, fall back to old Tuesday logic
+                    if datetime.now().weekday() == 1:
+                        should_advance = True
+            else:
+                # No games found for this week (e.g., bye week), use base_week as-is
+                logger.info(f"No games found for Week {base_week}. Staying on Week {base_week}.")
+        else:
+            # No schedule data loaded yet, fall back to old Tuesday logic
+            if datetime.now().weekday() == 1:
+                should_advance = True
+        
+        if should_advance:
             model_data["current_nfl_week"] = base_week + 1
         else:
             model_data["current_nfl_week"] = base_week
+            
         logger.info(f"Active NFL Week: {model_data['current_nfl_week']}")
-    except Exception:
+    except Exception as e:
+        logger.exception(f"Error determining current week: {e}")
         model_data["current_nfl_week"] = 1
 
 def load_player_history_from_db(player_id: str, week: int, limit: int = 12):

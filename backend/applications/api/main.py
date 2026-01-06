@@ -32,9 +32,9 @@ async def lifespan(app: FastAPI):
             model_data["meta_models"] = joblib.load(META_MODEL_PATH)
             model_data["meta_features"] = json.load(open(META_FEATURES_PATH))
             
-        # 2. Initial Data Load
-        refresh_app_state()
+        # 2. Initial Data Load (load data first, then determine current week)
         refresh_db_data()
+        refresh_app_state()
         
         # 3. Setup Scheduler
         scheduler = BackgroundScheduler()
