@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. Database Service
   db:
@@ -31,7 +29,6 @@ services:
       - "8000:8000"
 
   # 3. Frontend Service
- # 3. Frontend Service
   frontend:
     build:
       context: ./Dashboard/predictor-frontend
