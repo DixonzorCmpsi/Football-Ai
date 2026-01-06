@@ -3,9 +3,10 @@ import os
 import json
 import requests
 import polars as pl
+import subprocess
 from ..state import model_data
-from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE
-from ..services.data_loader import refresh_app_state
+from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE, RAG_DIR, logger
+from ..services.data_loader import refresh_app_state, refresh_db_data
 from ..services.prediction import get_player_card
 
 router = APIRouter()
@@ -99,3 +100,109 @@ async def remove_watchlist(player_id: str):
         ids.remove(player_id)
         with open(WATCHLIST_FILE, 'w') as f: json.dump(ids, f)
     return ids
+
+
+# --- LIVE SCORES & STATS ---
+@router.post("/refresh/live-scores")
+async def refresh_live_scores(week: int = None):
+    """
+    Trigger a live scores/stats update from ESPN API.
+    This is faster than nflreadpy and can be run during/after games.
+    
+    Args:
+        week: Optional week number (defaults to current week)
+    
+    Returns:
+        Status of the update operation
+    """
+    try:
+        target_week = week or model_data.get("current_nfl_week", 19)
+        live_script = os.path.join(RAG_DIR, "14_live_scores_stats.py")
+        
+        if not os.path.exists(live_script):
+            return {"status": "error", "message": "Live scores script not found"}
+        
+        logger.info(f"Triggering live scores update for Week {target_week}")
+        
+        # Run the script
+        result = subprocess.run(
+            ["python3", live_script, "--week", str(target_week)],
+            cwd=RAG_DIR,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            # Reload data after update
+            refresh_db_data()
+            refresh_app_state()
+            
+            return {
+                "status": "success",
+                "week": target_week,
+                "message": "Live scores updated",
+                "current_week": model_data.get("current_nfl_week")
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.stderr or "Script failed",
+                "stdout": result.stdout
+            }
+            
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Update timed out"}
+    except Exception as e:
+        logger.exception(f"Live scores update error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/live-scores/{week}")
+async def get_live_scores(week: int):
+    """
+    Fetch live scores directly from ESPN without updating files.
+    Good for real-time score checking during games.
+    """
+    try:
+        ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        
+        params = {"seasontype": 3 if week >= 19 else 2}
+        if week >= 19:
+            params["week"] = week - 18
+        else:
+            params["week"] = week
+        
+        resp = requests.get(ESPN_SCOREBOARD_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        games = []
+        for event in data.get("events", []):
+            competition = event.get("competitions", [{}])[0]
+            competitors = competition.get("competitors", [])
+            
+            if len(competitors) != 2:
+                continue
+            
+            home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+            away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
+            
+            status_info = competition.get("status", {}).get("type", {})
+            
+            games.append({
+                "home_team": home["team"]["abbreviation"],
+                "away_team": away["team"]["abbreviation"],
+                "home_score": int(home.get("score", 0)) if home.get("score") else None,
+                "away_score": int(away.get("score", 0)) if away.get("score") else None,
+                "status": status_info.get("name"),
+                "status_detail": status_info.get("description"),
+                "game_date": event.get("date"),
+                "venue": competition.get("venue", {}).get("fullName"),
+            })
+        
+        return {"week": week, "games": games}
+        
+    except Exception as e:
+        logger.exception(f"Live scores fetch error: {e}")
+        return {"week": week, "games": [], "error": str(e)}
