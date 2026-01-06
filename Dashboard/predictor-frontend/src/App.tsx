@@ -227,7 +227,7 @@ export default function App() {
                     />
                 ))
             ) : (
-                <MyPicksList />
+                <MyPicksList currentWeek={activeWeek} />
             )}
           </div>
         </aside>
@@ -431,7 +431,7 @@ export default function App() {
           {viewMode === 'PICKS' && (
             <div className="mx-auto max-w-3xl">
               <h2 className="text-sm font-black mb-4">My Picks</h2>
-              <MyPicksList />
+              <MyPicksList currentWeek={activeWeek} />
             </div>
           )}
 

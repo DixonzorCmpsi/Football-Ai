@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 
 export interface Pick {
   id: string;
@@ -9,7 +9,7 @@ export interface Pick {
   choice: 'OVER' | 'UNDER';
   week: number;
   timestamp: number;
-  status?: 'PENDING' | 'HIT' | 'MISS';
+  status?: 'PENDING' | 'HIT' | 'MISS' | 'PUSH';
   actual?: number;
 }
 
@@ -18,9 +18,31 @@ interface PicksContextType {
   addPick: (pick: Omit<Pick, 'id' | 'timestamp'>) => void;
   removePick: (id: string) => void;
   getPick: (playerId: string, propType: string, week: number) => Pick | undefined;
+  updatePickResult: (id: string, actual: number) => void;
+  refreshPickStatuses: (currentWeek: number) => Promise<void>;
 }
 
 const PicksContext = createContext<PicksContextType | undefined>(undefined);
+
+// Helper to map propType to the stat field in history
+const getStatFromPropType = (propType: string, historyEntry: any): number | null => {
+  const pt = propType.toLowerCase();
+  if (pt.includes('pass') && pt.includes('yd')) return historyEntry.passing_yds ?? null;
+  if (pt.includes('rush') && pt.includes('yd')) return historyEntry.rushing_yds ?? null;
+  if (pt.includes('rec') && pt.includes('yd')) return historyEntry.receiving_yds ?? null;
+  if (pt.includes('reception')) return historyEntry.receptions ?? null;
+  if (pt.includes('pass') && pt.includes('td')) return historyEntry.passing_tds ?? historyEntry.touchdowns ?? null; // approximate
+  if (pt.includes('pass') && pt.includes('att')) return historyEntry.pass_attempts ?? null;
+  if (pt.includes('rush') && pt.includes('att')) return historyEntry.carries ?? null;
+  return null;
+};
+
+// Determine if pick hit, missed, or pushed
+const determineStatus = (choice: 'OVER' | 'UNDER', line: number, actual: number): 'HIT' | 'MISS' | 'PUSH' => {
+  if (actual === line) return 'PUSH';
+  if (choice === 'OVER') return actual > line ? 'HIT' : 'MISS';
+  return actual < line ? 'HIT' : 'MISS';
+};
 
 export const PicksProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [picks, setPicks] = useState<Pick[]>(() => {
@@ -55,8 +77,55 @@ export const PicksProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return picks.find(p => p.playerId === playerId && p.propType === propType && p.week === week);
   };
 
+  const updatePickResult = (id: string, actual: number) => {
+    const updated = picks.map(p => {
+      if (p.id !== id) return p;
+      const status = determineStatus(p.choice, p.line, actual);
+      return { ...p, actual, status };
+    });
+    savePicks(updated);
+  };
+
+  // Fetch history for each pending pick and update status
+  const refreshPickStatuses = useCallback(async (currentWeek: number) => {
+    const pendingPicks = picks.filter(p => p.status === 'PENDING' && p.week < currentWeek);
+    if (pendingPicks.length === 0) return;
+
+    const API_BASE_URL = (typeof window !== 'undefined' && (window as any).__env?.API_BASE_URL) || '/api';
+    
+    const updates: Pick[] = [...picks];
+    
+    for (const pick of pendingPicks) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/player/history/${pick.playerId}`);
+        if (!res.ok) continue;
+        
+        const history = await res.json();
+        const weekEntry = history.find((h: any) => h.week === pick.week);
+        
+        if (weekEntry) {
+          const actual = getStatFromPropType(pick.propType, weekEntry);
+          if (actual !== null) {
+            const idx = updates.findIndex(p => p.id === pick.id);
+            if (idx !== -1) {
+              updates[idx] = {
+                ...updates[idx],
+                actual,
+                status: determineStatus(pick.choice, pick.line, actual)
+              };
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Failed to fetch history for ${pick.playerId}:`, err);
+      }
+    }
+    
+    savePicks(updates);
+  }, [picks]);
+
   return (
-    <PicksContext.Provider value={{ picks, addPick, removePick, getPick }}>
+    <PicksContext.Provider value={{ picks, addPick, removePick, getPick, updatePickResult, refreshPickStatuses }}>
       {children}
     </PicksContext.Provider>
   );
