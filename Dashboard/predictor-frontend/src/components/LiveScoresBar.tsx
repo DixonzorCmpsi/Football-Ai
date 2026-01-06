@@ -202,13 +202,13 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
                   )}
                 </div>
 
-                {/* Status - hidden on very small screens */}
-                <div className={`ml-auto text-[8px] sm:text-[9px] font-bold uppercase px-1 sm:px-1.5 py-0.5 rounded hidden xs:block ${
+                {/* Status - now shown on mobile too */}
+                <div className={`ml-auto text-[8px] sm:text-[9px] font-bold uppercase px-1 sm:px-1.5 py-0.5 rounded ${
                   status.isLive 
                     ? 'bg-red-500/20 text-red-400 animate-pulse' 
                     : game.status === 'STATUS_FINAL'
                       ? 'bg-slate-700 text-slate-400'
-                      : 'text-slate-500'
+                      : 'bg-slate-800 text-slate-400'
                 }`}>
                   {status.label}
                 </div>
