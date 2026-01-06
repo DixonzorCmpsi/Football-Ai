@@ -23,14 +23,19 @@ SEASON = get_current_season()
 OUTPUT_FILE = f"weekly_snap_counts_{SEASON}.csv"
 PROFILES_FILE = "player_profiles.csv" # Fallback local file
 
-OFFENSIVE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'FB']
+TRACKED_POSITIONS = [
+    'QB', 'RB', 'WR', 'TE', 'FB', 
+    'T', 'G', 'C', 'OT', 'OG', 'OL',
+    'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'
+]
+OFFENSIVE_POSITIONS = TRACKED_POSITIONS  # Backwards-compatible alias
 MODEL_NAME = 'all-MiniLM-L6-v2' 
 AI_MATCH_THRESHOLD = 0.80 
 
 # STRICT Column Definition for safe concatenation
 INTERMEDIATE_COLS = [
     "player_id", "player_name", "season", "week", 
-    "offense_snaps", "offense_pct", "position"
+    "offense_snaps", "offense_pct", "defense_snaps", "defense_pct", "position"
 ]
 
 # Robust Map: PFR/Legacy Abbr -> nflverse/GSIS Standard
@@ -278,18 +283,20 @@ def main():
     final_df = pl.concat(data_frames)
     
     # Filter by Position (Trusting Profile Position)
-    print("Filtering for Offensive Positions...")
+    print("Filtering for Relevant Positions...")
     final_clean = final_df.filter(pl.col("position").is_in(OFFENSIVE_POSITIONS))
     
     # Drop position column from output
-    output_cols = ["player_id", "player_name", "season", "week", "offense_snaps", "offense_pct"]
+    output_cols = ["player_id", "player_name", "season", "week", "offense_snaps", "offense_pct", "defense_snaps", "defense_pct"]
     final_clean = final_clean.select(output_cols)
     
     # Type Safety
     final_clean = final_clean.with_columns([
         pl.col("week").cast(pl.Int64),
         pl.col("offense_snaps").cast(pl.Int64),
-        pl.col("offense_pct").cast(pl.Float64)
+        pl.col("offense_pct").cast(pl.Float64),
+        pl.col("defense_snaps").cast(pl.Int64),
+        pl.col("defense_pct").cast(pl.Float64)
     ])
 
     print(f"\nSaving {len(final_clean)} rows to {OUTPUT_FILE}...")

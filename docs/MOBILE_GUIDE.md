@@ -18,6 +18,7 @@ This repository aims to be platform-agnostic and mobile-friendly. Follow these s
 4. Interaction / Accessibility
    - Ensure touch targets (buttons, add/remove) are at least ~44x44 CSS pixels.
    - Navigation should be reachable and not rely on hover-only states.
+   - **New in v2.1**: Use the Bottom Navigation Bar for primary views and the Side Drawer for secondary actions.
 
 5. Tests
    - Add visual regression tests (Percy / Playwright) and run on mobile emulators (TODO).

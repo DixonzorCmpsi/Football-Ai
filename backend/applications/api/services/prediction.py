@@ -1,4 +1,5 @@
 import polars as pl
+import asyncio
 import math
 import numpy as np
 from difflib import get_close_matches
@@ -30,11 +31,15 @@ def get_injury_status_for_week(player_id: str, week: int, default="Active"):
     max_wk = df.select(pl.col("week").max()).item()
     target_week = int(week)
     
-    # If Future Week, use Max
+    # If Future Week, use Max. If Past Week is missing, assume Active (don't use future data).
     week_exists = not df.filter(pl.col("week") == int(week)).is_empty()
     if not week_exists:
-        logger.debug(f"Week {week} not in injury data; falling back to latest known week {max_wk}")
-        target_week = max_wk
+        if int(week) > max_wk:
+            logger.debug(f"Week {week} not in injury data; falling back to latest known week {max_wk}")
+            target_week = max_wk
+        else:
+            # Week is within range but missing -> likely no injuries reported -> Active
+            return default
     
     # Filter
     record = df.filter(
@@ -179,6 +184,62 @@ def run_base_prediction(pid, pos, week):
             if not any(s.lower() in status_norm for s in injury_statuses):
                 continue  # skip teammates who are not injured
 
+            # Check if teammate has been injured for > 2 weeks (i.e. injured in week-1 AND week-2)
+            # If so, we assume the team has adapted and we do NOT apply a boost.
+            try:
+                w_prev1 = int(week) - 1
+                w_prev2 = int(week) - 2
+                if w_prev2 > 0:
+                    st_1 = str(get_injury_status_for_week(mate_id, w_prev1))
+                    st_2 = str(get_injury_status_for_week(mate_id, w_prev2))
+                    
+                    # Use a stricter list for historical checks - only skip if they were definitely OUT
+                    # "Doubtful" or "Questionable" in the past shouldn't disqualify a current boost if they ended up playing
+                    strict_missing = ["IR", "Out", "Inactive", "PUP"]
+                    
+                    is_inj_1 = any(s.lower() in st_1.lower() for s in strict_missing)
+                    is_inj_2 = any(s.lower() in st_2.lower() for s in strict_missing)
+                    
+                    if is_inj_1 and is_inj_2:
+                        logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate has been out for >2 weeks (W{w_prev1}:{st_1}, W{w_prev2}:{st_2})")
+                        continue
+                    
+                    # --- Check Snap Counts for "Silent" Absence ---
+                    # If no snap data exists for last 2 weeks, check when they last played
+                    if "df_snap_counts" in model_data:
+                        # First check last 2 weeks
+                        snaps_prev = model_data["df_snap_counts"].filter(
+                            (pl.col("player_id") == mate_id) & 
+                            (pl.col("week").is_in([w_prev1, w_prev2]))
+                        )
+                        
+                        if snaps_prev.is_empty():
+                            # No snap data for last 2 weeks - check when they last played
+                            all_snaps = model_data["df_snap_counts"].filter(
+                                (pl.col("player_id") == mate_id) & 
+                                (pl.col("week") < int(week))
+                            )
+                            if not all_snaps.is_empty():
+                                last_week_played = all_snaps.select(pl.col("week").max()).item()
+                                weeks_since_played = int(week) - last_week_played
+                                if weeks_since_played > 2:
+                                    logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate hasn't played in {weeks_since_played} weeks (last: W{last_week_played})")
+                                    continue
+                        else:
+                            # Check if they played meaningful snaps in last 2 weeks
+                            played_recently = False
+                            for row in snaps_prev.iter_rows(named=True):
+                                if row.get('offense_snaps', 0) > 5: # Threshold for "played"
+                                    played_recently = True
+                                    break
+                            
+                            if not played_recently:
+                                logger.info(f"Skipping usage boost for {pid} from {mate_id}: Teammate has 0 snaps in last 2 weeks (Silent Absence)")
+                                continue
+
+            except Exception as e:
+                logger.warning(f"Error checking historical injury for {mate_id}: {e}")
+
             # Fetch teammate historical stats to ensure they were a meaningful contributor
             mate_stats = pl.DataFrame()
             if "df_player_stats" in model_data and not model_data["df_player_stats"].is_empty() and 'player_id' in model_data['df_player_stats'].columns and 'week' in model_data['df_player_stats'].columns:
@@ -204,8 +265,8 @@ def run_base_prediction(pid, pos, week):
                     if not mate_snaps_df.is_empty():
                         try:
                             m_snaps = float(mate_snaps_df.select(pl.col("offense_pct")).mean().item())
-                            # Normalize fraction -> percent
-                            if m_snaps < 1.0: m_snaps *= 100
+                            # Normalize fraction -> percent (Handle 1.0 as 100%)
+                            if m_snaps <= 1.0: m_snaps *= 100
                             # Reject obviously invalid values
                             if math.isnan(m_snaps) or m_snaps < 0 or m_snaps > 200:
                                 logger.debug(f"Unexpected mate_snaps value for {mate_id}: {m_snaps}; resetting to 0")
@@ -266,6 +327,8 @@ async def get_player_card(player_id: str, week: int):
     p_row = profile.row(0, named=True)
     
     pos = p_row['position']
+    if pos: pos = pos.strip().upper()
+    
     p_name = p_row['player_name']
     team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
@@ -564,11 +627,16 @@ async def get_team_roster_cards(team_abbr: str, week: int):
         ).select(["player_id", "position"])
         ranked = candidates
 
+    # --- OPTIMIZATION: Parallelize Player Card Fetching ---
+    # Fetch all player cards concurrently to reduce wait time
+    tasks = []
     for pos, limit in composition.items():
         pos_candidates = ranked.filter(pl.col("position") == pos).head(limit)
         for row in pos_candidates.iter_rows(named=True):
-            card = await get_player_card(row['player_id'], week)
-            if card: roster_result.append(card)
+            tasks.append(get_player_card(row['player_id'], week))
+    
+    results = await asyncio.gather(*tasks)
+    roster_result = [card for card in results if card is not None]
             
     order = {"QB": 1, "RB": 2, "WR": 3, "TE": 4}
     roster_result.sort(key=lambda x: order.get(x["position"], 99))
@@ -639,3 +707,176 @@ def find_usage_boost_reason(player_id: str, week: int):
 
     except Exception as e:
         return {"found": False, "error": str(e)}
+
+def get_team_injury_report(team_abbr: str, week: int):
+    """
+    Returns a list of injured players for a team with their snap counts.
+    """
+    if "df_injuries" not in model_data or model_data["df_injuries"].is_empty():
+        return []
+
+    df_inj = model_data["df_injuries"]
+    
+    # Determine target week (latest available if current is missing)
+    target_week = week
+    if "week" in df_inj.columns:
+        max_wk = df_inj.select(pl.col("week").max()).item()
+        if week > max_wk:
+            target_week = max_wk
+        elif df_inj.filter(pl.col("week") == int(week)).is_empty():
+            target_week = max_wk
+        
+        # Filter by week first
+        weekly_injuries = df_inj.filter(pl.col("week") == int(target_week))
+        
+        # Join with profiles to get team_abbr if missing
+        if "team_abbr" not in weekly_injuries.columns and "team" not in weekly_injuries.columns:
+             if "df_profile" in model_data:
+                df_prof = model_data["df_profile"]
+                weekly_injuries = weekly_injuries.join(
+                    df_prof.select(["player_id", "team_abbr"]), 
+                    on="player_id", 
+                    how="left"
+                )
+        
+        # Now filter by team
+        team_col = "team" if "team" in weekly_injuries.columns else "team_abbr"
+        if team_col in weekly_injuries.columns:
+            team_injuries = weekly_injuries.filter(pl.col(team_col) == team_abbr)
+        else:
+            return [] # Cannot filter by team
+            
+    else:
+        # Fallback for old schema
+        team_col = "team" if "team" in df_inj.columns else "team_abbr"
+        if team_col in df_inj.columns:
+            team_injuries = df_inj.filter(pl.col(team_col) == team_abbr)
+        else:
+             return []
+
+    if team_injuries.is_empty():
+        return []
+        
+    # --- DEDUPLICATION ---
+    # Ensure unique player_ids in the report
+    team_injuries = team_injuries.unique(subset=["player_id"])
+
+    # Get Profiles for names and positions
+    df_prof = model_data.get("df_profile", pl.DataFrame())
+    
+    # Get Snap Counts
+    df_snaps = model_data.get("df_snap_counts", pl.DataFrame())
+    
+    # --- OPTIMIZATION: Batch Process Snaps ---
+    # Instead of filtering df_snaps inside the loop (O(N*M)), we filter once for all relevant players.
+    player_ids = [row['player_id'] for row in team_injuries.iter_rows(named=True)]
+    
+    snap_map = {}
+    pct_map = {}
+    
+    if not df_snaps.is_empty() and player_ids:
+        # 3-Week Rolling Window (Last 3 weeks before current week)
+        start_week = max(1, int(week) - 3)
+        
+        batch_snaps = df_snaps.filter(
+            (pl.col("player_id").is_in(player_ids)) & 
+            (pl.col("week") >= start_week) &
+            (pl.col("week") < int(week))
+        )
+        
+        if not batch_snaps.is_empty():
+            # Ensure columns exist
+            has_off = "offense_snaps" in batch_snaps.columns
+            has_def = "defense_snaps" in batch_snaps.columns
+            has_off_pct = "offense_pct" in batch_snaps.columns
+            has_def_pct = "defense_pct" in batch_snaps.columns
+            
+            # Fill nulls
+            if has_off: batch_snaps = batch_snaps.with_columns(pl.col("offense_snaps").fill_null(0))
+            if has_def: batch_snaps = batch_snaps.with_columns(pl.col("defense_snaps").fill_null(0))
+            if has_off_pct: batch_snaps = batch_snaps.with_columns(pl.col("offense_pct").fill_null(0.0))
+            if has_def_pct: batch_snaps = batch_snaps.with_columns(pl.col("defense_pct").fill_null(0.0))
+            
+            # Calculate Total Snaps and Max Pct per row
+            exprs = []
+            
+            # Total Snaps
+            if has_off and has_def:
+                exprs.append((pl.col("offense_snaps") + pl.col("defense_snaps")).alias("total_snaps"))
+            elif has_off:
+                exprs.append(pl.col("offense_snaps").alias("total_snaps"))
+            elif has_def:
+                exprs.append(pl.col("defense_snaps").alias("total_snaps"))
+            else:
+                exprs.append(pl.lit(0).alias("total_snaps"))
+                
+            # Total Pct (Sum of Offense + Defense Pct)
+            if has_off_pct and has_def_pct:
+                exprs.append((pl.col("offense_pct") + pl.col("defense_pct")).alias("total_pct"))
+            elif has_off_pct:
+                exprs.append(pl.col("offense_pct").alias("total_pct"))
+            elif has_def_pct:
+                exprs.append(pl.col("defense_pct").alias("total_pct"))
+            else:
+                exprs.append(pl.lit(0.0).alias("total_pct"))
+                
+            batch_snaps = batch_snaps.with_columns(exprs)
+            
+            # Group by player and calculate mean
+            avgs = batch_snaps.group_by("player_id").agg([
+                pl.col("total_snaps").mean().alias("avg_snaps"),
+                pl.col("total_pct").mean().alias("avg_pct")
+            ])
+            
+            # Create lookup map
+            for r in avgs.iter_rows(named=True):
+                snap_map[r['player_id']] = r['avg_snaps']
+                pct_map[r['player_id']] = r['avg_pct']
+
+    # Define Position Groups for Filtering
+    OL_POSITIONS = {'T', 'G', 'C', 'OT', 'OG', 'OL'}
+    DEF_POSITIONS = {'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'}
+
+    report = []
+    for row in team_injuries.iter_rows(named=True):
+        pid = row['player_id']
+        status = row.get('injury_status')
+        if not status: continue # Skip if no status
+        
+        # Get Profile Info
+        name = "Unknown"
+        position = "Unknown"
+        headshot = None
+        
+        if not df_prof.is_empty():
+            prof = df_prof.filter(pl.col("player_id") == pid)
+            if not prof.is_empty():
+                p_row = prof.row(0, named=True)
+                name = p_row.get('player_name', name)
+                position = p_row.get('position', position)
+                if position: position = position.strip().upper()
+                headshot = p_row.get('headshot')
+        
+        # Get Avg Snaps from Map
+        avg_snaps = snap_map.get(pid, 0.0)
+        avg_pct = pct_map.get(pid, 0.0)
+        
+        # Filter Logic: Only render players with > 35% snap percentage for O-Line and Defense
+        if position in OL_POSITIONS or position in DEF_POSITIONS:
+            if avg_pct < 0.35:
+                continue
+
+        report.append({
+            "player_id": pid,
+            "name": name,
+            "position": position,
+            "team": team_abbr,
+            "status": status,
+            "avg_snaps": round(avg_snaps if avg_snaps else 0.0, 1),
+            "avg_pct": round(avg_pct * 100, 1) if avg_pct else 0.0,
+            "headshot": headshot
+        })
+        
+    # Sort by avg_snaps descending (importance)
+    report.sort(key=lambda x: x['avg_snaps'] or 0, reverse=True)
+    return report

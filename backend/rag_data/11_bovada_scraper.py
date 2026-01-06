@@ -99,6 +99,19 @@ def click_and_scrape_tabs(driver, current_text):
             xpath = f"//*[contains(text(), '{key}')]"
             elements = driver.find_elements(By.XPATH, xpath)
             
+            # Sort elements to prioritize actual tabs/buttons over random text divs
+            # This prevents clicking "Rushing Touchdowns" text instead of the "Rushing" tab
+            def get_element_priority(el):
+                try:
+                    tag = el.tag_name.lower()
+                    if 'tab' in tag or 'button' in tag: return 0  # Highest priority
+                    if tag == 'a': return 1
+                    if tag == 'li': return 2
+                    return 3  # Lowest priority (div, span, etc)
+                except: return 4
+
+            elements.sort(key=get_element_priority)
+            
             clicked = False
             for el in elements:
                 # Filter for likely clickable items (buttons, tabs, list items)
@@ -112,7 +125,7 @@ def click_and_scrape_tabs(driver, current_text):
                             time.sleep(0.5)
                             driver.execute_script("arguments[0].click();", el)
                             
-                            print(f"    [+] Clicked tab: {key}")
+                            print(f"    [+] Clicked tab: {key} (tag: {tag})")
                             time.sleep(2) # Wait for content load
                             
                             expand_visible_accordions(driver)

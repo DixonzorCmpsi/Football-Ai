@@ -412,10 +412,10 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
                                 ))}
                             </LineChart>
                         ) : (
-                            <BarChart data={dependencyData} layout="vertical" margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
+                            <BarChart data={dependencyData} layout="vertical" margin={{ top: 20, right: 10, left: 10, bottom: 5 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.2} horizontal={false} />
                                 <XAxis type="number" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} />
-                                <YAxis dataKey="name" type="category" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 'bold' }} width={70} axisLine={false} tickLine={false} />
+                                <YAxis dataKey="name" type="category" tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 'bold' }} width={80} axisLine={false} tickLine={false} />
                                 <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#0f172a', border: 'none', borderRadius: '8px', color: '#fff' }} />
                                 <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
                                 <Bar dataKey="yards" name="Yards" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />

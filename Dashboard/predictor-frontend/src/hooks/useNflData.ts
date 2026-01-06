@@ -78,11 +78,26 @@ export interface HistoryEntry {
   carries: number;
 }
 
+export interface InjuryData {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string;
+  status: string;
+  avg_snaps: number;
+  avg_pct?: number;
+  headshot?: string;
+}
+
 export interface MatchupData {
     matchup: string;
     week: number;
+    gametime?: string;
+    gameday?: string;
     home_roster: any[];
     away_roster: any[];
+    home_injuries?: InjuryData[];
+    away_injuries?: InjuryData[];
     over_under?: number | null;
     spread?: number | null;
     home_win_prob?: number | null;
@@ -92,6 +107,10 @@ export interface MatchupData {
 export interface ScheduleGame {
   home_team: string;
   away_team: string;
+  home_score?: number | null;
+  away_score?: number | null;
+  gameday?: string;
+  gametime?: string;
   game_total?: number;
   moneyline_home?: string;
   moneyline_away?: string;

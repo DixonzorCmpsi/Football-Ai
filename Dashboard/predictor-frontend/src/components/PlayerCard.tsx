@@ -1,6 +1,7 @@
 import React from 'react';
 import { Plus, Check } from 'lucide-react';
 import type { PlayerData } from '../types';
+import { usePicks } from '../contexts/PicksContext';
 
 interface PlayerCardProps {
   data: PlayerData;
@@ -18,6 +19,8 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     isSelected,
     onToggleCompare
 }) => {
+  const { addPick, removePick, getPick } = usePicks();
+
   const getProbColor = (prob: number | null) => {
     if (!prob) return "text-slate-400 dark:text-white/40";
     if (prob >= 55) return "text-green-600 dark:text-emerald-300 font-black";
@@ -29,6 +32,45 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
     if (data.position === 'QB') return 'Pass Yds';
     if (data.position === 'RB') return 'Rush Yds';
     return 'Rec Yds';
+  };
+
+  const renderPropRow = (label: string, line: number | null, prob: number | null, propType: string) => {
+    if (!line) return null;
+    const pick = getPick(data.player_id, propType, data.week);
+    
+    return (
+      <div className="flex justify-between items-center text-[10px]">
+        <span className="text-slate-500 dark:text-white/60 font-medium">{label}</span>
+        <div className="flex items-center gap-2">
+           {/* Over/Under Buttons */}
+           <div className="flex gap-0.5">
+              <button 
+                onClick={(e) => {
+                    e.stopPropagation();
+                    if (pick?.choice === 'OVER') removePick(pick.id);
+                    else addPick({ playerId: data.player_id, playerName: data.player_name, propType, line, choice: 'OVER', week: data.week });
+                }}
+                className={`px-1 rounded text-[9px] font-bold border ${pick?.choice === 'OVER' ? 'bg-green-500 text-white border-green-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-green-100 dark:hover:bg-green-900/30'}`}
+              >O</button>
+              <button 
+                onClick={(e) => {
+                    e.stopPropagation();
+                    if (pick?.choice === 'UNDER') removePick(pick.id);
+                    else addPick({ playerId: data.player_id, playerName: data.player_name, propType, line, choice: 'UNDER', week: data.week });
+                }}
+                className={`px-1 rounded text-[9px] font-bold border ${pick?.choice === 'UNDER' ? 'bg-red-500 text-white border-red-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-red-100 dark:hover:bg-red-900/30'}`}
+              >U</button>
+           </div>
+
+          <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
+            {line}
+          </span>
+          <span className={`min-w-[28px] text-right ${getProbColor(prob)}`}>
+            {prob ? `${prob}%` : ''}
+          </span>
+        </div>
+      </div>
+    );
   };
 
   // --- INJURY BADGE LOGIC ---
@@ -154,74 +196,16 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
           </span>
         </div>
 
-        <div className="flex justify-between items-center text-[10px]">
-          <span className="text-slate-500 dark:text-white/60 font-medium">{getMainPropLabel()}</span>
-          <div className="flex items-center gap-2">
-            <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
-              {data.prop_line ? `${data.prop_line}` : '-'}
-            </span>
-            <span className={`min-w-[28px] text-right ${getProbColor(data.prop_prob)}`}>
-              {data.prop_prob ? `${data.prop_prob}%` : ''}
-            </span>
-          </div>
-        </div>
+        {renderPropRow(getMainPropLabel(), data.prop_line, data.prop_prob, getMainPropLabel())}
 
-        {data.position === 'QB' && (
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-slate-500 dark:text-white/60 font-medium">Pass TDs</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
-                {data.pass_td_line ? `${data.pass_td_line}` : '-'}
-              </span>
-              <span className={`min-w-[28px] text-right ${getProbColor(data.pass_td_prob)}`}>
-                {data.pass_td_prob ? `${data.pass_td_prob}%` : ''}
-              </span>
-            </div>
-          </div>
-        )}
+        {data.position === 'QB' && renderPropRow('Pass TDs', data.pass_td_line, data.pass_td_prob, 'Pass TDs')}
 
         {/* --- NEW PROPS --- */}
-        {data.position === 'QB' && (
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-slate-500 dark:text-white/60 font-medium">Pass Att</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
-                {data.pass_att_line ? `${data.pass_att_line}` : '-'}
-              </span>
-              <span className={`min-w-[28px] text-right ${getProbColor(data.pass_att_prob ?? null)}`}>
-                {data.pass_att_prob ? `${data.pass_att_prob}%` : ''}
-              </span>
-            </div>
-          </div>
-        )}
+        {data.position === 'QB' && renderPropRow('Pass Att', data.pass_att_line ?? null, data.pass_att_prob ?? null, 'Pass Att')}
 
-        {data.position === 'RB' && (
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-slate-500 dark:text-white/60 font-medium">Rush Att</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
-                {data.rush_att_line ? `${data.rush_att_line}` : '-'}
-              </span>
-              <span className={`min-w-[28px] text-right ${getProbColor(data.rush_att_prob ?? null)}`}>
-                {data.rush_att_prob ? `${data.rush_att_prob}%` : ''}
-              </span>
-            </div>
-          </div>
-        )}
+        {data.position === 'RB' && renderPropRow('Rush Att', data.rush_att_line ?? null, data.rush_att_prob ?? null, 'Rush Att')}
 
-        {(data.position === 'WR' || data.position === 'TE') && (
-          <div className="flex justify-between items-center text-[10px]">
-            <span className="text-slate-500 dark:text-white/60 font-medium">Receptions</span>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
-                {data.rec_line ? `${data.rec_line}` : '-'}
-              </span>
-              <span className={`min-w-[28px] text-right ${getProbColor(data.rec_prob ?? null)}`}>
-                {data.rec_prob ? `${data.rec_prob}%` : ''}
-              </span>
-            </div>
-          </div>
-        )}
+        {(data.position === 'WR' || data.position === 'TE') && renderPropRow('Receptions', data.rec_line ?? null, data.rec_prob ?? null, 'Receptions')}
 
         <div className="flex justify-between items-center text-[10px] border-t border-slate-200 dark:border-white/10 pt-1">
           <span className="text-slate-500 dark:text-white/60 font-medium">Anytime TD</span>
