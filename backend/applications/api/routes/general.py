@@ -164,6 +164,16 @@ async def get_live_scores(week: int):
     Fetch live scores directly from ESPN without updating files.
     Good for real-time score checking during games.
     """
+    # ESPN to internal team abbreviation mapping
+    ESPN_TEAM_MAP = {
+        "LAR": "LA",   # LA Rams
+        "WSH": "WAS",  # Washington
+        "JAC": "JAX",  # Jacksonville
+    }
+    
+    def normalize_team(abbr: str) -> str:
+        return ESPN_TEAM_MAP.get(abbr, abbr)
+    
     try:
         ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
         
@@ -190,9 +200,13 @@ async def get_live_scores(week: int):
             
             status_info = competition.get("status", {}).get("type", {})
             
+            # Normalize team abbreviations to match our database
+            home_abbr = normalize_team(home["team"]["abbreviation"])
+            away_abbr = normalize_team(away["team"]["abbreviation"])
+            
             games.append({
-                "home_team": home["team"]["abbreviation"],
-                "away_team": away["team"]["abbreviation"],
+                "home_team": home_abbr,
+                "away_team": away_abbr,
                 "home_score": int(home.get("score", 0)) if home.get("score") else None,
                 "away_score": int(away.get("score", 0)) if away.get("score") else None,
                 "status": status_info.get("name"),

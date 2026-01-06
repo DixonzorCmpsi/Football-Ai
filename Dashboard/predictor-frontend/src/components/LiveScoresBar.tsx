@@ -83,9 +83,25 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
     return { label: `${day} ${time}`, isLive: false };
   };
 
-  const visibleGames = games.slice(scrollIndex, scrollIndex + 4);
+  // Responsive: show fewer games on mobile
+  const getVisibleCount = () => {
+    if (typeof window === 'undefined') return 4;
+    if (window.innerWidth < 640) return 1;  // mobile: 1 game
+    if (window.innerWidth < 1024) return 2; // tablet: 2 games
+    return 4; // desktop: 4 games
+  };
+  
+  const [visibleCount, setVisibleCount] = useState(getVisibleCount());
+  
+  useEffect(() => {
+    const handleResize = () => setVisibleCount(getVisibleCount());
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const visibleGames = games.slice(scrollIndex, scrollIndex + visibleCount);
   const canScrollLeft = scrollIndex > 0;
-  const canScrollRight = scrollIndex + 4 < games.length;
+  const canScrollRight = scrollIndex + visibleCount < games.length;
 
   if (loading && games.length === 0) {
     return (
@@ -111,13 +127,13 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
 
   return (
     <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-700/50">
-      <div className="flex items-center gap-2 px-3 py-1.5">
+      <div className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5">
         {/* Live indicator */}
-        <div className="flex items-center gap-1.5 pr-3 border-r border-slate-700">
+        <div className="flex items-center gap-1 sm:gap-1.5 pr-2 sm:pr-3 border-r border-slate-700 shrink-0">
           {hasLiveGames ? (
             <>
               <Circle size={8} className="text-red-500 fill-red-500 animate-pulse" />
-              <span className="text-[10px] font-bold uppercase tracking-wider text-red-400">LIVE</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-red-400 hidden sm:inline">LIVE</span>
             </>
           ) : (
             <>
@@ -131,13 +147,13 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
         <button 
           onClick={() => setScrollIndex(Math.max(0, scrollIndex - 1))}
           disabled={!canScrollLeft}
-          className={`p-1 rounded transition-colors ${canScrollLeft ? 'hover:bg-slate-700 text-slate-300' : 'text-slate-700 cursor-not-allowed'}`}
+          className={`p-1 rounded transition-colors shrink-0 ${canScrollLeft ? 'hover:bg-slate-700 text-slate-300' : 'text-slate-700 cursor-not-allowed'}`}
         >
           <ChevronLeft size={16} />
         </button>
 
         {/* Games ticker */}
-        <div className="flex-1 flex items-center gap-3 overflow-hidden">
+        <div className="flex-1 flex items-center gap-2 sm:gap-3 overflow-hidden justify-center sm:justify-start">
           {visibleGames.map((game, idx) => {
             const status = getStatusDisplay(game);
             const homeColor = getTeamColor(game.home_team);
@@ -149,19 +165,19 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
               <button
                 key={`${game.home_team}-${game.away_team}-${idx}`}
                 onClick={() => onGameClick?.(game.home_team, game.away_team)}
-                className="flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 transition-all border border-slate-700/50 hover:border-slate-600 min-w-[140px]"
+                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg bg-slate-800/50 hover:bg-slate-700/50 transition-all border border-slate-700/50 hover:border-slate-600 min-w-[100px] sm:min-w-[140px]"
               >
                 {/* Away Team */}
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 sm:gap-1.5">
                   <div 
-                    className="w-1.5 h-4 rounded-full" 
+                    className="w-1 sm:w-1.5 h-3 sm:h-4 rounded-full" 
                     style={{ backgroundColor: awayColor }}
                   />
-                  <span className={`text-xs font-bold ${awayWinning ? 'text-white' : 'text-slate-400'}`}>
+                  <span className={`text-[10px] sm:text-xs font-bold ${awayWinning ? 'text-white' : 'text-slate-400'}`}>
                     {game.away_team}
                   </span>
                   {game.away_score !== null && (
-                    <span className={`text-sm font-black tabular-nums ${awayWinning ? 'text-white' : 'text-slate-500'}`}>
+                    <span className={`text-xs sm:text-sm font-black tabular-nums ${awayWinning ? 'text-white' : 'text-slate-500'}`}>
                       {game.away_score}
                     </span>
                   )}
@@ -171,23 +187,23 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
                 <span className="text-slate-600 text-[10px]">@</span>
 
                 {/* Home Team */}
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1 sm:gap-1.5">
                   <div 
-                    className="w-1.5 h-4 rounded-full" 
+                    className="w-1 sm:w-1.5 h-3 sm:h-4 rounded-full" 
                     style={{ backgroundColor: homeColor }}
                   />
-                  <span className={`text-xs font-bold ${homeWinning ? 'text-white' : 'text-slate-400'}`}>
+                  <span className={`text-[10px] sm:text-xs font-bold ${homeWinning ? 'text-white' : 'text-slate-400'}`}>
                     {game.home_team}
                   </span>
                   {game.home_score !== null && (
-                    <span className={`text-sm font-black tabular-nums ${homeWinning ? 'text-white' : 'text-slate-500'}`}>
+                    <span className={`text-xs sm:text-sm font-black tabular-nums ${homeWinning ? 'text-white' : 'text-slate-500'}`}>
                       {game.home_score}
                     </span>
                   )}
                 </div>
 
-                {/* Status */}
-                <div className={`ml-auto text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                {/* Status - hidden on very small screens */}
+                <div className={`ml-auto text-[8px] sm:text-[9px] font-bold uppercase px-1 sm:px-1.5 py-0.5 rounded hidden xs:block ${
                   status.isLive 
                     ? 'bg-red-500/20 text-red-400 animate-pulse' 
                     : game.status === 'STATUS_FINAL'
@@ -205,11 +221,16 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
           )}
         </div>
 
+        {/* Game counter for mobile */}
+        <span className="text-[10px] text-slate-500 sm:hidden shrink-0">
+          {scrollIndex + 1}/{games.length}
+        </span>
+
         {/* Scroll right */}
         <button 
-          onClick={() => setScrollIndex(Math.min(games.length - 4, scrollIndex + 1))}
+          onClick={() => setScrollIndex(Math.min(games.length - visibleCount, scrollIndex + 1))}
           disabled={!canScrollRight}
-          className={`p-1 rounded transition-colors ${canScrollRight ? 'hover:bg-slate-700 text-slate-300' : 'text-slate-700 cursor-not-allowed'}`}
+          className={`p-1 rounded transition-colors shrink-0 ${canScrollRight ? 'hover:bg-slate-700 text-slate-300' : 'text-slate-700 cursor-not-allowed'}`}
         >
           <ChevronRight size={16} />
         </button>
@@ -218,7 +239,7 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
         <button 
           onClick={handleRefresh}
           disabled={isRefreshing}
-          className="p-1.5 hover:bg-slate-700 rounded transition-colors border-l border-slate-700 ml-2 pl-3"
+          className="p-1 sm:p-1.5 hover:bg-slate-700 rounded transition-colors border-l border-slate-700 ml-1 sm:ml-2 pl-2 sm:pl-3 shrink-0"
           title={lastUpdated ? `Last updated: ${lastUpdated.toLocaleTimeString()}` : 'Refresh'}
         >
           <RefreshCw 
