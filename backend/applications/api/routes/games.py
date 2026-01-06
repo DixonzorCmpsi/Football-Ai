@@ -16,10 +16,7 @@ async def get_schedule(week: int):
         
         # Allow querying future weeks (playoffs) even if empty, don't fallback to max_week if week > max_week
         # This allows the frontend to receive an empty list for Week 19+ instead of Week 18 data
-        if week > max_week:
-            target_week = week
-        else:
-            target_week = week
+        target_week = week
         
         sched_df = model_data["df_schedule"].filter(pl.col("week") == int(target_week))
         
