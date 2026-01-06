@@ -9,6 +9,7 @@ import PlayerHistory from './components/PlayerHistory';
 import MatchupView from './components/MatchupView';
 import MyPicksList from './components/MyPicksList';
 import PlayoffView from './components/PlayoffView';
+import LiveScoresBar from './components/LiveScoresBar';
 import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
@@ -284,6 +285,17 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* LIVE SCORES TICKER */}
+        {activeWeek && (viewMode === 'SCHEDULE' || viewMode === 'GAME') && (
+          <LiveScoresBar 
+            week={activeWeek} 
+            onGameClick={(home, away) => {
+              setSelectedGame({ home, away });
+              setViewMode('GAME');
+            }}
+          />
+        )}
 
         {/* Mobile Drawer */}
         <SidePanelDrawer isOpen={mobileDrawerOpen} onClose={() => setMobileDrawerOpen(false)}>
