@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Activity, Users } from 'lucide-react';
+import { ArrowLeft, Activity, Users, TrendingUp } from 'lucide-react';
 import MatchupBanner from './MatchupBanner';
 import PlayerCard from './PlayerCard';
 import PlayerModal from './PlayerModal';
+import MatchupInsights from './MatchupInsights';
 import { getTeamColor } from '../utils/nflColors';
 import type { MatchupData, InjuryData } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
@@ -17,7 +18,7 @@ interface MatchupViewProps {
 }
 
 type PositionFilter = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
-type ViewTab = 'ROSTER' | 'INJURIES';
+type ViewTab = 'ROSTER' | 'INJURIES' | 'INSIGHTS';
 type InjuryFilter = 'ALL' | 'OFFENSE' | 'DEFENSE' | 'SKILL';
 
 const InjuryCard = ({ player }: { player: InjuryData }) => {
@@ -102,7 +103,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col relative bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
       
-      <div className="flex items-center justify-between mb-4 shrink-0">
+      <div className="flex items-center justify-between mb-2 shrink-0">
         <button onClick={onBack} className="flex items-center text-xs font-bold text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-500 transition-colors">
           <ArrowLeft size={14} className="mr-1" /> Back to Schedule
         </button>
@@ -121,10 +122,16 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
             >
                 <Activity size={14} /> Injuries
             </button>
+            <button 
+                onClick={() => setActiveTab('INSIGHTS')}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'INSIGHTS' ? 'bg-white dark:bg-slate-700 shadow text-green-600 dark:text-green-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+            >
+                <TrendingUp size={14} /> Insights
+            </button>
         </div>
       </div>
 
-      <div className="mb-4 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
+      <div className="mb-1 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
         <MatchupBanner 
           matchup={data.matchup} 
           gameTime={data.gametime}
@@ -136,8 +143,9 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
         />
       </div>
 
-      <div className="flex flex-1 min-h-0 relative overflow-visible">
-        <div className="flex-1 overflow-y-auto pr-12 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-700 pb-20">
+      <div className="flex flex-1 min-h-0 relative overflow-hidden">
+        <div className="flex-1 overflow-y-auto pr-10 lg:pr-12 xl:pr-14 pb-4" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
           
           {activeTab === 'ROSTER' ? (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-4">
@@ -179,7 +187,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                 </div>
                 </div>
             </div>
-          ) : (
+          ) : activeTab === 'INJURIES' ? (
             <div className="space-y-6">
                 {/* Injury Filters */}
                 <div className="flex justify-center gap-2 sticky top-0 bg-slate-50/95 dark:bg-slate-950/95 backdrop-blur z-20 py-2 border-b border-slate-200 dark:border-slate-700">
@@ -221,14 +229,16 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                     </div>
                 </div>
             </div>
+          ) : (
+            <MatchupInsights week={week} home={home} away={away} />
           )}
 
         </div>
 
         {activeTab === 'ROSTER' && (
-            <div className="absolute right-0 -mr-6 top-1/2 -translate-y-1/2 flex flex-col gap-0 z-50">
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 flex flex-col gap-0 z-50">
             {(['ALL', 'QB', 'RB', 'WR', 'TE'] as PositionFilter[]).map((pos) => (
-                <button key={pos} onClick={() => setFilterPos(pos)} className={`h-16 w-10 text-[10px] font-black tracking-widest flex items-center justify-center transition-all duration-200 border-y border-l rounded-l-lg border-r-0 shadow-sm ${filterPos === pos ? 'bg-blue-600 text-white border-blue-500 w-12 shadow-lg z-20' : 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 z-10'} [writing-mode:vertical-rl] rotate-180 mb-[-1px]`}>{pos}</button>
+                <button key={pos} onClick={() => setFilterPos(pos)} className={`h-10 w-8 lg:h-12 lg:w-9 xl:h-14 xl:w-10 text-[8px] lg:text-[9px] xl:text-[10px] font-black tracking-widest flex items-center justify-center transition-all duration-200 border-y border-l rounded-l-lg border-r-0 shadow-sm ${filterPos === pos ? 'bg-blue-600 text-white border-blue-500 w-10 lg:w-11 xl:w-12 shadow-lg z-20' : 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 z-10'} [writing-mode:vertical-rl] rotate-180 mb-[-1px]`}>{pos}</button>
             ))}
             </div>
         )}

@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 import polars as pl
+from typing import Optional
 from ..state import model_data
 from ..services.prediction import get_team_roster_cards, get_team_injury_report
 from ..services.utils import get_team_abbr
+from ..services.betting_insights import get_game_insights
+from ..services.parlay_recommender import get_parlay_recommendations, ParlayRecommender
 from ..config import logger
 
 router = APIRouter()
@@ -138,3 +141,138 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
     except Exception as e: 
         logger.exception(f"Matchup endpoint error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load matchup: {str(e)}")
+
+@router.get("/matchup/{week}/{home_team}/{away_team}/insights")
+async def get_matchup_insights(week: int, home_team: str, away_team: str):
+    """
+    Get betting insights for a specific matchup.
+    Returns over/under script analysis with recommended parlays.
+    """
+    try:
+        insights = get_game_insights(week, home_team, away_team)
+        return insights
+    except Exception as e:
+        logger.exception(f"Insights endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load insights: {str(e)}")
+
+
+@router.get("/parlays/{week}")
+async def get_week_parlay_recommendations(
+    week: int,
+    game_id: Optional[str] = Query(None, description="Optional game_id to filter (e.g., 2025_21_LA_SEA)"),
+    min_probability: float = Query(45.0, description="Minimum probability threshold (0-100)")
+):
+    """
+    Get parlay recommendations based on game scripts for a given week.
+    
+    Returns two sets of recommendations:
+    - over_script: Props likely to hit if the game goes OVER (high-scoring)
+    - under_script: Props likely to hit if the game goes UNDER (low-scoring)
+    
+    Each recommendation includes:
+    - Player name and position
+    - Prop type (passing yards, receiving yards, etc.)
+    - Line and recommended side (OVER/UNDER)
+    - Probability of hitting given the game script
+    - Player's season average vs the line
+    - Confidence score
+    """
+    try:
+        recommendations = get_parlay_recommendations(model_data, week, game_id)
+        recommendations["week"] = week
+        recommendations["game_filter"] = game_id
+        return recommendations
+    except Exception as e:
+        logger.exception(f"Parlay recommendations error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate parlays: {str(e)}")
+
+
+@router.get("/parlays/{week}/{home_team}/{away_team}")
+async def get_matchup_parlay_recommendations(
+    week: int,
+    home_team: str,
+    away_team: str,
+    min_probability: float = Query(45.0, description="Minimum probability threshold")
+):
+    """
+    Get parlay recommendations for a specific matchup.
+    
+    Automatically constructs game_id from week, home_team, and away_team.
+    """
+    try:
+        # Construct game_id (format: 2025_21_AWAY_HOME)
+        from ..config import CURRENT_SEASON
+        game_id = f"{CURRENT_SEASON}_{week}_{away_team}_{home_team}"
+        
+        recommendations = get_parlay_recommendations(model_data, week, game_id)
+        recommendations["week"] = week
+        recommendations["game_id"] = game_id
+        recommendations["home_team"] = home_team
+        recommendations["away_team"] = away_team
+        
+        # Also try with reversed order in case game_id format varies
+        if (recommendations["over_script"]["total_recommendations"] == 0 and 
+            recommendations["under_script"]["total_recommendations"] == 0):
+            game_id_alt = f"{CURRENT_SEASON}_{week}_{home_team}_{away_team}"
+            recommendations = get_parlay_recommendations(model_data, week, game_id_alt)
+            recommendations["game_id"] = game_id_alt
+            
+        return recommendations
+    except Exception as e:
+        logger.exception(f"Matchup parlay recommendations error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate parlays: {str(e)}")
+
+
+@router.get("/parlays/{week}/correlated/{player_name}")
+async def get_correlated_props(
+    week: int,
+    player_name: str,
+    prop_type: str = Query(..., description="Anchor prop type (e.g., 'Passing Yards')"),
+    script: str = Query("over", description="Game script: 'over' or 'under'")
+):
+    """
+    Get props that correlate with an anchor player's prop.
+    
+    Example: If you bet Josh Allen Passing Yards OVER, what other props correlate?
+    - WRs on his team (Receiving Yards OVER)
+    - TEs on his team (Receptions OVER)
+    """
+    try:
+        from ..services.parlay_recommender import ParlayRecommender, GameScript
+        
+        recommender = ParlayRecommender(model_data)
+        script_type = GameScript.OVER if script.lower() == "over" else GameScript.UNDER
+        
+        # Find the game_id for this player
+        if not model_data["df_props"].is_empty():
+            player_props = model_data["df_props"].filter(
+                (pl.col("week") == week) & 
+                (pl.col("player_name").str.to_lowercase().str.contains(player_name.lower()))
+            )
+            
+            if not player_props.is_empty():
+                game_id = player_props["game_id"][0]
+                
+                correlations = recommender.get_correlated_props(
+                    week, game_id, player_name, prop_type, script_type
+                )
+                
+                return {
+                    "anchor_player": player_name,
+                    "anchor_prop": prop_type,
+                    "script": script,
+                    "game_id": game_id,
+                    "correlated_props": correlations
+                }
+        
+        return {
+            "anchor_player": player_name,
+            "anchor_prop": prop_type,
+            "script": script,
+            "correlated_props": [],
+            "message": "No props found for player"
+        }
+    except Exception as e:
+        logger.exception(f"Correlated props error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

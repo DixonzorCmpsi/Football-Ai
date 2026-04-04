@@ -42,7 +42,7 @@ def setup_driver():
 
     # 3. Initialize with error handling
     try:
-        driver = uc.Chrome(options=options)
+        driver = uc.Chrome(options=options, driver_executable_path="/usr/local/bin/chromedriver", use_subprocess=False)
         return driver
     except Exception as e:
         print(f"❌ Driver initialization failed: {e}")
@@ -87,56 +87,198 @@ def scrape_page_text(driver):
     except:
         return driver.find_element(By.TAG_NAME, "body").text
 
-def click_and_scrape_tabs(driver, current_text):
-    # Keywords for tabs we want to visit
-    keywords = ["Touchdown", "Quarterback", "Passing", "Rushing", "Receiving"]
+def click_prop_category_tabs(driver):
+    """
+    Click on specific prop category tabs to expand their content.
+    These are the exact tab names that appear in Bovada's UI.
+    """
+    # Priority-ordered list of prop categories we want to scrape
+    PROP_CATEGORIES = [
+        "Passing Yards",
+        "Rushing Yards", 
+        "Receiving Yards",
+        "Receiving Props",
+        "Passing Props",
+        "TD Scorer Props",
+        "Touchdown Props",
+        "Combined Yards",
+        "Alternate Lines",
+        "Game Props"
+    ]
     
+    collected_lines = []
+    clicked_tabs = set()
+    
+    for category in PROP_CATEGORIES:
+        try:
+            # Use JavaScript to find and click elements with exact text match
+            clicked = driver.execute_script("""
+                const targetText = arguments[0];
+                
+                // Find all elements that might be tabs
+                const allElements = document.querySelectorAll('*');
+                
+                for (let el of allElements) {
+                    // Check if this element's direct text matches our target
+                    const directText = Array.from(el.childNodes)
+                        .filter(n => n.nodeType === Node.TEXT_NODE)
+                        .map(n => n.textContent.trim())
+                        .join('');
+                    
+                    const fullText = el.textContent.trim();
+                    
+                    // Match exact text or text that starts with our category
+                    if (directText === targetText || fullText === targetText) {
+                        // Check if element is visible and likely clickable
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            // Scroll into view and click
+                            el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                            el.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            """, category)
+            
+            if clicked:
+                print(f"    [+] Clicked category: {category}")
+                clicked_tabs.add(category)
+                time.sleep(2.5)  # Wait for content to load
+                
+                # Expand any accordions/show more buttons in the newly loaded section
+                expand_visible_accordions(driver)
+                time.sleep(1)
+                
+                # Scrape the current page content
+                text = scrape_page_text(driver)
+                lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 0]
+                collected_lines.extend(lines)
+                
+        except Exception as e:
+            print(f"    [!] Error clicking {category}: {e}")
+    
+    print(f"    [✓] Clicked {len(clicked_tabs)} prop categories")
+    return collected_lines
+
+def click_show_more_buttons(driver):
+    """Click all 'Show More' or '+' buttons to expand prop lists."""
+    try:
+        driver.execute_script("""
+            // Find and click Show More buttons
+            const buttons = document.querySelectorAll('button, [role="button"], .show-more, [class*="show-more"]');
+            for (let btn of buttons) {
+                const text = btn.textContent.toLowerCase();
+                if (text.includes('show more') || text.includes('show all') || text === '+' || text.includes('more props')) {
+                    try {
+                        btn.scrollIntoView({behavior: 'smooth', block: 'center'});
+                        btn.click();
+                    } catch(e) {}
+                }
+            }
+            
+            // Also try clicking any collapsed accordions
+            const accordions = document.querySelectorAll('[class*="accordion"]:not([class*="expanded"]), [class*="collapse"]:not([class*="show"])');
+            for (let acc of accordions) {
+                try {
+                    acc.click();
+                } catch(e) {}
+            }
+        """)
+        time.sleep(1.5)
+    except Exception as e:
+        print(f"    [!] Error expanding buttons: {e}")
+
+def scrape_alternate_props_section(driver):
+    """
+    Specifically target and expand alternate prop sections which contain 
+    the Over/Under lines we need (Rushing Yards, Receiving Yards, etc.)
+    """
+    alternate_sections = []
+    
+    try:
+        # Find all "Alternate" headers and click to expand them
+        result = driver.execute_script("""
+            const sections = [];
+            const allElements = document.querySelectorAll('*');
+            
+            for (let el of allElements) {
+                const text = el.textContent || '';
+                // Look for Alternate prop headers
+                if (text.startsWith('Alternate ') && text.includes(' - ')) {
+                    // This is likely a prop header like "Alternate Rushing Yards - Player Name"
+                    sections.push(text.substring(0, 100));  // Truncate for logging
+                    
+                    // Try to find and click any expand button near this element
+                    const parent = el.closest('[class*="market"], [class*="prop"], [class*="bet"]');
+                    if (parent) {
+                        const expandBtn = parent.querySelector('[class*="expand"], [class*="toggle"], button');
+                        if (expandBtn) {
+                            try { expandBtn.click(); } catch(e) {}
+                        }
+                    }
+                }
+            }
+            return sections.length;
+        """)
+        
+        if result > 0:
+            print(f"    [+] Found {result} alternate prop sections")
+            time.sleep(1)
+            
+    except Exception as e:
+        print(f"    [!] Error in alternate props: {e}")
+    
+    return alternate_sections
+
+def click_and_scrape_tabs(driver, current_text):
+    """
+    Enhanced tab clicking that specifically targets prop categories.
+    """
     collected_text = current_text
+    
+    # Step 1: Click on main prop category tabs
+    category_lines = click_prop_category_tabs(driver)
+    if category_lines:
+        collected_text += "\n" + "\n".join(category_lines)
+    
+    # Step 2: Expand all "Show More" buttons
+    click_show_more_buttons(driver)
+    
+    # Step 3: Target alternate prop sections
+    scrape_alternate_props_section(driver)
+    
+    # Step 4: Final page scrape after all expansions
+    time.sleep(1)
+    expand_visible_accordions(driver)
+    final_text = scrape_page_text(driver)
+    collected_text += "\n" + final_text
+    
+    # Legacy keyword-based tab clicking for any missed tabs
+    keywords = ["Quarterback Props", "Passing Props", "Rushing Props", "Receiving Props"]
     
     for key in keywords:
         try:
-            # Find elements containing the keyword
             xpath = f"//*[contains(text(), '{key}')]"
             elements = driver.find_elements(By.XPATH, xpath)
             
-            # Sort elements to prioritize actual tabs/buttons over random text divs
-            # This prevents clicking "Rushing Touchdowns" text instead of the "Rushing" tab
-            def get_element_priority(el):
-                try:
-                    tag = el.tag_name.lower()
-                    if 'tab' in tag or 'button' in tag: return 0  # Highest priority
-                    if tag == 'a': return 1
-                    if tag == 'li': return 2
-                    return 3  # Lowest priority (div, span, etc)
-                except: return 4
-
-            elements.sort(key=get_element_priority)
-            
-            clicked = False
             for el in elements:
-                # Filter for likely clickable items (buttons, tabs, list items)
                 try:
                     tag = el.tag_name.lower()
-                    # Check if it's a button or inside a clickable container
-                    if tag in ['button', 'sp-tab-button', 'a', 'li', 'span', 'div']:
-                        if el.is_displayed():
-                            # Scroll and click
-                            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", el)
-                            time.sleep(0.5)
-                            driver.execute_script("arguments[0].click();", el)
-                            
-                            print(f"    [+] Clicked tab: {key} (tag: {tag})")
-                            time.sleep(2) # Wait for content load
-                            
-                            expand_visible_accordions(driver)
-                            new_text = scrape_page_text(driver)
-                            collected_text += "\n" + new_text
-                            clicked = True
-                            break
+                    if tag in ['button', 'a', 'li', 'span', 'div'] and el.is_displayed():
+                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", el)
+                        time.sleep(0.5)
+                        driver.execute_script("arguments[0].click();", el)
+                        print(f"    [+] Clicked legacy tab: {key}")
+                        time.sleep(2)
+                        expand_visible_accordions(driver)
+                        new_text = scrape_page_text(driver)
+                        collected_text += "\n" + new_text
+                        break
                 except: continue
-            
         except Exception as e:
-            print(f"    [!] Error processing tab {key}: {e}")
+            pass
             
     return collected_text
 
@@ -150,16 +292,51 @@ def scrape_game(driver, url):
     game_folder = os.path.join(DATA_DIR, game_id)
     if not os.path.exists(game_folder): os.makedirs(game_folder)
 
-    # 2. Expand default view
+    # 2. Scroll down the page to trigger lazy loading
+    try:
+        driver.execute_script("""
+            // Scroll down in increments to trigger lazy loading
+            const scrollHeight = document.body.scrollHeight;
+            let currentPosition = 0;
+            const scrollStep = 500;
+            
+            while (currentPosition < scrollHeight) {
+                window.scrollTo(0, currentPosition);
+                currentPosition += scrollStep;
+            }
+            // Scroll back to top
+            window.scrollTo(0, 0);
+        """)
+        time.sleep(2)
+    except: pass
+
+    # 3. Expand default view
     expand_visible_accordions(driver)
     
-    # 3. Scrape Default Text
+    # 4. Scrape Default Text
     raw_text = scrape_page_text(driver)
     
-    # 4. Click Tabs and Scrape More
+    # 5. Click Tabs and Scrape More (enhanced version)
     full_text = click_and_scrape_tabs(driver, raw_text)
     
-    lines = [l.strip() for l in full_text.split('\n') if len(l.strip()) > 0]
+    # 6. Do a final scroll and expansion pass
+    try:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        expand_visible_accordions(driver)
+        click_show_more_buttons(driver)
+        final_text = scrape_page_text(driver)
+        full_text += "\n" + final_text
+    except: pass
+    
+    # 7. Deduplicate lines while preserving order
+    seen = set()
+    lines = []
+    for line in full_text.split('\n'):
+        line = line.strip()
+        if len(line) > 0 and line not in seen:
+            seen.add(line)
+            lines.append(line)
 
     # Save Menu.json
     output_file = os.path.join(game_folder, "Menu.json")

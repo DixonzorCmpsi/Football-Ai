@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -34,6 +34,16 @@ const getStatusLabel = (status?: string) => {
   if (s.includes('questionable')) return 'Q';
   if (s.includes('active')) return 'ACT';
   return status.substring(0, 3).toUpperCase();
+};
+
+// --- HELPER: Format Trending Count ---
+const formatTrendingCount = (count: number): string => {
+  if (count >= 1000) {
+    const k = count / 1000;
+    // Show one decimal for counts like 6.7K, but not for 10K+
+    return k >= 10 ? `${Math.round(k)}K` : `${k.toFixed(1)}K`;
+  }
+  return count.toString();
 };
 
 // --- COMPONENT: Sidebar Player Item ---
@@ -77,7 +87,7 @@ const SidebarPlayerItem = ({
 
       <div className="flex flex-col items-end gap-1">
         <div className={`text-xs font-black px-2 py-1 rounded-full ${type === 'up' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-            {type === 'up' ? '+' : '-'}{Math.abs(player.trending_count || 0)}
+            {type === 'up' ? '+' : '-'}{formatTrendingCount(player.trending_count || 0)}
         </div>
         
         {/* Compare Button */}
@@ -279,9 +289,9 @@ export default function App() {
                 </div>
             </div>
 
-            {/* Mobile: Trending access (hidden on lg screens where sidebars exist) */}
+            {/* Mobile: Menu access (hidden on lg screens where sidebars exist) */}
             <button onClick={() => setMobileDrawerOpen(true)} className="p-2 text-slate-400 hover:text-blue-600 lg:hidden rounded-lg transition-colors" aria-label="Open Menu">
-              <TrendingUp size={18} />
+              <Menu size={18} />
             </button>
           </div>
         </header>

@@ -169,11 +169,16 @@ PIPELINE_STEPS = [
     {
         "script": "12_process_bovada.py",
         "uploads": [
-             (f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "replace"),
-             (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "replace")
+             (f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "smart_append"),
+             (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "smart_append")
         ]
     },
-    # 10. FINAL RANKINGS
+    # 13. UPDATE BOVADA RESULTS (Post-game for ML training)
+    {
+        "script": "14_update_bovada_results.py",
+        "uploads": []  # This script updates DB directly
+    },
+    # 14. FINAL RANKINGS
     {
         "script": "06_generate_rankings.py",
         "uploads": [

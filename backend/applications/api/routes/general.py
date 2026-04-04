@@ -57,6 +57,10 @@ async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
         response = requests.get(url, headers=headers, timeout=3)
         if response.status_code != 200: return []
         data = response.json()
+        
+        # Get the max count for percentage calculation
+        max_count = max((item.get("count", 0) for item in data), default=1) or 1
+        
         cards = []
         for item in data:
             sleeper_id = str(item.get("player_id"))
@@ -65,7 +69,9 @@ async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
             if our_id:
                 card = await get_player_card(our_id, week)
                 if card:
-                    card["trending_count"] = count 
+                    card["trending_count"] = count
+                    # Calculate percentage relative to top trending player (0-100)
+                    card["trending_pct"] = round((count / max_count) * 100)
                     cards.append(card)
             if len(cards) >= limit: break
         return cards

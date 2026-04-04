@@ -53,6 +53,14 @@ The system includes a robust ETL (Extract, Transform, Load) pipeline to populate
 *   **Database**: PostgreSQL 15.
 *   **ML Engine**: XGBoost, Scikit-Learn.
 
+### Key Features
+*   **Player Predictions**: AI-powered weekly fantasy point projections for all skill positions (QB, RB, WR, TE).
+*   **Matchup Analysis**: Deep-dive into team rosters, injuries, and player performance trends.
+*   **Compare Players**: Side-by-side comparisons with radar charts and historical performance tracking.
+*   **Betting Insights**: AI-generated parlay recommendations and prop bet analysis based on game script (over/under) scenarios. Combines Vegas lines with player projections to identify high-value betting opportunities.
+*   **Trending Players**: Integration with Sleeper API to surface rising/falling players.
+*   **Dark Mode**: Full theme support for day and night viewing.
+
 ### Database Schema (PostgreSQL)
 The database is designed for high-performance analytics using a star-schema-like approach centered around weekly stats.
 
@@ -62,7 +70,7 @@ The database is designed for high-performance analytics using a star-schema-like
 *   **`weekly_snap_counts_{SEASON}`**: Snap counts and percentages.
 *   **`weekly_injuries_{SEASON}`**: Injury reports and status.
 *   **`weekly_feature_set_{SEASON}`**: Pre-computed ML features (rolling averages, defensive rankings).
-*   **`bovada_game_lines` / `bovada_player_props`**: Betting odds for correlation analysis.
+*   **`bovada_game_lines` / `bovada_player_props`**: Betting odds for correlation analysis and insights generation. Includes historical line movements and post-game results for ML training. See [BOVADA_ML_TRAINING.md](docs/BOVADA_ML_TRAINING.md) for details on using this data for prop prediction models.
 
 ---
 

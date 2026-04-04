@@ -83,11 +83,13 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
     return { label: `${day} ${time}`, isLive: false };
   };
 
-  // Responsive: show fewer games on mobile
+  // Responsive: show fewer games on smaller screens
   const getVisibleCount = () => {
     if (typeof window === 'undefined') return 4;
-    if (window.innerWidth < 640) return 1;  // mobile: 1 game
-    if (window.innerWidth < 1024) return 2; // tablet: 2 games
+    if (window.innerWidth < 640) return 1;   // mobile: 1 game
+    if (window.innerWidth < 768) return 2;   // small tablet: 2 games
+    if (window.innerWidth < 1024) return 2;  // tablet: 2 games
+    if (window.innerWidth < 1280) return 3;  // laptop: 3 games
     return 4; // desktop: 4 games
   };
   
@@ -165,7 +167,7 @@ const LiveScoresBar: React.FC<LiveScoresBarProps> = ({ week, onGameClick }) => {
               <button
                 key={`${game.home_team}-${game.away_team}-${idx}`}
                 onClick={() => onGameClick?.(game.home_team, game.away_team)}
-                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1 rounded-lg bg-white/80 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-all border border-slate-200 dark:border-slate-700/50 hover:border-slate-300 dark:hover:border-slate-600 min-w-[100px] sm:min-w-[140px] shadow-sm dark:shadow-none"
+                className="flex items-center gap-1 sm:gap-1.5 lg:gap-2 px-2 sm:px-2.5 lg:px-3 py-1 rounded-lg bg-white/80 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-all border border-slate-200 dark:border-slate-700/50 hover:border-slate-300 dark:hover:border-slate-600 min-w-[90px] sm:min-w-[110px] lg:min-w-[130px] xl:min-w-[140px] shadow-sm dark:shadow-none shrink-0"
               >
                 {/* Away Team */}
                 <div className="flex items-center gap-1 sm:gap-1.5">

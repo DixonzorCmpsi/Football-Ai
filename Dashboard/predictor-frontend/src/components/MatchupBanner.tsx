@@ -44,21 +44,21 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUn
   const formattedTime = formatGameTime(gameTime);
 
   return (
-    <div className="w-full relative overflow-hidden p-4">
+    <div className="w-full relative overflow-hidden p-2 lg:p-3">
       {/* Background with Theme Support */}
       <div className="absolute inset-0 bg-white dark:bg-slate-900"></div>
       <div className="absolute inset-0 bg-gradient-to-r from-slate-50 via-white to-slate-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 opacity-50"></div>
       
-      <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 relative z-10">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-2 lg:gap-4 relative z-10">
         
         {/* Teams & Odds with logos */}
-        <div className="flex items-center gap-6 flex-1 justify-center md:justify-start">
-          <div className="text-center flex items-center gap-3">
-            <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
-              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${away.toLowerCase()}.png`} alt={`${away} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+        <div className="flex items-center gap-4 lg:gap-6 flex-1 justify-center md:justify-start">
+          <div className="text-center flex items-center gap-2 lg:gap-3">
+            <div className="w-10 h-10 lg:w-12 lg:h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
+              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${away.toLowerCase()}.png`} alt={`${away} logo`} className="w-8 h-8 lg:w-10 lg:h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
             </div>
             <div>
-              <h2 className="text-2xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">{away}</h2>
+              <h2 className="text-xl lg:text-2xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">{away}</h2>
               {awayWinProb && (
                 <span className={`text-[10px] font-bold uppercase tracking-wider ${awayWinProb > 50 ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-500'}`}>
                   {awayWinProb}% Win
@@ -76,23 +76,23 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUn
             )}
           </div>
 
-          <div className="text-center flex items-center gap-3">
+          <div className="text-center flex items-center gap-2 lg:gap-3">
             <div>
-              <h2 className="text-2xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">{home}</h2>
+              <h2 className="text-xl lg:text-2xl font-black text-slate-800 dark:text-white tracking-tighter leading-none">{home}</h2>
               {homeWinProb && (
                 <span className={`text-[10px] font-bold uppercase tracking-wider ${homeWinProb > 50 ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-500'}`}>
                   {homeWinProb}% Win
                 </span>
               )}
             </div>
-            <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
-              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${home.toLowerCase()}.png`} alt={`${home} logo`} className="w-10 h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
+            <div className="w-10 h-10 lg:w-12 lg:h-12 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
+              <img src={`https://a.espncdn.com/i/teamlogos/nfl/500/${home.toLowerCase()}.png`} alt={`${home} logo`} className="w-8 h-8 lg:w-10 lg:h-10 object-contain" onError={(e)=>{(e.target as HTMLImageElement).style.display='none'}} />
             </div>
           </div>
         </div>
 
         {/* Vegas Context */}
-        <div className="flex items-center gap-4 bg-slate-100 dark:bg-slate-950/50 rounded-lg px-4 py-2 border border-slate-200 dark:border-slate-800/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3 lg:gap-4 bg-slate-100 dark:bg-slate-950/50 rounded-lg px-3 lg:px-4 py-1.5 lg:py-2 border border-slate-200 dark:border-slate-800/50 backdrop-blur-sm">
             <div className="flex flex-col items-center">
               <span className="text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest">Total</span>
               <span className="text-slate-800 dark:text-slate-200 font-mono text-sm font-bold">{overUnder || '-'}</span>

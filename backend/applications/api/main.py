@@ -66,16 +66,17 @@ async def lifespan(app: FastAPI):
                     logger.info("Running ETL synchronously at startup to ensure DB is populated.")
                     try:
                         # Wait up to 5 minutes for ETL to complete; fall back to async if it times out
-                        await asyncio.wait_for(run_daily_etl_async(), timeout=300)
+                        # Note: restart_after=False to avoid infinite restart loop at startup
+                        await asyncio.wait_for(run_daily_etl_async(restart_after=False), timeout=300)
                         logger.info("Startup ETL completed.")
                     except asyncio.TimeoutError:
                         logger.warning("Startup ETL timed out; falling back to background ETL.")
-                        asyncio.create_task(run_daily_etl_async())
+                        asyncio.create_task(run_daily_etl_async(restart_after=False))
                     except Exception as e:
                         logger.exception(f"Startup ETL failed (sync path): {e}")
                 else:
-                    # Non-blocking trigger when DB already has data
-                    asyncio.create_task(run_daily_etl_async())
+                    # Non-blocking trigger when DB already has data (no restart needed)
+                    asyncio.create_task(run_daily_etl_async(restart_after=False))
                     logger.info("Startup ETL triggered asynchronously (DB already populated).")
             else:
                 logger.info("RUN_ETL_ON_STARTUP disabled; skipping startup ETL.")

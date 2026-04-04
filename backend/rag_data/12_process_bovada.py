@@ -286,6 +286,7 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
     try:
         with open(filepath, 'r', encoding='utf-8') as f: data = json.load(f)
         lines, url = data.get("raw_lines", []), data.get("url", "")
+        scraped_at = data.get("scraped_at", datetime.now().isoformat())  # Capture original scrape time
         
         # --- NEW: Pass lines to get_game_context for text scanning ---
         context = get_game_context(url, lines, df_schedule)
@@ -307,16 +308,45 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
                     prop_type = parts[0].replace("Total ", "")
                     p_name_raw = clean_player_name(parts[1])
                     
+                    # Skip half/quarter props for now
+                    if "First Half" in line or "1st Quarter" in line or "2nd Quarter" in line:
+                        i += 1
+                        continue
+                    
                     if is_valid_player_prop(p_name_raw, prop_type):
                         if i + 1 < len(lines):
-                            odds_line = lines[i+1].strip()
+                            next_line = lines[i+1].strip()
+                            
+                            # Sub-Type A0: Line value directly after header (e.g. "83.5")
+                            # Format: "Total Rushing Yards - Kenneth Walker (SEA)" followed by "83.5"
+                            if re.match(r'^\d+\.?\d*$', next_line):
+                                line_val = next_line
+                                p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                
+                                # Default odds of -110 if not specified
+                                player_props.append({
+                                    "player_name": p_name, 
+                                    "position": p_pos, 
+                                    "prop_type": prop_type,
+                                    "line": line_val, 
+                                    "odds": "-110", 
+                                    "side": "over", 
+                                    "implied_prob": 52.38,  # -110 implied prob
+                                    "week": week, 
+                                    "game_id": game_id, 
+                                    "season": SEASON,
+                                    "scraped_at": scraped_at,
+                                    "actual_result": None
+                                })
+                                i += 2
+                                continue
                             
                             # Sub-Type A1: Single line format (e.g. "O 25.5 (-115)")
-                            if odds_line.startswith('+') or odds_line.startswith('-') or odds_line == "EVEN":
+                            elif next_line.startswith('+') or next_line.startswith('-') or next_line == "EVEN":
                                 p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
                                 
                                 # Extract line value (e.g. O 25.5)
-                                val_match = re.search(r'O\s*(\d+\.?\d*)', odds_line)
+                                val_match = re.search(r'O\s*(\d+\.?\d*)', next_line)
                                 line_val = val_match.group(1) if val_match else "0"
                                 
                                 player_props.append({
@@ -324,12 +354,14 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
                                     "position": p_pos, 
                                     "prop_type": prop_type,
                                     "line": line_val, 
-                                    "odds": odds_line, 
-                                    "side": "Over", 
-                                    "implied_prob": american_to_implied_prob(odds_line),
+                                    "odds": next_line, 
+                                    "side": "over", 
+                                    "implied_prob": american_to_implied_prob(next_line),
                                     "week": week, 
                                     "game_id": game_id, 
-                                    "season": SEASON
+                                    "season": SEASON,
+                                    "scraped_at": scraped_at,
+                                    "actual_result": None  # To be filled post-game for training
                                 })
                                 i += 2
                                 continue
@@ -350,11 +382,13 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
                                         "prop_type": prop_type,
                                         "line": line_val, 
                                         "odds": over_odds, 
-                                        "side": "Over", 
+                                        "side": "over", 
                                         "implied_prob": american_to_implied_prob(over_odds),
                                         "week": week, 
                                         "game_id": game_id, 
-                                        "season": SEASON
+                                        "season": SEASON,
+                                        "scraped_at": scraped_at,
+                                        "actual_result": None
                                     })
                                     i += 6
                                     continue
@@ -390,6 +424,231 @@ def process_menu_json(filepath, df_schedule, smart_matcher):
                         else: curr += 1
                     else: break
                 i = curr; continue
+
+            # Type C: "Alternate [Prop Type] - [Player Name] (TEAM)"
+            # Format: "Alternate Rushing Yards - Kenneth Walker III (SEA)"
+            # Followed by: "To Record X+ [Stat]" then odds
+            if line.startswith("Alternate ") and " - " in line and "(" in line:
+                try:
+                    # Parse: "Alternate Rushing Yards - Kenneth Walker III (SEA)"
+                    alt_match = re.match(r'^Alternate\s+(.+?)\s+-\s+(.+?)\s+\(([A-Z]+)\)$', line)
+                    if alt_match:
+                        prop_type = alt_match.group(1)  # e.g. "Rushing Yards", "Receptions", "Receiving Yards"
+                        p_name_raw = alt_match.group(2)  # e.g. "Kenneth Walker III"
+                        team_hint = alt_match.group(3)   # e.g. "SEA"
+                        
+                        # Map prop types to standardized names
+                        prop_type_map = {
+                            "Rushing Yards": "Rushing Yards",
+                            "Receiving Yards": "Receiving Yards", 
+                            "Receptions": "Receptions",
+                            "Passing Yards": "Passing Yards",
+                            "Passing Touchdowns": "Passing TDs",
+                            "Pass Attempts": "Pass Attempts",
+                            "Completions": "Completions",
+                            "Rush Attempts": "Rush Attempts",
+                            "Rushing Touchdowns": "Rushing TDs",
+                            "Receiving Touchdowns": "Receiving TDs",
+                        }
+                        
+                        std_prop_type = prop_type_map.get(prop_type, prop_type)
+                        
+                        if is_valid_player_prop(p_name_raw, std_prop_type):
+                            # Scan following lines for threshold props
+                            # Format: "To Record X+ [Stat]" then odds on next line
+                            curr = i + 1
+                            found_lines = []  # Store (threshold, odds) tuples
+                            
+                            while curr < len(lines) and curr < i + 50:  # Limit scan
+                                l_curr = lines[curr].strip()
+                                
+                                # Stop if we hit next section
+                                if l_curr.startswith("Alternate ") or "Props" in l_curr or l_curr == "BET SLIP" or "BET SLIP" in l_curr:
+                                    break
+                                
+                                # Match "To Record X+ [Stat]" pattern
+                                threshold_match = re.match(r'^To Record (\d+)\+', l_curr)
+                                if threshold_match and curr + 1 < len(lines):
+                                    threshold = threshold_match.group(1)
+                                    odds_line = lines[curr + 1].strip()
+                                    
+                                    if odds_line.startswith('+') or odds_line.startswith('-') or odds_line == "EVEN":
+                                        found_lines.append((int(threshold), odds_line))
+                                        curr += 2
+                                        continue
+                                
+                                curr += 1
+                            
+                            # Find the "main" line - typically around -110 odds (closest to 50% implied prob)
+                            # Or just pick the middle threshold
+                            if found_lines:
+                                p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                
+                                # Find best line: closest to -110 odds (implied prob ~52.4%)
+                                best_line = None
+                                best_diff = float('inf')
+                                for threshold, odds in found_lines:
+                                    prob = american_to_implied_prob(odds)
+                                    if prob:
+                                        diff = abs(prob - 52.4)  # -110 is ~52.4%
+                                        if diff < best_diff:
+                                            best_diff = diff
+                                            best_line = (threshold, odds, prob)
+                                
+                                if best_line:
+                                    threshold, odds, prob = best_line
+                                    # Convert threshold to line (X+ means over X-0.5)
+                                    line_val = str(float(threshold) - 0.5)
+                                    
+                                    player_props.append({
+                                        "player_name": p_name,
+                                        "position": p_pos,
+                                        "prop_type": std_prop_type,
+                                        "line": line_val,
+                                        "odds": odds,
+                                        "side": "over",
+                                        "implied_prob": prob,
+                                        "week": week,
+                                        "game_id": game_id,
+                                        "season": SEASON,
+                                        "scraped_at": scraped_at,
+                                        "actual_result": None
+                                    })
+                except Exception as e:
+                    pass
+
+            # Type D: "Longest Reception - [Player Name] (TEAM)" with Over/Under format
+            # Format: "Longest Reception - Puka Nacua (LAR)" followed by Over/Under/Line/Odds
+            if line.startswith("Longest ") and " - " in line and "(" in line:
+                try:
+                    longest_match = re.match(r'^Longest\s+(.+?)\s+-\s+(.+?)\s+\(([A-Z]+)\)$', line)
+                    if longest_match:
+                        prop_type = "Longest " + longest_match.group(1)  # e.g. "Longest Reception", "Longest Rush"
+                        p_name_raw = longest_match.group(2)
+                        team_hint = longest_match.group(3)
+                        
+                        if is_valid_player_prop(p_name_raw, prop_type):
+                            # Check for Over/Under block format
+                            if i + 1 < len(lines) and lines[i+1].strip() == "Over":
+                                if i + 4 < len(lines):
+                                    line_val = lines[i+3].strip()
+                                    over_odds = lines[i+4].strip()
+                                    
+                                    if re.match(r'^\d+\.?\d*$', line_val) and (over_odds.startswith('+') or over_odds.startswith('-') or over_odds == "EVEN"):
+                                        p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                        player_props.append({
+                                            "player_name": p_name,
+                                            "position": p_pos,
+                                            "prop_type": prop_type,
+                                            "line": line_val,
+                                            "odds": over_odds,
+                                            "side": "over",
+                                            "implied_prob": american_to_implied_prob(over_odds),
+                                            "week": week,
+                                            "game_id": game_id,
+                                            "season": SEASON,
+                                            "scraped_at": scraped_at,
+                                            "actual_result": None
+                                        })
+                                        i += 5
+                                        continue
+                except Exception as e:
+                    pass
+
+            # Type E: "[Player Name] (TEAM) - [Prop Type]" with O/U format
+            # Format: "Matthew Stafford (LAR) - Passing Yards" followed by Over/Under block
+            player_prop_match = re.match(r'^(.+?)\s+\(([A-Z]+)\)\s+-\s+(.+)$', line)
+            if player_prop_match and not line.startswith("Alternate") and not line.startswith("Longest") and not line.startswith("Total"):
+                try:
+                    p_name_raw = player_prop_match.group(1)
+                    team_hint = player_prop_match.group(2)
+                    prop_type = player_prop_match.group(3)
+                    
+                    # Map common prop names
+                    prop_type_map = {
+                        "Passing Yards": "Passing Yards",
+                        "Pass Yards": "Passing Yards",
+                        "Rushing Yards": "Rushing Yards",
+                        "Rush Yards": "Rushing Yards",
+                        "Receiving Yards": "Receiving Yards",
+                        "Rec Yards": "Receiving Yards",
+                        "Receptions": "Receptions",
+                        "Pass Attempts": "Pass Attempts",
+                        "Rush Attempts": "Rush Attempts",
+                        "Completions": "Completions",
+                        "Passing Touchdowns": "Passing TDs",
+                        "Pass TDs": "Passing TDs",
+                    }
+                    
+                    std_prop_type = prop_type_map.get(prop_type, prop_type)
+                    
+                    if is_valid_player_prop(p_name_raw, std_prop_type):
+                        # Check for Over/Under block
+                        if i + 1 < len(lines) and lines[i+1].strip() == "Over":
+                            if i + 4 < len(lines):
+                                line_val = lines[i+3].strip()
+                                over_odds = lines[i+4].strip()
+                                
+                                if re.match(r'^\d+\.?\d*$', line_val) and (over_odds.startswith('+') or over_odds.startswith('-') or over_odds == "EVEN"):
+                                    p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                    player_props.append({
+                                        "player_name": p_name,
+                                        "position": p_pos,
+                                        "prop_type": std_prop_type,
+                                        "line": line_val,
+                                        "odds": over_odds,
+                                        "side": "over",
+                                        "implied_prob": american_to_implied_prob(over_odds),
+                                        "week": week,
+                                        "game_id": game_id,
+                                        "season": SEASON,
+                                        "scraped_at": scraped_at,
+                                        "actual_result": None
+                                    })
+                                    i += 5
+                                    continue
+                except Exception as e:
+                    pass
+
+            # Type F: Direct O/U format "O 85.5 (-110)" with player context
+            # Look for lines like "O 25.5 (-115)" that follow a player name
+            if re.match(r'^O\s+\d+\.?\d*\s+\([+-]?\d+|EVEN\)', line):
+                try:
+                    ou_match = re.match(r'^O\s+(\d+\.?\d*)\s+\(([+-]?\d+|EVEN)\)', line)
+                    if ou_match and i > 0:
+                        line_val = ou_match.group(1)
+                        odds = ou_match.group(2)
+                        
+                        # Look back for player name context
+                        prev_line = lines[i-1].strip()
+                        player_match = re.match(r'^(.+?)\s+\(([A-Z]+)\)$', prev_line)
+                        if player_match:
+                            p_name_raw = player_match.group(1)
+                            if is_valid_player_prop(p_name_raw, "Unknown"):
+                                p_name, p_pos = smart_matcher.match(p_name_raw, match_teams)
+                                # Infer prop type from position
+                                inferred_prop = "Unknown"
+                                if p_pos == "QB": inferred_prop = "Passing Yards"
+                                elif p_pos == "RB": inferred_prop = "Rushing Yards"
+                                elif p_pos in ["WR", "TE"]: inferred_prop = "Receiving Yards"
+                                
+                                player_props.append({
+                                    "player_name": p_name,
+                                    "position": p_pos,
+                                    "prop_type": inferred_prop,
+                                    "line": line_val,
+                                    "odds": odds,
+                                    "side": "over",
+                                    "implied_prob": american_to_implied_prob(odds),
+                                    "week": week,
+                                    "game_id": game_id,
+                                    "season": SEASON,
+                                    "scraped_at": scraped_at,
+                                    "actual_result": None
+                                })
+                except Exception as e:
+                    pass
+
             i += 1
     except Exception as e: print(f"Error reading {filepath}: {e}")
     return player_props, game_lines
@@ -413,15 +672,23 @@ def main():
                 if g: all_game_lines.append(g)
     
     if all_player_props:
-        df_p = pl.DataFrame(all_player_props).unique().with_columns(pl.lit(datetime.now().isoformat()).alias("processed_at"))
+        df_p = pl.DataFrame(all_player_props).unique().with_columns(
+            pl.lit(datetime.now().isoformat()).alias("processed_at")
+        )
         df_p.write_csv(OUTPUT_PLAYER_CSV)
         print(f"✅ Saved {len(df_p)} Player Props to {OUTPUT_PLAYER_CSV}")
-    else: print("⚠️ No Player Props found.")
+        print(f"   📊 Columns: {', '.join(df_p.columns)}")
+    else: 
+        print("⚠️ No Player Props found.")
     
     if all_game_lines:
-        df_g = pl.DataFrame(all_game_lines).unique(subset=["game_id"]).with_columns(pl.lit(datetime.now().isoformat()).alias("processed_at"))
+        df_g = pl.DataFrame(all_game_lines).unique(subset=["game_id"]).with_columns(
+            pl.lit(datetime.now().isoformat()).alias("processed_at")
+        )
         df_g.write_csv(OUTPUT_GAME_CSV)
         print(f"✅ Saved {len(df_g)} Game Lines to {OUTPUT_GAME_CSV}")
+    else:
+        print("⚠️ No Game Lines found.")
 
 if __name__ == "__main__":
     main()

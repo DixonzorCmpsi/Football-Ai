@@ -21,7 +21,8 @@ export interface Player {
   projected_points?: number;
   actual_points?: number;
   injury_status?: string; 
-  trending_count?: number; 
+  trending_count?: number;
+  trending_pct?: number;
   image?: string;
 }
 

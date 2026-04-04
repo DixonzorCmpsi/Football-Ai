@@ -32,7 +32,7 @@ def setup_driver():
 
     # 3. Initialize with error handling
     try:
-        driver = uc.Chrome(options=options)
+        driver = uc.Chrome(options=options, driver_executable_path="/usr/local/bin/chromedriver", use_subprocess=False)
         return driver
     except Exception as e:
         print(f"❌ Driver initialization failed: {e}")

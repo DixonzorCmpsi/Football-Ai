@@ -37,8 +37,9 @@ STEP_MAP = {
     "13_generate_production_features.py": [(f"weekly_feature_set_{SEASON}.csv", f"weekly_feature_set_{SEASON}", "replace")],
     "../dataPrep/build_modeling_dataset_avg.py": [("../dataPrep/weekly_modeling_dataset_avg.csv", "modeling_dataset", "replace")],
     "../dataPrep/feature_engineering_avg.py": [("../dataPrep/featured_dataset_avg.csv", "featured_dataset", "replace")],
-    "12_process_bovada.py": [(f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "replace"),
-                             (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "replace")]
+    "12_process_bovada.py": [(f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "smart_append"),
+                             (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "smart_append")],
+    "14_update_bovada_results.py": []  # Updates DB directly, no CSV upload
 }
 
 def push_to_postgres(file_path_str, table_name, mode):
@@ -52,14 +53,57 @@ def push_to_postgres(file_path_str, table_name, mode):
     logger.info(f"Uploading {file_path.name} to '{table_name}'...")
     try:
         df = pl.read_csv(file_path, ignore_errors=True)
-        # Drop and Recreate if 'replace'
+        
         if mode == 'replace':
+            # Drop and Recreate
             with ENGINE.connect() as conn:
                 conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE"))
                 conn.commit()
             df.to_pandas().to_sql(table_name, ENGINE, if_exists='replace', index=False)
+        
+        elif mode == 'smart_append':
+            # Smart append with deduplication for bovada props
+            if 'bovada_player_props' in table_name:
+                # Deduplicate on: player_name, week, game_id, prop_type, line, side, scraped_at
+                # Keep scraped_at to track odds movements over time for ML training
+                dedup_cols = ['player_name', 'week', 'game_id', 'prop_type', 'line', 'side', 'scraped_at']
+                # Load existing data
+                try:
+                    existing = pl.read_database(f"SELECT * FROM {table_name}", ENGINE)
+                    # Combine and deduplicate (keep latest by processed_at)
+                    combined = pl.concat([existing, df]).unique(subset=dedup_cols, keep='last')
+                    # Replace table with deduplicated data
+                    with ENGINE.connect() as conn:
+                        conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE"))
+                        conn.commit()
+                    combined.to_pandas().to_sql(table_name, ENGINE, if_exists='replace', index=False)
+                    logger.info(f"Smart append: {len(df)} new rows, {len(combined)} total after dedup")
+                    logger.info(f"Historical data preserved: {len(combined)} total prop records across all weeks")
+                except Exception:
+                    # Table doesn't exist yet, just insert
+                    df.to_pandas().to_sql(table_name, ENGINE, if_exists='replace', index=False)
+            
+            elif 'bovada_game_lines' in table_name:
+                # Deduplicate on: game_id, week
+                dedup_cols = ['game_id', 'week']
+                try:
+                    existing = pl.read_database(f"SELECT * FROM {table_name}", ENGINE)
+                    combined = pl.concat([existing, df]).unique(subset=dedup_cols, keep='last')
+                    with ENGINE.connect() as conn:
+                        conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE"))
+                        conn.commit()
+                    combined.to_pandas().to_sql(table_name, ENGINE, if_exists='replace', index=False)
+                    logger.info(f"Smart append: {len(df)} new rows, {len(combined)} total after dedup")
+                except Exception:
+                    df.to_pandas().to_sql(table_name, ENGINE, if_exists='replace', index=False)
+            else:
+                # Regular append for other tables
+                df.to_pandas().to_sql(table_name, ENGINE, if_exists='append', index=False)
+        
         else:
+            # Regular append
             df.to_pandas().to_sql(table_name, ENGINE, if_exists='append', index=False)
+        
         logger.info(f"Success: {table_name} updated.")
     except Exception as e:
         logger.exception(f"Upload failed for {table_name}: {e}")
