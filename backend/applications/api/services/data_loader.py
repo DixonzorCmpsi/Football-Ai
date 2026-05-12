@@ -167,3 +167,78 @@ def load_player_history_from_db(player_id: str, week: int, limit: int = 12):
     except Exception as e:
         logger.warning(f"load_player_history_from_db error: {e}")
         return pl.DataFrame()
+
+
+# ---- Historical (prior-season) weekly stats via nflreadpy --------------------
+# nflreadpy uses slightly different column names than our schema, so we map them.
+_NFL_TO_OUR_COLS = {
+    "passing_tds": "passing_touchdown",
+    "rushing_tds": "rush_touchdown",
+    "receiving_tds": "receiving_touchdown",
+    "carries": "rush_attempts",
+    "passing_interceptions": "interceptions",
+    "fantasy_points_ppr": "y_fantasy_points_ppr",
+}
+
+
+def _historical_stats_csv_path(season: int) -> str:
+    import os
+
+    return os.path.join(RAG_DIR, f"weekly_player_stats_{season}.csv")
+
+
+def _fetch_and_cache_historical_stats(season: int) -> pl.DataFrame:
+    """Pull a season of weekly stats from nflreadpy and cache as CSV."""
+    import os
+
+    cache = _historical_stats_csv_path(season)
+    if os.path.exists(cache):
+        try:
+            df = pl.read_csv(cache, ignore_errors=True)
+            if not df.is_empty():
+                return enforce_types(df)
+        except Exception as e:
+            logger.warning(f"Reading cached {cache} failed: {e}")
+
+    try:
+        import nflreadpy as nfl
+
+        raw = nfl.load_player_stats(seasons=int(season))
+        if raw is None or raw.is_empty():
+            logger.info(f"nflreadpy returned no stats for {season}")
+            return pl.DataFrame()
+        # Rename source columns to match our schema; missing columns are ignored.
+        rename_map = {src: dst for src, dst in _NFL_TO_OUR_COLS.items() if src in raw.columns}
+        if rename_map:
+            raw = raw.rename(rename_map)
+        if "season" not in raw.columns:
+            raw = raw.with_columns(pl.lit(int(season)).alias("season"))
+        try:
+            raw.write_csv(cache)
+            logger.info(f"Cached {len(raw)} weekly stat rows for {season} at {cache}")
+        except Exception as e:
+            logger.warning(f"Failed to write cache {cache}: {e}")
+        return enforce_types(raw)
+    except Exception as e:
+        logger.warning(f"nflreadpy historical fetch failed for {season}: {e}")
+        return pl.DataFrame()
+
+
+def load_historical_stats(seasons: tuple[int, ...] = (CURRENT_SEASON - 2, CURRENT_SEASON - 1)) -> None:
+    """Populate `model_data['df_player_stats_history']` with prior-season weekly stats.
+
+    Combined dataframe across the requested seasons; safe to call repeatedly (uses
+    CSV cache).
+    """
+    frames = []
+    for s in seasons:
+        if s == CURRENT_SEASON:
+            continue
+        df = _fetch_and_cache_historical_stats(int(s))
+        if not df.is_empty():
+            frames.append(df)
+    if frames:
+        model_data["df_player_stats_history"] = pl.concat(frames, how="diagonal_relaxed")
+        logger.info(f"Loaded {sum(len(f) for f in frames)} historical stat rows into df_player_stats_history")
+    else:
+        model_data["df_player_stats_history"] = pl.DataFrame()

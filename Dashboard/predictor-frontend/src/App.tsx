@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -10,6 +10,8 @@ import MatchupView from './components/MatchupView';
 import MyPicksList from './components/MyPicksList';
 import PlayoffView from './components/PlayoffView';
 import LiveScoresBar from './components/LiveScoresBar';
+import TierListView, { type TierListState } from './components/TierListView';
+import TeamOffenseModal from './components/TeamOffenseModal';
 import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
@@ -126,14 +128,55 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  const [viewMode, setViewMode] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS'>('SCHEDULE');
+  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS';
+  const [viewMode, setViewModeRaw] = useState<ViewMode>('SCHEDULE');
+
+  // Navigation stack: every setViewMode() that actually changes view pushes the
+  // previous view. goBack() pops. Powers the persistent Back button in the header
+  // so users always have a single-click escape route.
+  const [navStack, setNavStack] = useState<ViewMode[]>([]);
+  const setViewMode = (next: ViewMode) => {
+    if (next !== viewMode) {
+      setNavStack((prev) => (prev[prev.length - 1] === viewMode ? prev : [...prev, viewMode]));
+    }
+    setViewModeRaw(next);
+  };
+  const goBack = () => {
+    setNavStack((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      setViewModeRaw(last);
+      return prev.slice(0, -1);
+    });
+  };
   const [showSidebars, setShowSidebars] = useState(true); 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE'>('SCHEDULE');
+  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS'>('SCHEDULE');
 
   const [compareList, setCompareList] = useState<string[]>([]);
+
+  // Tier list state — lifted here so it survives navigation to Compare / History
+  // and back. Persisted to localStorage so reloads also restore.
+  const [tierState, setTierState] = useState<TierListState>(() => {
+    try {
+      const raw = localStorage.getItem('tierList.state');
+      if (raw) return JSON.parse(raw);
+    } catch { /* ignore */ }
+    return {
+      position: 'WR',
+      listName: 'My Tiers',
+      assignments: {},
+      search: '',
+      showRookiesOnly: false,
+    };
+  });
+  useEffect(() => {
+    try { localStorage.setItem('tierList.state', JSON.stringify(tierState)); } catch { /* ignore */ }
+  }, [tierState]);
+
+  const [teamModal, setTeamModal] = useState<{ team: string; focusPlayerId?: string | null } | null>(null);
 
   const toggleCompare = (playerId: string) => {
     setCompareList(prev => {
@@ -189,8 +232,8 @@ export default function App() {
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
       
-      {/* LEFT SIDEBAR */}
-      {showSidebars && (
+      {/* LEFT SIDEBAR (hidden in TIERS mode — TierListView renders its own pool panels) */}
+      {showSidebars && viewMode !== 'TIERS' && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
@@ -253,7 +296,21 @@ export default function App() {
              <button onClick={() => setShowSidebars(!showSidebars)} className="hidden lg:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
-             
+
+             {navStack.length > 0 && (
+               <button
+                 onClick={goBack}
+                 className="flex items-center gap-1 px-2 py-1.5 mr-1 text-xs font-bold text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg transition"
+                 title={`Back to ${navStack[navStack.length - 1]}`}
+               >
+                 <ArrowLeft size={14} />
+                 <span className="hidden sm:inline">Back</span>
+                 <span className="hidden md:inline text-slate-400 dark:text-slate-500 font-mono text-[10px] normal-case">
+                   · {navStack[navStack.length - 1].toLowerCase()}
+                 </span>
+               </button>
+             )}
+
              <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:flex items-center gap-1 z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
                 <span className="text-2xl font-black text-slate-800 dark:text-slate-100">THE SPOT</span>
                 <span className="text-2xl font-black text-blue-600 dark:text-blue-500">AI</span>
@@ -263,10 +320,11 @@ export default function App() {
           
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
-              {(['SCHEDULE', 'PLAYOFFS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+              {(['SCHEDULE', 'PLAYOFFS', 'TIERS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
+                  {mode === 'TIERS' && <Layers size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
                           <BarChart2 size={14}/>
@@ -315,6 +373,7 @@ export default function App() {
               <button onClick={() => { setViewMode('TRENDING'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Trending</button>
               <button onClick={() => { setViewMode('PICKS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Picks</button>
               <button onClick={() => { setViewMode('PLAYOFFS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Playoffs</button>
+              <button onClick={() => { setViewMode('TIERS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Tier List</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
             </div>
@@ -335,6 +394,9 @@ export default function App() {
               </button>
               <button onClick={() => setViewMode('PICKS')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="My Picks">
                 <Check size={18} />
+              </button>
+              <button onClick={() => setViewMode('TIERS')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Tier List">
+                <Layers size={18} />
               </button>
               <button onClick={() => setViewMode('COMPARE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Compare">
                 <BarChart2 size={18} />
@@ -450,13 +512,32 @@ export default function App() {
             <PlayoffView />
           )}
 
+          {/* VIEW: TIER LIST — always mounted, just hidden when off-screen,
+              so navigating to Compare/History and back preserves all local state
+              (drag assignments, search input, scroll position). */}
+          <div style={{ display: viewMode === 'TIERS' ? 'block' : 'none' }}>
+            <TierListView
+              state={tierState}
+              onStateChange={setTierState}
+              compareList={compareList}
+              onToggleCompare={toggleCompare}
+              onViewHistory={(id) => {
+                setSelectedHistoryId(id);
+                setHistoryFrom('TIERS');
+                setViewMode('HISTORY');
+              }}
+              onOpenCompare={() => setViewMode('COMPARE')}
+              onOpenTeam={(team, focusPlayerId) => setTeamModal({ team, focusPlayerId })}
+            />
+          </div>
+
           {/* VIEW: GAME ROSTERS */}
           {viewMode === 'GAME' && selectedGame && (
             <MatchupView 
               week={safeWeek}
               home={selectedGame.home}
               away={selectedGame.away}
-              onBack={() => setViewMode('SCHEDULE')}
+              onBack={() => { if (navStack.length) goBack(); else setViewMode('SCHEDULE'); }}
               compareList={compareList}
               onToggleCompare={toggleCompare}
             />
@@ -491,7 +572,7 @@ export default function App() {
             <div className="w-full max-w-5xl mx-auto">
                 <PlayerHistory 
                     playerId={selectedHistoryId} 
-                    onBack={() => setViewMode(historyFrom)}
+                    onBack={() => { if (navStack.length) goBack(); else setViewMode(historyFrom); }}
                     compareList={compareList}
                     onToggleCompare={toggleCompare}
                 />
@@ -501,8 +582,25 @@ export default function App() {
         </div>
       </main>
 
-      {/* RIGHT SIDEBAR */}
-      {showSidebars && (
+      {/* TEAM OFFENSE MODAL */}
+      {teamModal && (
+        <TeamOffenseModal
+          team={teamModal.team}
+          focusPlayerId={teamModal.focusPlayerId ?? null}
+          onClose={() => setTeamModal(null)}
+          compareList={compareList}
+          onToggleCompare={toggleCompare}
+          onViewHistory={(id) => {
+            setTeamModal(null);
+            setSelectedHistoryId(id);
+            setHistoryFrom('TIERS');
+            setViewMode('HISTORY');
+          }}
+        />
+      )}
+
+      {/* RIGHT SIDEBAR (hidden in TIERS mode) */}
+      {showSidebars && viewMode !== 'TIERS' && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>

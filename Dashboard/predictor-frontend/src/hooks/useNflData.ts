@@ -393,6 +393,107 @@ export const useMatchupDeepDive = (week: number, home: string, away: string | nu
     return { matchupData, loadingMatchup: loading };
   };
 
+// ---------------------------------------------------------- Tier List
+
+export interface PoolPlayer {
+  player_id: string;
+  player_name: string;
+  position: 'QB' | 'RB' | 'WR' | 'TE';
+  team: string;
+  image: string;
+  injury_status?: string;
+  is_rookie: boolean;
+  draft_year?: number | null;
+  draft_number?: number | null;
+  age?: number | null;
+  height?: number | null;
+  weight?: number | null;
+  season: number;
+  stats: {
+    games_played: number;
+    season_total_pts: number;
+    season_avg_pts: number;
+    recent_avg_pts: number;
+    boom_games: number;
+    bust_games: number;
+    total_yds: number;
+    total_tds: number;
+    total_receptions: number;
+    total_targets: number;
+    total_carries: number;
+    snaps_total: number;
+    snap_pct_avg: number;
+  };
+}
+
+export const TIERS = ['UNRANKED', 'S', 'A', 'B', 'C', 'D', 'F'] as const;
+export type Tier = typeof TIERS[number];
+
+export const usePositionPool = (position: 'QB' | 'RB' | 'WR' | 'TE' | 'ALL' | null) => {
+  const [pool, setPool] = useState<PoolPlayer[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!position) return;
+    setLoading(true);
+    axios
+      .get(`${API_BASE_URL}/tier_list/pool/${position}`)
+      .then((res) => setPool(res.data))
+      .catch((err) => {
+        console.error('Pool fetch error:', err);
+        setPool([]);
+      })
+      .finally(() => setLoading(false));
+  }, [position]);
+
+  return { pool, loadingPool: loading };
+};
+
+export interface TierAssignment {
+  player_id: string;
+  tier: Tier;
+}
+
+export interface SavedTierList {
+  name: string;
+  position: string;
+  season: number;
+  assignments: TierAssignment[];
+  updated_at?: string;
+}
+
+export const fetchTierList = async (
+  position: string,
+  name: string,
+): Promise<SavedTierList | null> => {
+  try {
+    const res = await axios.get(`${API_BASE_URL}/tier_list/${position}/${encodeURIComponent(name)}`);
+    return res.data;
+  } catch {
+    return null;
+  }
+};
+
+export const saveTierList = async (payload: SavedTierList): Promise<SavedTierList | null> => {
+  try {
+    const res = await axios.post(`${API_BASE_URL}/tier_list`, payload);
+    return res.data;
+  } catch (e) {
+    console.error('saveTierList error:', e);
+    return null;
+  }
+};
+
+export const refreshRookies = async (): Promise<{ status: string; message?: string }> => {
+  try {
+    const res = await axios.post(`${API_BASE_URL}/refresh/rookies`);
+    return res.data;
+  } catch (e) {
+    console.error('refreshRookies error:', e);
+    return { status: 'error' };
+  }
+};
+
 export const usePlayerSearch = (query: string) => {
     const [results, setResults] = useState<Player[]>([]);
     

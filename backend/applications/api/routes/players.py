@@ -46,47 +46,60 @@ async def compare(req: CompareRequest):
 
 @router.get("/player/history/{player_id}")
 async def get_player_history(player_id: str):
-    try:
-        # Prefer in-memory data (loaded from CSV) for consistency; fallback to DB if empty
-        df = model_data.get('df_player_stats', pl.DataFrame())
-        if df.is_empty() and DB_CONNECTION_STRING:
-            # Only try DB if in-memory is empty
-            q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' ORDER BY week DESC"
-            df = pl.read_database_uri(q, DB_CONNECTION_STRING)
-        else:
-            # Filter in-memory data
-            df = df.filter(pl.col('player_id') == player_id).sort('week', descending=True)
+    """Return weekly history across the current season plus any cached prior seasons.
 
-        if df.is_empty():
+    The frontend `PlayerHistory` view rolls each row up by week — but with multi-season
+    data we also emit a `season` field per row so the UI can group / chart if it wants.
+    """
+    try:
+        frames = []
+
+        # Current-season in-memory (or DB fallback)
+        cur = model_data.get('df_player_stats', pl.DataFrame())
+        if cur.is_empty() and DB_CONNECTION_STRING:
+            try:
+                q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}'"
+                cur = pl.read_database_uri(q, DB_CONNECTION_STRING)
+            except Exception:
+                cur = pl.DataFrame()
+        if not cur.is_empty():
+            f = cur.filter(pl.col('player_id') == player_id)
+            if not f.is_empty():
+                if 'season' not in f.columns:
+                    f = f.with_columns(pl.lit(int(CURRENT_SEASON)).alias('season'))
+                frames.append(f)
+
+        # Historical (prior seasons) from cached nflreadpy snapshot
+        hist = model_data.get('df_player_stats_history', pl.DataFrame())
+        if not hist.is_empty():
+            f = hist.filter(pl.col('player_id') == player_id)
+            if not f.is_empty():
+                frames.append(f)
+
+        if not frames:
             return []
+        df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
 
         history = []
         player_snaps = model_data.get('df_snap_counts', pl.DataFrame())
-        seen_weeks = set()
 
         for row in df.iter_rows(named=True):
             wk = row.get('week')
-            if wk in seen_weeks:
-                continue
-            seen_weeks.add(wk)
+            season = row.get('season') or CURRENT_SEASON
 
             snap_count, snap_pct, team_snaps = 0, 0.0, 0
-            if not player_snaps.is_empty():
-                # Filter by week AND player_id
+            # Snap counts are current-season only — only fill when row is for current season.
+            if int(season) == int(CURRENT_SEASON) and not player_snaps.is_empty():
                 s_row = player_snaps.filter((pl.col('week') == wk) & (pl.col('player_id') == player_id))
                 if not s_row.is_empty():
                     s0 = s_row.row(0, named=True)
                     snap_count = int(s0.get('offense_snaps', 0))
                     snap_pct = float(s0.get('offense_pct', 0.0))
-                    # Calculate team snaps if possible
                     if snap_pct > 0:
                         team_snaps = int(snap_count / snap_pct)
-                    else:
-                        # Fallback: try to find max snaps for this team/week if we had team info
-                        # For now, just leave as 0 if we can't derive it
-                        team_snaps = 0
 
             history.append({
+                "season": int(season),
                 "week": wk,
                 "opponent": row.get('opponent_team') or "N/A",
                 "points": round(float(calculate_fantasy_points(row)), 2),
