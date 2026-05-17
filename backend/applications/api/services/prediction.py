@@ -299,59 +299,24 @@ def run_base_prediction(pid, pos, week):
         return 0.0, False, features_dict, 0.0
 
 def get_average_points_fallback(player_id, week):
-    """Fallback calculation of average points if DB features are missing or malformed.
-
-    Tries in order: current-season in-memory stats → current-season DB fetch →
-    historical (prior season) stats. The historical tail keeps the player card
-    useful in preseason / week 1, when the current-season stats table is empty.
-    Without it, veterans look like UDFA rookies in the Compare view.
-    """
-
-    def _avg(stats_df):
-        if stats_df is None or stats_df.is_empty():
-            return 0.0
-        total, count = 0.0, 0
-        for row in stats_df.iter_rows(named=True):
-            pts = calculate_fantasy_points(row)
-            if pts > 0 or row.get('offense_snaps', 0) > 0:
-                total += pts
-                count += 1
-        return total / count if count else 0.0
-
+    """Fallback calculation of average points if DB features are missing or malformed."""
     try:
-        # 1) Current-season in-memory.
-        if (
-            'df_player_stats' in model_data
-            and not model_data['df_player_stats'].is_empty()
-            and 'player_id' in model_data['df_player_stats'].columns
-        ):
-            cur = model_data['df_player_stats'].filter(
-                (pl.col('player_id') == player_id) & (pl.col('week') < week)
-            )
-            avg = _avg(cur)
-            if avg > 0:
-                return avg
+        # Try in-memory first
+        if 'df_player_stats' in model_data and not model_data['df_player_stats'].is_empty() and 'player_id' in model_data['df_player_stats'].columns:
+            stats_history = model_data['df_player_stats'].filter((pl.col('player_id') == player_id) & (pl.col('week') < week))
+        else:
+            # Targeted DB fetch
+            stats_history = load_player_history_from_db(player_id, week)
+            if stats_history is None: return 0.0
 
-        # 2) Current-season DB fetch.
-        db_hist = load_player_history_from_db(player_id, week)
-        avg = _avg(db_hist)
-        if avg > 0:
-            return avg
-
-        # 3) Historical (prior seasons) — most recent season with games.
-        hist = model_data.get('df_player_stats_history', pl.DataFrame())
-        if not hist.is_empty() and 'player_id' in hist.columns and 'season' in hist.columns:
-            player_hist = hist.filter(pl.col('player_id') == player_id)
-            if not player_hist.is_empty():
-                # Average over the most-recent season that has games for this player,
-                # so the metric reflects "most recent body of work" rather than a
-                # career mean diluted by old data.
-                seasons = sorted(player_hist['season'].unique().to_list(), reverse=True)
-                for s in seasons:
-                    slice_ = player_hist.filter(pl.col('season') == s)
-                    avg = _avg(slice_)
-                    if avg > 0:
-                        return avg
+        if not stats_history.is_empty():
+            total_points, game_count = 0.0, 0
+            for row in stats_history.iter_rows(named=True):
+                pts = calculate_fantasy_points(row)
+                if pts > 0 or row.get('offense_snaps', 0) > 0:
+                    total_points += pts
+                    game_count += 1
+            if game_count > 0: return total_points / game_count
     except Exception as e:
         logger.warning(f"Average points fallback error: {e}")
     return 0.0
