@@ -164,73 +164,6 @@ def _load_prior_season_snaps(season: int) -> pl.DataFrame:
         return pl.DataFrame()
 
 
-def get_display_stats_with_fallback() -> tuple[pl.DataFrame, pl.DataFrame, int]:
-    """Resolve a (stats_df, snaps_df, season_used) pair for *display* purposes.
-
-    Convention: any endpoint that returns a stat number a user will see should
-    use this helper. Model feature inputs (run_base_prediction, parlay
-    recommender, etc.) must stay current-season-only — backfilling them with
-    prior-season data would feed noise to the predictor.
-
-    Fallback order:
-      1. Current-season in-memory (`df_player_stats` / `df_snap_counts`).
-      2. Most recent in-memory historical season cached at startup.
-      3. DB tables for prior seasons (up to 3 back) if ETL populated them.
-    """
-    stats_df = model_data.get("df_player_stats", pl.DataFrame())
-    snaps_df = model_data.get("df_snap_counts", pl.DataFrame())
-    stats_season = int(CURRENT_SEASON)
-
-    if not stats_df.is_empty():
-        return stats_df, snaps_df, stats_season
-
-    # Tier 2: in-memory historical (loaded by load_historical_stats at startup).
-    hist = model_data.get("df_player_stats_history", pl.DataFrame())
-    if not hist.is_empty() and "season" in hist.columns:
-        try:
-            latest = int(hist.select(pl.col("season").max()).item())
-            stats_df = hist.filter(pl.col("season") == latest)
-            stats_season = latest
-
-            snaps_hist = model_data.get("df_snap_counts_history", pl.DataFrame())
-            if not snaps_hist.is_empty() and "season" in snaps_hist.columns:
-                snaps_df = snaps_hist.filter(pl.col("season") == latest)
-                # Historical snaps key on pfr_id (nflreadpy's native key); downstream
-                # aggregation joins on player_id (gsis). Bridge the two via df_profile
-                # so callers don't have to know about the dual-key history.
-                profile = model_data.get("df_profile", pl.DataFrame())
-                if (
-                    not snaps_df.is_empty()
-                    and "pfr_id" in snaps_df.columns
-                    and "player_id" not in snaps_df.columns
-                    and not profile.is_empty()
-                    and {"player_id", "pfr_id"}.issubset(profile.columns)
-                ):
-                    bridge = (
-                        profile.select(["player_id", "pfr_id"])
-                        .drop_nulls(subset=["player_id", "pfr_id"])
-                        .unique(subset=["pfr_id"], keep="last")
-                    )
-                    snaps_df = snaps_df.join(bridge, on="pfr_id", how="left")
-            logger.info(f"Display stats using in-memory historical season {latest}")
-            return stats_df, snaps_df, stats_season
-        except Exception as e:
-            logger.debug(f"Historical display slice failed: {e}")
-
-    # Tier 3: DB prior-season tables (handles cases where in-memory cache failed).
-    for back in range(1, 4):
-        candidate = int(CURRENT_SEASON) - back
-        candidate_stats = _load_prior_season_stats(candidate)
-        if not candidate_stats.is_empty():
-            stats_df = candidate_stats
-            snaps_df = _load_prior_season_snaps(candidate)
-            stats_season = candidate
-            logger.info(f"Display stats falling back to DB season {candidate}")
-            break
-
-    return stats_df, snaps_df, stats_season
-
-
 @router.get("/team/{team_abbr}/offense")
 async def get_team_offense(team_abbr: str):
     """Return the offensive setup for a team — QBs, RBs, WRs, TEs, OLine.
@@ -248,11 +181,10 @@ async def get_team_offense(team_abbr: str):
     if roster.is_empty():
         return {"team": team, "qb": [], "rb": [], "wr": [], "te": [], "ol": []}
 
-    # Display path: fall back to most recent historical season when the current
-    # season has no games yet (preseason / week 1). Keeps the TeamOffenseModal
-    # useful in the offseason — veterans show real numbers instead of zeros.
-    stats_df, snaps_df, _stats_season = get_display_stats_with_fallback()
-    stats_summary = _aggregate_player_stats(stats_df, snaps_df)
+    stats_summary = _aggregate_player_stats(
+        model_data.get("df_player_stats", pl.DataFrame()),
+        model_data.get("df_snap_counts", pl.DataFrame()),
+    )
 
     def _row_to_dict(row, pos_group):
         pid = str(row.get("player_id"))
@@ -332,7 +264,34 @@ async def get_position_pool(position: str, include_rookies_only: bool = False):
     if pool.is_empty():
         return []
 
-    stats_df, snaps_df, stats_season = get_display_stats_with_fallback()
+    stats_df = model_data.get("df_player_stats", pl.DataFrame())
+    snaps_df = model_data.get("df_snap_counts", pl.DataFrame())
+    stats_season = int(CURRENT_SEASON)
+
+    # Offseason fallback chain:
+    #   1. In-memory historical stats (nflreadpy cache) — typically last 1-2 seasons
+    #   2. DB tables for prior seasons (if ETL has populated them)
+    if stats_df.is_empty():
+        hist = model_data.get("df_player_stats_history", pl.DataFrame())
+        if not hist.is_empty() and "season" in hist.columns:
+            try:
+                latest = int(hist.select(pl.col("season").max()).item())
+                stats_df = hist.filter(pl.col("season") == latest)
+                stats_season = latest
+                logger.info(f"Tier list pool using in-memory historical stats for {latest}")
+            except Exception as e:
+                logger.debug(f"Historical pool slice failed: {e}")
+
+        if stats_df.is_empty():
+            for back in range(1, 4):
+                candidate = int(CURRENT_SEASON) - back
+                stats_df = _load_prior_season_stats(candidate)
+                if not stats_df.is_empty():
+                    snaps_df = _load_prior_season_snaps(candidate)
+                    stats_season = candidate
+                    logger.info(f"Tier list pool falling back to DB {candidate} stats")
+                    break
+
     stats_summary = _aggregate_player_stats(stats_df, snaps_df)
 
     results = []

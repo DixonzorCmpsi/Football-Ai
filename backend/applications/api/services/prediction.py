@@ -407,42 +407,23 @@ async def get_player_card(player_id: str, week: int):
         snap_count = int(feats.get('offense_snaps', 0))
 
     if snap_count == 0:
-        # Display fallback chain (display values only — model features stay
-        # current-season): current-season in-memory → current-season DB →
-        # historical snaps cached at startup (joined via pfr_id since nflreadpy
-        # keys historical snaps on pfr_player_id).
+        # Prefer in-memory snap history, otherwise query DB directly
         try:
             history_snaps = pl.DataFrame()
-            cur_snaps = model_data.get("df_snap_counts", pl.DataFrame())
-            if not cur_snaps.is_empty() and "player_id" in cur_snaps.columns:
-                history_snaps = cur_snaps.filter(
-                    (pl.col("player_id") == player_id) &
+            if "df_snap_counts" in model_data and not model_data["df_snap_counts"].is_empty() and 'player_id' in model_data['df_snap_counts'].columns:
+                history_snaps = model_data["df_snap_counts"].filter(
+                    (pl.col("player_id") == player_id) & 
                     (pl.col("week") < int(week))
                 ).sort("week", descending=True).head(1)
-
-            if history_snaps.is_empty() and DB_CONNECTION_STRING:
+            else:
+                # DB lookup for last snap counts
                 q = f"SELECT * FROM weekly_snap_counts_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 1"
-                try:
-                    history_snaps = pl.read_database_uri(q, DB_CONNECTION_STRING)
-                except Exception:
-                    history_snaps = pl.DataFrame()
-
-            if history_snaps.is_empty():
-                hist_snaps_df = model_data.get("df_snap_counts_history", pl.DataFrame())
-                if not hist_snaps_df.is_empty() and "pfr_id" in hist_snaps_df.columns:
-                    pfr_id = p_row.get("pfr_id")
-                    if pfr_id:
-                        # Most recent prior-season game by (season, week) descending.
-                        history_snaps = (
-                            hist_snaps_df.filter(pl.col("pfr_id") == pfr_id)
-                            .sort(["season", "week"], descending=[True, True])
-                            .head(1)
-                        )
+                history_snaps = pl.read_database_uri(q, DB_CONNECTION_STRING)
 
             if not history_snaps.is_empty():
                 last_game = history_snaps.row(0, named=True)
-                snap_count = int(last_game.get('offense_snaps') or 0)
-                snap_pct = float(last_game.get('offense_pct') or 0.0)
+                snap_count = int(last_game.get('offense_snaps', 0))
+                snap_pct = float(last_game.get('offense_pct', 0.0))
         except Exception as e:
             logger.warning(f"Snap fallback failed for {player_id}: {e}")
             snap_count, snap_pct = snap_count, snap_pct
