@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
-import { X, History, Plus, Check } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { X, History, Plus, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { OffensePlayer } from './TeamOffenseModal';
 import { getTeamColor } from '../utils/nflColors';
+import { usePlayerSeasonStats, type SeasonStats } from '../hooks/useNflData';
 
 interface Props {
   player: OffensePlayer;
@@ -43,16 +44,43 @@ const StatTile: React.FC<{ label: string; value: string | number; sub?: string; 
 };
 
 const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onToggleCompare, onViewHistory }) => {
+  const { seasonData, loadingSeasons } = usePlayerSeasonStats(player.player_id);
+
+  // Sorted newest → oldest. Use server-provided list (already capped at 5).
+  const seasons = useMemo<SeasonStats[]>(() => seasonData?.seasons || [], [seasonData]);
+
+  // Default to the most recent season that has games; if none, the most recent entry
+  // (so the empty-state still has a season header). Falls back to current player.
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
+  useEffect(() => {
+    if (seasons.length === 0) {
+      setSelectedSeason(null);
+      return;
+    }
+    const firstWithGames = seasons.find((s) => s.games_played > 0);
+    setSelectedSeason((firstWithGames || seasons[0]).season);
+  }, [seasons]);
+
+  const idx = selectedSeason != null ? seasons.findIndex((s) => s.season === selectedSeason) : -1;
+  const current: SeasonStats | null = idx >= 0 ? seasons[idx] : null;
+  const canPrev = idx >= 0 && idx < seasons.length - 1; // older
+  const canNext = idx > 0; // newer
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft' && canPrev) setSelectedSeason(seasons[idx + 1].season);
+      if (e.key === 'ArrowRight' && canNext) setSelectedSeason(seasons[idx - 1].season);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, canPrev, canNext, idx, seasons]);
 
   const teamColor = getTeamColor(player.team);
-  const hasStats = player.games_played > 0;
+  // "Has stats" now reflects the *selected* season — the prop-level value only
+  // covers the current season aggregate (which is 0 in preseason).
+  const hasStats = (current?.games_played ?? 0) > 0;
+  const positionGroup = (seasonData?.position_group ?? player.position_group) as 'qb' | 'rb' | 'wr' | 'te' | 'ol';
   const status = (player.injury_status || '').toLowerCase();
   const statusBadge =
     status.includes('out') || status.includes('ir')
@@ -180,67 +208,126 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
             </div>
           </section>
 
-          {/* LATEST SEASON STATS */}
+          {/* SEASON STATS (last 5, cyclable) */}
           <section>
-            <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-2">
-              Latest season stats
-            </h3>
-            {hasStats ? (
+            <div className="flex items-center justify-between mb-2 gap-2">
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                Season stats
+              </h3>
+              {seasons.length > 0 && current && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => canPrev && setSelectedSeason(seasons[idx + 1].season)}
+                    disabled={!canPrev}
+                    className="w-6 h-6 rounded flex items-center justify-center text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="Older season"
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+                  <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 min-w-[3.5rem] justify-center">
+                    <span className="text-xs font-black text-slate-700 dark:text-slate-200 font-mono">
+                      {current.season}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => canNext && setSelectedSeason(seasons[idx - 1].season)}
+                    disabled={!canNext}
+                    className="w-6 h-6 rounded flex items-center justify-center text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="Newer season"
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {seasons.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-2">
+                {seasons.map((s) => {
+                  const active = s.season === selectedSeason;
+                  return (
+                    <button
+                      key={s.season}
+                      onClick={() => setSelectedSeason(s.season)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono transition ${
+                        active
+                          ? 'bg-blue-600 text-white'
+                          : s.games_played > 0
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-100 dark:hover:bg-blue-900/30'
+                          : 'bg-slate-50 dark:bg-slate-800/40 text-slate-400 dark:text-slate-500 italic'
+                      }`}
+                      title={s.games_played > 0 ? `${s.games_played} games` : 'No games'}
+                    >
+                      {s.season}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {loadingSeasons ? (
+              <div className="bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl p-6 text-center">
+                <p className="text-xs text-slate-400 dark:text-slate-500">Loading season history…</p>
+              </div>
+            ) : hasStats && current ? (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <StatTile
                     label="Games"
-                    value={player.games_played}
-                    sub={`${Math.round(player.snap_pct_avg)}% snaps`}
+                    value={current.games_played}
+                    sub={current.snap_pct_avg > 0 ? `${Math.round(current.snap_pct_avg)}% snaps` : undefined}
                   />
                   <StatTile
                     label="PPG (PPR)"
-                    value={player.season_avg_pts.toFixed(1)}
-                    sub={`${player.season_total_pts.toFixed(0)} total`}
+                    value={current.season_avg_pts.toFixed(1)}
+                    sub={`${current.season_total_pts.toFixed(0)} total`}
                     tone="pos"
                   />
                   <StatTile
                     label="Recent form"
-                    value={player.recent_avg_pts.toFixed(1)}
+                    value={current.recent_avg_pts.toFixed(1)}
                     sub="last 4 games"
                   />
                   <StatTile
                     label="Boom / Bust"
-                    value={`${player.boom_games} / ${player.bust_games}`}
+                    value={`${current.boom_games} / ${current.bust_games}`}
                     sub="20+ pts / <5 pts"
                   />
                 </div>
 
-                {/* Volume — position-aware so we don't show "0 carries" for WRs */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
-                  <StatTile label="Total yds" value={player.total_yds.toLocaleString()} />
-                  <StatTile label="Total TDs" value={player.total_tds} tone="pos" />
-                  {(player.position_group === 'wr' || player.position_group === 'te') && (
+                  <StatTile label="Total yds" value={current.total_yds.toLocaleString()} />
+                  <StatTile label="Total TDs" value={current.total_tds} tone="pos" />
+                  {(positionGroup === 'wr' || positionGroup === 'te') && (
                     <>
                       <StatTile
                         label="Receptions"
-                        value={player.total_receptions}
-                        sub={player.total_targets ? `${player.total_targets} tgt` : undefined}
+                        value={current.total_receptions}
+                        sub={current.total_targets ? `${current.total_targets} tgt` : undefined}
                       />
                       <StatTile
                         label="Catch %"
                         value={
-                          player.total_targets > 0
-                            ? `${Math.round((player.total_receptions / player.total_targets) * 100)}%`
+                          current.total_targets > 0
+                            ? `${Math.round((current.total_receptions / current.total_targets) * 100)}%`
                             : '—'
                         }
                       />
                     </>
                   )}
-                  {player.position_group === 'rb' && (
+                  {positionGroup === 'rb' && (
                     <>
-                      <StatTile label="Carries" value={player.total_carries} />
-                      <StatTile label="Receptions" value={player.total_receptions} sub={`${player.total_targets} tgt`} />
+                      <StatTile label="Carries" value={current.total_carries} />
+                      <StatTile
+                        label="Receptions"
+                        value={current.total_receptions}
+                        sub={current.total_targets ? `${current.total_targets} tgt` : undefined}
+                      />
                     </>
                   )}
-                  {player.position_group === 'qb' && (
+                  {positionGroup === 'qb' && (
                     <>
-                      <StatTile label="Snaps total" value={player.snaps_total.toLocaleString()} />
+                      <StatTile label="Snaps total" value={current.snaps_total.toLocaleString()} />
                       <StatTile label="" value="" />
                     </>
                   )}
@@ -249,10 +336,14 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
             ) : (
               <div className="bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl p-6 text-center">
                 <p className="text-sm font-bold text-slate-500 dark:text-slate-400">
-                  {player.is_rookie ? 'No NFL stats yet — rookie season hasn\'t kicked off.' : 'No stats available for this player.'}
+                  {current
+                    ? `No games for ${current.season}.`
+                    : player.is_rookie
+                    ? "No NFL stats yet — rookie season hasn't kicked off."
+                    : 'No stats available for this player.'}
                 </p>
                 <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                  Stats appear once games are played and ETL ingests them.
+                  {seasons.length > 1 ? 'Use the year tabs to view past seasons.' : 'Stats appear once games are played and ETL ingests them.'}
                 </p>
               </div>
             )}

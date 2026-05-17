@@ -32,9 +32,12 @@ OFFENSIVE_POSITIONS = TRACKED_POSITIONS  # Backwards-compatible alias
 MODEL_NAME = 'all-MiniLM-L6-v2' 
 AI_MATCH_THRESHOLD = 0.80 
 
-# STRICT Column Definition for safe concatenation
+# STRICT Column Definition for safe concatenation.
+# `pfr_id` is included so downstream joins can always use a single key —
+# nflreadpy historical snaps key on pfr_player_id, so persisting it here lets
+# every season (current + historical) share the same join column.
 INTERMEDIATE_COLS = [
-    "player_id", "player_name", "season", "week", 
+    "player_id", "pfr_id", "player_name", "season", "week",
     "offense_snaps", "offense_pct", "defense_snaps", "defense_pct", "position"
 ]
 
@@ -286,8 +289,11 @@ def main():
     print("Filtering for Relevant Positions...")
     final_clean = final_df.filter(pl.col("position").is_in(OFFENSIVE_POSITIONS))
     
-    # Drop position column from output
-    output_cols = ["player_id", "player_name", "season", "week", "offense_snaps", "offense_pct", "defense_snaps", "defense_pct"]
+    # Drop position column from output; keep pfr_id for unified joins.
+    output_cols = [
+        "player_id", "pfr_id", "player_name", "season", "week",
+        "offense_snaps", "offense_pct", "defense_snaps", "defense_pct",
+    ]
     final_clean = final_clean.select(output_cols)
     
     # Type Safety

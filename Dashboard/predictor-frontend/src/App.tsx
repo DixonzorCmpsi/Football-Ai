@@ -135,6 +135,10 @@ export default function App() {
   // previous view. goBack() pops. Powers the persistent Back button in the header
   // so users always have a single-click escape route.
   const [navStack, setNavStack] = useState<ViewMode[]>([]);
+  // Stash so Back from HISTORY → TIERS reopens the team/player modal the user
+  // was looking at when they clicked History.
+  type ModalReturn = { team: string; focusPlayerId?: string | null; detailPlayerId?: string | null };
+  const [modalReturn, setModalReturn] = useState<ModalReturn | null>(null);
   const setViewMode = (next: ViewMode) => {
     if (next !== viewMode) {
       setNavStack((prev) => (prev[prev.length - 1] === viewMode ? prev : [...prev, viewMode]));
@@ -146,6 +150,15 @@ export default function App() {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       setViewModeRaw(last);
+      // If we're returning to TIERS and we stashed a modal, restore it.
+      if (last === 'TIERS' && modalReturn) {
+        setTeamModal({
+          team: modalReturn.team,
+          focusPlayerId: modalReturn.focusPlayerId ?? null,
+          initialDetailPlayerId: modalReturn.detailPlayerId ?? null,
+        });
+        setModalReturn(null);
+      }
       return prev.slice(0, -1);
     });
   };
@@ -176,7 +189,11 @@ export default function App() {
     try { localStorage.setItem('tierList.state', JSON.stringify(tierState)); } catch { /* ignore */ }
   }, [tierState]);
 
-  const [teamModal, setTeamModal] = useState<{ team: string; focusPlayerId?: string | null } | null>(null);
+  const [teamModal, setTeamModal] = useState<{
+    team: string;
+    focusPlayerId?: string | null;
+    initialDetailPlayerId?: string | null;
+  } | null>(null);
 
   const toggleCompare = (playerId: string) => {
     setCompareList(prev => {
@@ -587,10 +604,17 @@ export default function App() {
         <TeamOffenseModal
           team={teamModal.team}
           focusPlayerId={teamModal.focusPlayerId ?? null}
+          initialDetailPlayerId={teamModal.initialDetailPlayerId ?? null}
           onClose={() => setTeamModal(null)}
           compareList={compareList}
           onToggleCompare={toggleCompare}
-          onViewHistory={(id) => {
+          onViewHistory={(id, ctx) => {
+            // Capture modal state so Back from HISTORY reopens it naturally.
+            setModalReturn({
+              team: teamModal.team,
+              focusPlayerId: teamModal.focusPlayerId ?? null,
+              detailPlayerId: ctx?.detailPlayerId ?? null,
+            });
             setTeamModal(null);
             setSelectedHistoryId(id);
             setHistoryFrom('TIERS');

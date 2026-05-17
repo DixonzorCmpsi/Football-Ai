@@ -67,6 +67,33 @@ def create_player_profiles(season):
                     pl.coalesce(pl.col('height'), pl.col('height_players')).alias('height')
                 ).drop('height_players')
 
+        # Draft picks: rosters often omit `draft_number` (e.g. the current season
+        # before the draft data has been merged in). load_draft_picks is the
+        # canonical source — join it in so vets always get a pick number, and the
+        # column is guaranteed to exist in the output regardless of season.
+        try:
+            picks = nfl.load_draft_picks()  # all seasons; small table
+            if not picks.is_empty() and 'gsis_id' in picks.columns and 'pick' in picks.columns:
+                picks_subset = (
+                    picks.select(['gsis_id', 'pick'])
+                    .drop_nulls(subset=['gsis_id'])
+                    .unique(subset=['gsis_id'], keep='last')
+                    .rename({'pick': 'draft_number_picks'})
+                )
+                rosters = rosters.join(picks_subset, on='gsis_id', how='left')
+                if 'draft_number' in rosters.columns:
+                    rosters = rosters.with_columns(
+                        pl.coalesce(pl.col('draft_number'), pl.col('draft_number_picks')).alias('draft_number')
+                    ).drop('draft_number_picks')
+                else:
+                    rosters = rosters.rename({'draft_number_picks': 'draft_number'})
+                print(f"[DEBUG Draft] Joined {picks_subset.height} draft picks; {rosters['draft_number'].drop_nulls().len()} rosters now have a pick.")
+        except Exception as e:
+            print(f"[DEBUG Draft] load_draft_picks join failed: {e}")
+            # Ensure the column still exists so downstream code never has to ask.
+            if 'draft_number' not in rosters.columns:
+                rosters = rosters.with_columns(pl.lit(None).cast(pl.Int64).alias('draft_number'))
+
         profile_columns_source = [
             'gsis_id', 'pfr_id', 'full_name', 'position', 'team', # Added pfr_id here
             'headshot_url', 'entry_year', 'draft_number',
@@ -75,6 +102,9 @@ def create_player_profiles(season):
         ]
         available_columns = [col for col in profile_columns_source if col in rosters.columns]
         player_profiles = rosters.select(available_columns)
+        # Guarantee draft_number column exists in the output even when no source had it.
+        if 'draft_number' not in player_profiles.columns:
+            player_profiles = player_profiles.with_columns(pl.lit(None).cast(pl.Int64).alias('draft_number'))
 
         if 'birth_date' in player_profiles.columns:
             print("[DEBUG AgeCalc] Calculating age...")

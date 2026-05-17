@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { X, Plus, Check, History } from 'lucide-react';
 import { getTeamColor } from '../utils/nflColors';
@@ -52,10 +52,13 @@ interface TeamOffenseResponse {
 interface Props {
   team: string;
   focusPlayerId?: string | null;
+  initialDetailPlayerId?: string | null;
   onClose: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
-  onViewHistory: (id: string) => void;
+  // `ctx` lets App stash which player-detail modal was open so Back from History
+  // can restore it. Optional so existing callers (Schedule/Lookup) keep working.
+  onViewHistory: (id: string, ctx?: { detailPlayerId?: string | null }) => void;
 }
 
 const GROUP_ORDER: Array<{ key: keyof Omit<TeamOffenseResponse, 'team'>; label: string }> = [
@@ -201,6 +204,7 @@ const PlayerRow: React.FC<{
 const TeamOffenseModal: React.FC<Props> = ({
   team,
   focusPlayerId,
+  initialDetailPlayerId,
   onClose,
   compareList,
   onToggleCompare,
@@ -210,6 +214,21 @@ const TeamOffenseModal: React.FC<Props> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailPlayer, setDetailPlayer] = useState<OffensePlayer | null>(null);
+
+  // When App restores us with an initial detail player (e.g. after Back from
+  // History), open that player's detail modal once the roster has loaded. Guarded
+  // with a ref so closing the detail modal doesn't immediately reopen it.
+  const restoredInitialRef = useRef(false);
+  useEffect(() => {
+    if (restoredInitialRef.current) return;
+    if (!initialDetailPlayerId || !data) return;
+    const all = [...data.qb, ...data.rb, ...data.wr, ...data.te, ...data.ol];
+    const match = all.find((p) => p.player_id === initialDetailPlayerId);
+    if (match) {
+      setDetailPlayer(match);
+      restoredInitialRef.current = true;
+    }
+  }, [initialDetailPlayerId, data]);
 
   useEffect(() => {
     let active = true;
@@ -374,7 +393,9 @@ const TeamOffenseModal: React.FC<Props> = ({
                             isComparing={compareList.includes(p.player_id)}
                             onToggleCompare={onToggleCompare}
                             onViewHistory={(id) => {
-                              onViewHistory(id);
+                              // No detail-modal context: history was opened
+                              // directly from a row in the roster grid.
+                              onViewHistory(id, { detailPlayerId: null });
                               onClose();
                             }}
                             onOpenDetail={setDetailPlayer}
@@ -397,7 +418,9 @@ const TeamOffenseModal: React.FC<Props> = ({
           isComparing={compareList.includes(detailPlayer.player_id)}
           onToggleCompare={onToggleCompare}
           onViewHistory={(id) => {
-            onViewHistory(id);
+            // Capture which detail modal was open so App can restore it after
+            // the user pops out of History.
+            onViewHistory(id, { detailPlayerId: detailPlayer.player_id });
             setDetailPlayer(null);
             onClose();
           }}
