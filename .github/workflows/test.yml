@@ -1,0 +1,41 @@
+name: Backend tests
+
+on:
+  push:
+    branches: [vm_main]
+  pull_request:
+    branches: [vm_main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      # We deliberately run a focused subset: the regression-guard test for
+      # `_merge_rows_into_profile` plus other tests that don't require a live DB
+      # or pre-populated CSV data. As more tests stabilize (no external state)
+      # they should be added here.
+      - name: Run regression tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          pytest \
+            tests/test_merge_rookies.py \
+            tests/test_defense_csv_parsing.py \
+            tests/test_run_etl.py \
+            -v

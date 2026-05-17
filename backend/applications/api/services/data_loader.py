@@ -224,11 +224,12 @@ def _fetch_and_cache_historical_stats(season: int) -> pl.DataFrame:
         return pl.DataFrame()
 
 
-def load_historical_stats(seasons: tuple[int, ...] = (CURRENT_SEASON - 2, CURRENT_SEASON - 1)) -> None:
+def load_historical_stats(seasons: tuple[int, ...] = tuple(CURRENT_SEASON - n for n in range(5, 0, -1))) -> None:
     """Populate `model_data['df_player_stats_history']` with prior-season weekly stats.
 
     Combined dataframe across the requested seasons; safe to call repeatedly (uses
-    CSV cache).
+    CSV cache). Also loads prior-season snap counts into `df_snap_counts_history`
+    so the player history endpoint can show real snap pct for past seasons.
     """
     frames = []
     for s in seasons:
@@ -242,3 +243,77 @@ def load_historical_stats(seasons: tuple[int, ...] = (CURRENT_SEASON - 2, CURREN
         logger.info(f"Loaded {sum(len(f) for f in frames)} historical stat rows into df_player_stats_history")
     else:
         model_data["df_player_stats_history"] = pl.DataFrame()
+
+    snap_frames = []
+    for s in seasons:
+        if s == CURRENT_SEASON:
+            continue
+        df = _fetch_and_cache_historical_snaps(int(s))
+        if not df.is_empty():
+            snap_frames.append(df)
+    if snap_frames:
+        model_data["df_snap_counts_history"] = pl.concat(snap_frames, how="diagonal_relaxed")
+        logger.info(
+            f"Loaded {sum(len(f) for f in snap_frames)} historical snap rows into df_snap_counts_history"
+        )
+    else:
+        model_data["df_snap_counts_history"] = pl.DataFrame()
+
+
+def _historical_snaps_csv_path(season: int) -> str:
+    import os
+
+    return os.path.join(RAG_DIR, f"weekly_snap_counts_{season}.csv")
+
+
+def _normalize_snap_schema(df: pl.DataFrame, season: int) -> pl.DataFrame:
+    """Bring a snap-count frame into the canonical schema used everywhere.
+
+    nflreadpy keys snaps on `pfr_player_id`; the current-season ETL renames it
+    to `pfr_id` so both sources can be joined on a single column. Apply the same
+    rename to historical frames (fresh fetch *and* cached CSVs) so callers never
+    have to branch.
+    """
+    if df.is_empty():
+        return df
+    if "season" not in df.columns:
+        df = df.with_columns(pl.lit(int(season)).alias("season"))
+    if "pfr_player_id" in df.columns and "pfr_id" not in df.columns:
+        df = df.rename({"pfr_player_id": "pfr_id"})
+    return df
+
+
+def _fetch_and_cache_historical_snaps(season: int) -> pl.DataFrame:
+    """Pull a season of snap counts from nflreadpy and cache as CSV.
+
+    Output always has `pfr_id` (renamed from nflreadpy's `pfr_player_id`) so
+    every consumer can use one join key regardless of season.
+    """
+    import os
+
+    cache = _historical_snaps_csv_path(season)
+    if os.path.exists(cache):
+        try:
+            df = pl.read_csv(cache, ignore_errors=True)
+            if not df.is_empty():
+                return _normalize_snap_schema(df, season)
+        except Exception as e:
+            logger.warning(f"Reading cached {cache} failed: {e}")
+
+    try:
+        import nflreadpy as nfl
+
+        raw = nfl.load_snap_counts(seasons=int(season))
+        if raw is None or raw.is_empty():
+            logger.info(f"nflreadpy returned no snap counts for {season}")
+            return pl.DataFrame()
+        raw = _normalize_snap_schema(raw, season)
+        try:
+            raw.write_csv(cache)
+            logger.info(f"Cached {len(raw)} snap rows for {season} at {cache}")
+        except Exception as e:
+            logger.warning(f"Failed to write cache {cache}: {e}")
+        return raw
+    except Exception as e:
+        logger.warning(f"nflreadpy historical snaps fetch failed for {season}: {e}")
+        return pl.DataFrame()

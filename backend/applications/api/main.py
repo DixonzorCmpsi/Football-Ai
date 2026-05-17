@@ -20,6 +20,23 @@ async def lifespan(app: FastAPI):
     # --- STARTUP ---
     logger.info("Server startup sequence initiated")
     try:
+        # 0. Schema migration (idempotent). `ADD COLUMN IF NOT EXISTS` is a no-op
+        # after the first run; the backfill only touches NULL rows. Runs before
+        # data load so df_profile sees the new columns.
+        if DB_CONNECTION_STRING:
+            try:
+                import sys as _sys, os as _os
+                _rag = _os.path.join(_os.path.dirname(__file__), "..", "..", "rag_data")
+                if _rag not in _sys.path:
+                    _sys.path.insert(0, _os.path.abspath(_rag))
+                from sqlalchemy import create_engine as _create_engine
+                from migrate_schema import run_migrations as _run_migrations, get_current_season as _gcs
+                _engine = _create_engine(DB_CONNECTION_STRING)
+                _run_migrations(_engine, int(_gcs()), log=lambda m: logger.info(f"[migration] {m}"))
+                _engine.dispose()
+            except Exception as e:
+                logger.warning(f"Schema migration skipped: {e}")
+
         # 1. Load ML Models (best-effort: don't let xgboost/libomp issues block data load).
         model_data["models"] = {}
         for pos, paths in MODELS_CONFIG.items():

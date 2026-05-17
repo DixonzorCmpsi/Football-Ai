@@ -1,0 +1,11 @@
+# Lean subset for CI / local test runs. Excludes the heavy ML + scraping deps
+# from requirements.txt that aren't needed to exercise the regression tests.
+# If a future test needs nflreadpy / torch / sentence-transformers, either add
+# the dep here or skip the test in CI via a marker.
+pytest
+polars
+numpy
+fastapi
+pydantic
+python-dotenv
+sqlalchemy

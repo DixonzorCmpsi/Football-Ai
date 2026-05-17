@@ -64,10 +64,13 @@ export interface BroadcastCardData {
 }
 
 export interface HistoryEntry {
+  season: number;
   week: number;
   opponent: string;
   points: number;
   passing_yds: number;
+  passing_tds: number;
+  pass_attempts: number;
   rushing_yds: number;
   receiving_yds: number;
   touchdowns: number;
@@ -301,6 +304,57 @@ export const useSchedule = (week: number) => {
   }, [week]); 
 
   return { games, loadingSchedule: loading };
+};
+
+export interface SeasonStats {
+  season: number;
+  games_played: number;
+  season_total_pts: number;
+  season_avg_pts: number;
+  recent_avg_pts: number;
+  boom_games: number;
+  bust_games: number;
+  total_yds: number;
+  total_tds: number;
+  total_receptions: number;
+  total_targets: number;
+  total_carries: number;
+  snaps_total: number;
+  snap_pct_avg: number;
+}
+
+export interface PlayerSeasonStatsResponse {
+  player_id: string;
+  position_group?: 'qb' | 'rb' | 'wr' | 'te';
+  seasons: SeasonStats[];
+}
+
+export const usePlayerSeasonStats = (playerId: string | null) => {
+  const [data, setData] = useState<PlayerSeasonStatsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!playerId) {
+      setData(null);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    axios
+      .get(`${API_BASE_URL}/player/${playerId}/season_stats`)
+      .then((res) => {
+        if (active) setData(res.data);
+      })
+      .catch((err) => console.error('Season stats error:', err))
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [playerId]);
+
+  return { seasonData: data, loadingSeasons: loading };
 };
 
 export const usePlayerHistory = (playerId: string | null) => {
