@@ -186,6 +186,8 @@ async def get_team_offense(team_abbr: str):
         model_data.get("df_snap_counts", pl.DataFrame()),
     )
 
+    starter_ids: set = model_data.get("starter_gsis_ids", set())
+
     def _row_to_dict(row, pos_group):
         pid = str(row.get("player_id"))
         draft_year = row.get("draft_year")
@@ -203,6 +205,9 @@ async def get_team_offense(team_abbr: str):
             "image": row.get("headshot") or get_headshot_url(pid),
             "injury_status": model_data.get("injury_map", {}).get(pid, row.get("injury_status") or "Active"),
             "is_rookie": draft_year_int == int(CURRENT_SEASON),
+            # Source: nflreadpy depth chart (pos_rank == 1). When depth chart
+            # data isn't loaded, this falls to False rather than guessing.
+            "is_starter": pid in starter_ids,
             "draft_year": draft_year_int,
             "draft_number": row.get("draft_number"),
             "age": row.get("age"),

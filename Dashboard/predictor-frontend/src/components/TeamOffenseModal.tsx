@@ -18,6 +18,8 @@ export interface OffensePlayer {
   image?: string;
   injury_status?: string;
   is_rookie: boolean;
+  // Sourced from nflreadpy depth chart (pos_rank == 1); not inferred from snaps.
+  is_starter?: boolean;
   draft_year?: number | null;
   draft_number?: number | null;
   age?: number | null;
@@ -79,8 +81,9 @@ const PlayerRow: React.FC<{
   onToggleCompare: (id: string) => void;
   onViewHistory: (id: string) => void;
   onOpenDetail: (p: OffensePlayer) => void;
-}> = ({ p, rank, groupTopSnap, groupTopPpg, isFocus, isComparing, onToggleCompare, onViewHistory, onOpenDetail }) => {
-  const isStarter = rank === 0 && (p.snap_pct_avg > 40 || p.games_played === 0);
+}> = ({ p, rank: _rank, groupTopSnap, groupTopPpg, isFocus, isComparing, onToggleCompare, onViewHistory, onOpenDetail }) => {
+  // Authoritative source: nflreadpy depth chart on the server. No client-side guessing.
+  const isStarter = !!p.is_starter;
   const snapShare = groupTopSnap > 0 ? Math.min(100, (p.snap_pct_avg / groupTopSnap) * 100) : 0;
   const ppgShare = groupTopPpg > 0 ? Math.min(100, (p.season_avg_pts / groupTopPpg) * 100) : 0;
   const status = (p.injury_status || '').toLowerCase();

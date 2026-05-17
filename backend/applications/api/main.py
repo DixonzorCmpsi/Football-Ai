@@ -10,7 +10,7 @@ import polars as pl
 
 from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, DB_CONNECTION_STRING, CURRENT_SEASON
 from .state import model_data
-from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats
+from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
 from .services.etl import etl_trigger_wrapper, run_daily_etl_async
 from .routes import players, games, general, debug, tier_list
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
@@ -76,6 +76,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Historical stats load schedule failed: {e}")
 
+        # 2b-3. Load current-season depth charts so `is_starter` reflects the real
+        # depth chart (pos_rank == 1) rather than a snap-count heuristic.
+        try:
+            asyncio.create_task(asyncio.to_thread(load_depth_charts))
+        except Exception as e:
+            logger.warning(f"Depth charts load schedule failed: {e}")
+
         # 2c. Fire-and-forget background refresh from ESPN so we have fresh rookies
         # without delaying startup. Only runs if the CSV is missing/stale.
         try:
@@ -102,6 +109,8 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(run_rookie_refresh, 'cron', hour=6, minute=15, id='rookie_refresh')
         # Daily historical stats refresh (idempotent — reads cache if recent).
         scheduler.add_job(load_historical_stats, 'cron', hour=6, minute=20, id='historical_stats')
+        # Daily depth chart refresh so `is_starter` tracks roster moves.
+        scheduler.add_job(load_depth_charts, 'cron', hour=6, minute=25, id='depth_charts')
         scheduler.start()
         logger.info("Scheduler active: ETL 06:00, rookie refresh 06:15, app-state hourly.")
         
