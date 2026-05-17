@@ -224,6 +224,82 @@ def _fetch_and_cache_historical_stats(season: int) -> pl.DataFrame:
         return pl.DataFrame()
 
 
+def _depth_chart_csv_path(season: int) -> str:
+    import os
+
+    return os.path.join(RAG_DIR, f"depth_charts_{season}.csv")
+
+
+_OFFENSE_POS_ABBS = ("QB", "RB", "FB", "WR", "TE")
+
+
+def _fetch_and_cache_depth_charts(season: int) -> pl.DataFrame:
+    """Pull current-season offensive depth charts from nflreadpy.
+
+    nflreadpy emits one row per (player, slot, snapshot date). We dedupe to the
+    latest entry per (gsis_id, pos_id, pos_slot) so the file represents the
+    current depth chart, not its history. Filtered to offensive skill positions.
+    """
+    import os
+
+    cache = _depth_chart_csv_path(season)
+    if os.path.exists(cache):
+        try:
+            df = pl.read_csv(cache, ignore_errors=True)
+            if not df.is_empty():
+                return df
+        except Exception as e:
+            logger.warning(f"Reading cached {cache} failed: {e}")
+
+    try:
+        import nflreadpy as nfl
+
+        raw = nfl.load_depth_charts(seasons=int(season))
+        if raw is None or raw.is_empty():
+            logger.info(f"nflreadpy returned no depth charts for {season}")
+            return pl.DataFrame()
+        offense = raw.filter(pl.col("pos_abb").is_in(list(_OFFENSE_POS_ABBS)))
+        offense = offense.sort("dt", descending=True).unique(
+            subset=["gsis_id", "pos_id", "pos_slot"], keep="first"
+        )
+        try:
+            offense.write_csv(cache)
+            logger.info(f"Cached {len(offense)} depth chart rows for {season} at {cache}")
+        except Exception as e:
+            logger.warning(f"Failed to write cache {cache}: {e}")
+        return offense
+    except Exception as e:
+        logger.warning(f"Depth charts fetch failed for {season}: {e}")
+        return pl.DataFrame()
+
+
+def load_depth_charts(season: int = CURRENT_SEASON) -> None:
+    """Populate `model_data['df_depth_charts']` + precomputed `starter_gsis_ids`.
+
+    `is_starter` on each player flows from nflreadpy's depth chart (pos_rank == 1
+    at any offensive slot), which is an explicit authoritative source — not a
+    fallback or inference from snap counts.
+    """
+    df = _fetch_and_cache_depth_charts(int(season))
+    if df.is_empty() or "gsis_id" not in df.columns or "pos_rank" not in df.columns:
+        model_data["df_depth_charts"] = pl.DataFrame()
+        model_data["starter_gsis_ids"] = set()
+        return
+    model_data["df_depth_charts"] = df
+    starters = (
+        df.filter(pl.col("pos_rank") == 1)
+        .drop_nulls(subset=["gsis_id"])
+        .select("gsis_id")
+        .unique()
+        ["gsis_id"]
+        .to_list()
+    )
+    model_data["starter_gsis_ids"] = set(s for s in starters if s)
+    logger.info(
+        f"Depth charts: {len(model_data['starter_gsis_ids'])} starters loaded for {season}"
+    )
+
+
 def load_historical_stats(seasons: tuple[int, ...] = tuple(CURRENT_SEASON - n for n in range(5, 0, -1))) -> None:
     """Populate `model_data['df_player_stats_history']` with prior-season weekly stats.
 
