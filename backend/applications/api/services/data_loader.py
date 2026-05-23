@@ -7,6 +7,34 @@ from ..config import logger, DB_CONNECTION_STRING, RAG_DIR, CURRENT_SEASON
 from ..state import model_data
 from .utils import enforce_types
 
+DERIVED_CACHE_KEYS = (
+    "team_rankings_cache",
+    "player_position_rankings_cache",
+    "team_sack_context_cache",
+    "season_team_sack_context_cache",
+)
+
+# Short-lived current-roster corrections for moves that upstream offseason feeds
+# can lag on. Keep these specific and dated so they can be removed once source
+# rosters catch up.
+CURRENT_TEAM_OVERRIDES = {
+    # David Njoku agreed to a one-year deal with the Chargers on 2026-05-11.
+    "00-0033885": "LAC",
+}
+
+
+def invalidate_derived_caches() -> None:
+    """Clear request-time derived data after ETL/data reloads.
+
+    Team rankings and player position finishes are computed from roster,
+    historical player stats, and team stat tables. They must not survive a daily
+    ETL refresh when the container is configured to reload in-process instead of
+    restarting.
+    """
+    for key in DERIVED_CACHE_KEYS:
+        model_data.pop(key, None)
+
+
 def load_data_source(query: str, csv_filename: str, retries: int = 3, retry_delay: float = 1.0):
     """Try DB first with retries. By default the server runs in DB-only mode (no CSV fallback) unless ALLOW_CSV_FALLBACK is set to 'true'."""
     ALLOW_CSV_FALLBACK = os.getenv("ALLOW_CSV_FALLBACK", "false").lower() == "true"
@@ -45,8 +73,35 @@ def load_data_source(query: str, csv_filename: str, retries: int = 3, retry_dela
     logger.warning(f"Returning empty DataFrame for {csv_filename} (DB-only mode)")
     return pl.DataFrame()
 
+
+def apply_current_roster_overrides() -> None:
+    """Patch known offseason roster-feed lag in loaded profile/depth-chart frames."""
+    if not CURRENT_TEAM_OVERRIDES:
+        return
+
+    profile = model_data.get("df_profile", pl.DataFrame())
+    if not profile.is_empty() and "player_id" in profile.columns:
+        exprs = []
+        for col in ("team", "team_abbr", "recent_team"):
+            if col not in profile.columns:
+                continue
+            expr = pl.col(col)
+            for player_id, team in CURRENT_TEAM_OVERRIDES.items():
+                expr = pl.when(pl.col("player_id") == player_id).then(pl.lit(team)).otherwise(expr)
+            exprs.append(expr.alias(col))
+        if exprs:
+            model_data["df_profile"] = profile.with_columns(exprs)
+
+    depth = model_data.get("df_depth_charts", pl.DataFrame())
+    if not depth.is_empty() and "gsis_id" in depth.columns and "team" in depth.columns:
+        expr = pl.col("team")
+        for player_id, team in CURRENT_TEAM_OVERRIDES.items():
+            expr = pl.when(pl.col("gsis_id") == player_id).then(pl.lit(team)).otherwise(expr)
+        model_data["df_depth_charts"] = depth.with_columns(expr.alias("team"))
+
 def refresh_db_data():
     logger.info("Loading dataframes from DB/CVS sources...")
+    invalidate_derived_caches()
     sources = {
         "df_profile": ("SELECT * FROM player_profiles", f"player_profiles_{CURRENT_SEASON}.csv"),
         "df_schedule": ("SELECT * FROM schedule", f"schedule_{CURRENT_SEASON}.csv"),
@@ -60,6 +115,8 @@ def refresh_db_data():
     
     for key, (query, csv) in sources.items():
         model_data[key] = load_data_source(query, csv)
+
+    apply_current_roster_overrides()
 
     # If critical tables are empty, attempt an aggressive retry for player stats and snaps
     if ("df_player_stats" in model_data and model_data["df_player_stats"].is_empty()) or ("df_snap_counts" in model_data and model_data["df_snap_counts"].is_empty()):
@@ -107,6 +164,7 @@ def refresh_db_data():
             model_data["sleeper_map"] = dict(zip(map_df['sleeper_id'].cast(pl.Utf8).to_list(), map_df['gsis_id'].to_list()))
     except Exception: pass
 
+    model_data["data_loaded_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     logger.info("Data loaded into memory.")
 
 def refresh_app_state():
@@ -230,26 +288,58 @@ def _depth_chart_csv_path(season: int) -> str:
     return os.path.join(RAG_DIR, f"depth_charts_{season}.csv")
 
 
-_OFFENSE_POS_ABBS = ("QB", "RB", "FB", "WR", "TE")
+_DEPTH_CHART_POS_ABBS = (
+    "QB", "RB", "FB", "WR", "TE",
+    "LT", "LG", "C", "RG", "RT",
+    "LDE", "RDE", "LDT", "RDT", "NT",
+    "SLB", "WLB", "MLB", "LILB", "RILB",
+    "LCB", "RCB", "NB", "SS", "FS",
+)
+_DEFENSE_POS_ABBS = {"LDE", "RDE", "LDT", "RDT", "NT", "SLB", "WLB", "MLB", "LILB", "RILB", "LCB", "RCB", "NB", "SS", "FS"}
+_OL_POS_ABBS = {"LT", "LG", "C", "RG", "RT"}
 
 
-def _fetch_and_cache_depth_charts(season: int) -> pl.DataFrame:
-    """Pull current-season offensive depth charts from nflreadpy.
+def _cache_is_fresh(path: str, max_age_hours: float) -> bool:
+    try:
+        return (time.time() - os.path.getmtime(path)) <= max_age_hours * 3600
+    except OSError:
+        return False
+
+
+def _depth_cache_has_full_lineup(df: pl.DataFrame) -> bool:
+    if df.is_empty() or "pos_abb" not in df.columns:
+        return False
+    positions = set(str(p) for p in df["pos_abb"].drop_nulls().unique().to_list())
+    return bool(positions & _DEFENSE_POS_ABBS) and bool(positions & _OL_POS_ABBS)
+
+
+def _fetch_and_cache_depth_charts(season: int, force: bool = False) -> pl.DataFrame:
+    """Pull current-season offensive and defensive depth charts from nflreadpy.
 
     nflreadpy emits one row per (player, slot, snapshot date). We dedupe to the
     latest entry per (gsis_id, pos_id, pos_slot) so the file represents the
-    current depth chart, not its history. Filtered to offensive skill positions.
+    current depth chart, not its history. Filtered to fantasy-relevant lineup
+    positions: offense, OL, and defensive starters.
     """
     import os
 
     cache = _depth_chart_csv_path(season)
-    if os.path.exists(cache):
+    max_age_hours = float(os.getenv("DEPTH_CHART_CACHE_TTL_HOURS", "6"))
+
+    def _read_cached_depth_chart() -> pl.DataFrame:
+        if not os.path.exists(cache):
+            return pl.DataFrame()
         try:
             df = pl.read_csv(cache, ignore_errors=True)
-            if not df.is_empty():
+            if not df.is_empty() and _depth_cache_has_full_lineup(df):
                 return df
         except Exception as e:
             logger.warning(f"Reading cached {cache} failed: {e}")
+        return pl.DataFrame()
+
+    cached = _read_cached_depth_chart()
+    if not force and not cached.is_empty() and _cache_is_fresh(cache, max_age_hours):
+        return cached
 
     try:
         import nflreadpy as nfl
@@ -257,37 +347,45 @@ def _fetch_and_cache_depth_charts(season: int) -> pl.DataFrame:
         raw = nfl.load_depth_charts(seasons=int(season))
         if raw is None or raw.is_empty():
             logger.info(f"nflreadpy returned no depth charts for {season}")
+            if not cached.is_empty():
+                logger.warning(f"Using stale cached depth charts for {season} after empty upstream response")
+                return cached
             return pl.DataFrame()
-        offense = raw.filter(pl.col("pos_abb").is_in(list(_OFFENSE_POS_ABBS)))
-        offense = offense.sort("dt", descending=True).unique(
+        lineup = raw.filter(pl.col("pos_abb").is_in(list(_DEPTH_CHART_POS_ABBS)))
+        lineup = lineup.sort("dt", descending=True).unique(
             subset=["gsis_id", "pos_id", "pos_slot"], keep="first"
         )
         try:
-            offense.write_csv(cache)
-            logger.info(f"Cached {len(offense)} depth chart rows for {season} at {cache}")
+            lineup.write_csv(cache)
+            logger.info(f"Cached {len(lineup)} depth chart rows for {season} at {cache}")
         except Exception as e:
             logger.warning(f"Failed to write cache {cache}: {e}")
-        return offense
+        return lineup
     except Exception as e:
         logger.warning(f"Depth charts fetch failed for {season}: {e}")
+        if not cached.is_empty():
+            logger.warning(f"Using stale cached depth charts for {season} after fetch failure")
+            return cached
         return pl.DataFrame()
 
 
-def load_depth_charts(season: int = CURRENT_SEASON) -> None:
+def load_depth_charts(season: int = CURRENT_SEASON, force: bool = False) -> None:
     """Populate `model_data['df_depth_charts']` + precomputed `starter_gsis_ids`.
 
     `is_starter` on each player flows from nflreadpy's depth chart (pos_rank == 1
-    at any offensive slot), which is an explicit authoritative source — not a
+    at any lineup slot), which is an explicit authoritative source — not a
     fallback or inference from snap counts.
     """
-    df = _fetch_and_cache_depth_charts(int(season))
+    df = _fetch_and_cache_depth_charts(int(season), force=force)
     if df.is_empty() or "gsis_id" not in df.columns or "pos_rank" not in df.columns:
         model_data["df_depth_charts"] = pl.DataFrame()
         model_data["starter_gsis_ids"] = set()
+        model_data["depth_charts_loaded_at"] = None
         return
     model_data["df_depth_charts"] = df
+    apply_current_roster_overrides()
     starters = (
-        df.filter(pl.col("pos_rank") == 1)
+        model_data["df_depth_charts"].filter(pl.col("pos_rank") == 1)
         .drop_nulls(subset=["gsis_id"])
         .select("gsis_id")
         .unique()
@@ -295,6 +393,7 @@ def load_depth_charts(season: int = CURRENT_SEASON) -> None:
         .to_list()
     )
     model_data["starter_gsis_ids"] = set(s for s in starters if s)
+    model_data["depth_charts_loaded_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     logger.info(
         f"Depth charts: {len(model_data['starter_gsis_ids'])} starters loaded for {season}"
     )

@@ -4,7 +4,7 @@ import os
 import signal
 from datetime import datetime
 from ..config import logger, ETL_SCRIPT_PATH
-from .data_loader import refresh_app_state, refresh_db_data
+from .data_loader import refresh_app_state, refresh_db_data, load_depth_charts, load_historical_stats
 
 def trigger_container_restart():
     """
@@ -49,8 +49,10 @@ async def run_daily_etl_async(restart_after: bool = True):
                 trigger_container_restart()
             else:
                 # Just refresh in-memory data without restart
-                refresh_app_state()
                 refresh_db_data()
+                refresh_app_state()
+                load_historical_stats()
+                load_depth_charts(force=True)
         else:
             logger.error(f"ETL process exited with code {process.returncode}")
             if stderr: logger.error(f"STDERR: {stderr.decode()}")
