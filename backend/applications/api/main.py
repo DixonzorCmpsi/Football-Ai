@@ -110,9 +110,9 @@ async def lifespan(app: FastAPI):
         # Daily historical stats refresh (idempotent — reads cache if recent).
         scheduler.add_job(load_historical_stats, 'cron', hour=6, minute=20, id='historical_stats')
         # Daily depth chart refresh so `is_starter` tracks roster moves.
-        scheduler.add_job(load_depth_charts, 'cron', hour=6, minute=25, id='depth_charts')
+        scheduler.add_job(lambda: load_depth_charts(force=True), 'cron', hour=6, minute=25, id='depth_charts')
         scheduler.start()
-        logger.info("Scheduler active: ETL 06:00, rookie refresh 06:15, app-state hourly.")
+        logger.info("Scheduler active: ETL 06:00, rookie refresh 06:15, historical stats 06:20, depth charts 06:25, app-state hourly.")
         
         # Store scheduler in app state so we can shut it down
         app.state.scheduler = scheduler

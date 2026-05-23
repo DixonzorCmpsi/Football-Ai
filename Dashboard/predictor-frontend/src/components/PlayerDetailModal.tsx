@@ -20,6 +20,19 @@ const formatHeight = (inches?: number | null) => {
   return `${ft}'${inch}"`;
 };
 
+const formatStat = (value?: number | null, decimals = 0) => {
+  if (value == null) return '—';
+  return Number(value).toLocaleString(undefined, {
+    maximumFractionDigits: decimals,
+    minimumFractionDigits: decimals,
+  });
+};
+
+const formatSacks = (value?: number | null) => {
+  if (value == null) return '—';
+  return Number.isInteger(value) ? formatStat(value) : formatStat(value, 1);
+};
+
 const StatTile: React.FC<{ label: string; value: string | number; sub?: string; tone?: 'default' | 'pos' | 'neg' | 'muted' }> = ({
   label,
   value,
@@ -80,7 +93,9 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
   // "Has stats" now reflects the *selected* season — the prop-level value only
   // covers the current season aggregate (which is 0 in preseason).
   const hasStats = (current?.games_played ?? 0) > 0;
-  const positionGroup = (seasonData?.position_group ?? player.position_group) as 'qb' | 'rb' | 'wr' | 'te' | 'ol';
+  const positionGroup = (seasonData?.position_group ?? player.position_group) as OffensePlayer['position_group'];
+  const isDefensePosition = ['dl', 'lb', 'db'].includes(positionGroup);
+  const isOlPosition = positionGroup === 'ol';
   const status = (player.injury_status || '').toLowerCase();
   const statusBadge =
     status.includes('out') || status.includes('ir')
@@ -92,6 +107,21 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
       : null;
 
   const height = formatHeight(player.height ?? null);
+  const lastSeasonRank =
+    player.last_season_rank_position && player.last_season_position_rank
+      ? `${player.last_season_rank_position}${player.last_season_position_rank}`
+      : null;
+  const lastSeason = player.last_season ?? null;
+  const lastSeasonLabel = lastSeason ? String(lastSeason) : 'Last Season';
+  const hasLastSeasonFinish = !!lastSeasonRank;
+  const isIdpFinish = ['DL', 'LB', 'DB'].includes(player.last_season_rank_position || '');
+  const isOlFinish = player.last_season_rank_position === 'OL';
+  const lastSeasonTotal = player.last_season_total_pts ?? 0;
+  const lastSeasonAvg = player.last_season_avg_pts ?? 0;
+  const lastSeasonRateRank =
+    player.last_season_rank_position && player.last_season_position_ppg_rank
+      ? `${player.last_season_rank_position}${player.last_season_position_ppg_rank}`
+      : '—';
 
   return (
     <div
@@ -133,6 +163,11 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
               {statusBadge && (
                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${statusBadge.cls}`}>
                   {statusBadge.label}
+                </span>
+              )}
+              {lastSeasonRank && (
+                <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                  {lastSeason ? `${lastSeason} ` : ''}{lastSeasonRank}
                 </span>
               )}
             </div>
@@ -208,6 +243,93 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
             </div>
           </section>
 
+          {hasLastSeasonFinish && (
+            <section>
+              <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-2">
+                {lastSeasonLabel} {isOlFinish ? 'OL Snap Finish' : isIdpFinish ? 'Defensive Finish' : 'Fantasy Finish'}
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <StatTile
+                  label="Position rank"
+                  value={lastSeasonRank}
+                  sub={
+                    player.last_season_position_rank_out_of
+                      ? `of ${player.last_season_position_rank_out_of}`
+                      : undefined
+                  }
+                  tone="pos"
+                />
+                <StatTile
+                  label={isOlFinish ? 'Snap rate rank' : isIdpFinish ? 'Def pts/g rank' : 'PPG rank'}
+                  value={lastSeasonRateRank}
+                  sub={
+                    lastSeasonAvg
+                      ? isOlFinish
+                        ? `${Math.round(lastSeasonAvg)}% snap rate`
+                        : `${lastSeasonAvg.toFixed(1)} PPG`
+                      : undefined
+                  }
+                />
+                <StatTile
+                  label={isOlFinish ? 'Off snaps' : isIdpFinish ? 'Def pts total' : 'PPR total'}
+                  value={
+                    lastSeasonTotal
+                      ? isOlFinish
+                        ? Math.round(lastSeasonTotal).toLocaleString()
+                        : lastSeasonTotal.toFixed(1)
+                      : '—'
+                  }
+                  sub={isOlFinish && player.last_season_games_played ? `${player.last_season_games_played} games` : undefined}
+                />
+                {isOlFinish ? (
+                  <>
+                    <StatTile
+                      label="Team QB sacks"
+                      value={
+                        player.last_season_team_sacks_taken != null
+                          ? Math.round(player.last_season_team_sacks_taken)
+                          : '—'
+                      }
+                      sub={
+                        player.last_season_team_sacks_taken != null
+                          ? `${player.last_season_team || 'Team'} #${player.last_season_team_sacks_rank || '-'} · ${(player.last_season_team_sacks_per_game || 0).toFixed(2)}/g`
+                          : undefined
+                      }
+                      tone={
+                        player.last_season_team_sacks_rank && player.last_season_team_sacks_rank <= 10
+                          ? 'pos'
+                          : player.last_season_team_sacks_rank && player.last_season_team_sacks_rank >= 23
+                          ? 'neg'
+                          : 'default'
+                      }
+                    />
+                    <StatTile
+                      label="Team rush TD"
+                      value={player.last_season_team_rush_tds != null ? Math.round(player.last_season_team_rush_tds) : '—'}
+                      sub={
+                        player.last_season_team_rush_tds != null
+                          ? `${player.last_season_team || 'Team'} #${player.last_season_team_rush_tds_rank || '-'} · ${(player.last_season_team_rush_tds_per_game || 0).toFixed(2)}/g`
+                          : undefined
+                      }
+                      tone={
+                        player.last_season_team_rush_tds_rank && player.last_season_team_rush_tds_rank <= 10
+                          ? 'pos'
+                          : player.last_season_team_rush_tds_rank && player.last_season_team_rush_tds_rank >= 23
+                          ? 'neg'
+                          : 'default'
+                      }
+                    />
+                  </>
+                ) : (
+                  <StatTile
+                    label="Games"
+                    value={player.last_season_games_played || '—'}
+                  />
+                )}
+              </div>
+            </section>
+          )}
+
           {/* SEASON STATS (last 5, cyclable) */}
           <section>
             <div className="flex items-center justify-between mb-2 gap-2">
@@ -277,28 +399,97 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
                     value={current.games_played}
                     sub={current.snap_pct_avg > 0 ? `${Math.round(current.snap_pct_avg)}% snaps` : undefined}
                   />
-                  <StatTile
-                    label="PPG (PPR)"
-                    value={current.season_avg_pts.toFixed(1)}
-                    sub={`${current.season_total_pts.toFixed(0)} total`}
-                    tone="pos"
-                  />
-                  <StatTile
-                    label="Recent form"
-                    value={current.recent_avg_pts.toFixed(1)}
-                    sub="last 4 games"
-                  />
-                  <StatTile
-                    label="Boom / Bust"
-                    value={`${current.boom_games} / ${current.bust_games}`}
-                    sub="20+ pts / <5 pts"
-                  />
+                  {isDefensePosition ? (
+                    <>
+                      <StatTile
+                        label="Def pts/g"
+                        value={current.season_avg_pts.toFixed(1)}
+                        sub={`${current.season_total_pts.toFixed(0)} total`}
+                        tone="pos"
+                      />
+                      <StatTile label="Tackles" value={formatStat(current.def_tackles_total)} />
+                      <StatTile label="Pass breakups" value={formatStat(current.def_pass_defended)} />
+                    </>
+                  ) : isOlPosition ? (
+                    <>
+                      <StatTile label="Off snaps" value={current.snaps_total.toLocaleString()} />
+                      <StatTile
+                        label="Team QB sacks"
+                        value={formatSacks(current.team_sacks_taken)}
+                        sub={current.team_sacks_taken_team || undefined}
+                        tone={current.team_sacks_taken_rank && current.team_sacks_taken_rank <= 10 ? 'pos' : current.team_sacks_taken_rank && current.team_sacks_taken_rank >= 23 ? 'neg' : 'default'}
+                      />
+                      <StatTile
+                        label="Sacks/G"
+                        value={current.team_sacks_taken_per_game != null ? current.team_sacks_taken_per_game.toFixed(2) : '—'}
+                        sub={current.team_sacks_taken_rank ? `rank #${current.team_sacks_taken_rank}` : undefined}
+                      />
+                      <StatTile
+                        label="Team rush TD"
+                        value={current.team_rush_tds != null ? Math.round(current.team_rush_tds) : '—'}
+                        sub={current.team_sacks_taken_team || undefined}
+                        tone={current.team_rush_tds_rank && current.team_rush_tds_rank <= 10 ? 'pos' : current.team_rush_tds_rank && current.team_rush_tds_rank >= 23 ? 'neg' : 'default'}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <StatTile
+                        label="PPG (PPR)"
+                        value={current.season_avg_pts.toFixed(1)}
+                        sub={`${current.season_total_pts.toFixed(0)} total`}
+                        tone="pos"
+                      />
+                      <StatTile
+                        label="Recent form"
+                        value={current.recent_avg_pts.toFixed(1)}
+                        sub="last 4 games"
+                      />
+                      <StatTile
+                        label="Boom / Bust"
+                        value={`${current.boom_games} / ${current.bust_games}`}
+                        sub="20+ pts / <5 pts"
+                      />
+                    </>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
-                  <StatTile label="Total yds" value={current.total_yds.toLocaleString()} />
-                  <StatTile label="Total TDs" value={current.total_tds} tone="pos" />
-                  {(positionGroup === 'wr' || positionGroup === 'te') && (
+                  {isDefensePosition ? (
+                    <>
+                      <StatTile label="Sacks" value={formatSacks(current.def_sacks)} tone="pos" />
+                      <StatTile label="TFL" value={formatStat(current.def_tackles_for_loss)} />
+                      <StatTile label="QB hits" value={formatStat(current.def_qb_hits)} />
+                      <StatTile label="INT" value={formatStat(current.def_interceptions)} tone="pos" />
+                      <StatTile label="Forced fum" value={formatStat(current.def_fumbles_forced)} />
+                      <StatTile label="Fum rec" value={formatStat(current.def_fumble_recoveries)} />
+                    </>
+                  ) : isOlPosition ? (
+                    <>
+                      <StatTile
+                        label="Rush TD/G"
+                        value={current.team_rush_tds_per_game != null ? current.team_rush_tds_per_game.toFixed(2) : '—'}
+                        sub={current.team_rush_tds_rank ? `rank #${current.team_rush_tds_rank}` : undefined}
+                      />
+                      <StatTile
+                        label="Sack rank"
+                        value={current.team_sacks_taken_rank ? `#${current.team_sacks_taken_rank}` : '—'}
+                        sub={current.team_sacks_taken_rank_out_of ? `of ${current.team_sacks_taken_rank_out_of}` : undefined}
+                      />
+                      <StatTile
+                        label="Rush TD rank"
+                        value={current.team_rush_tds_rank ? `#${current.team_rush_tds_rank}` : '—'}
+                        sub={current.team_rush_tds_rank_out_of ? `of ${current.team_rush_tds_rank_out_of}` : undefined}
+                        tone={current.team_rush_tds_rank && current.team_rush_tds_rank <= 10 ? 'pos' : current.team_rush_tds_rank && current.team_rush_tds_rank >= 23 ? 'neg' : 'default'}
+                      />
+                      <StatTile label="Snap rate" value={current.snap_pct_avg > 0 ? `${Math.round(current.snap_pct_avg)}%` : '—'} />
+                    </>
+                  ) : (
+                    <>
+                      <StatTile label="Total yds" value={current.total_yds.toLocaleString()} />
+                      <StatTile label="Total TDs" value={current.total_tds} tone="pos" />
+                    </>
+                  )}
+                  {!isDefensePosition && !isOlPosition && (positionGroup === 'wr' || positionGroup === 'te') && (
                     <>
                       <StatTile
                         label="Receptions"
@@ -315,7 +506,7 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
                       />
                     </>
                   )}
-                  {positionGroup === 'rb' && (
+                  {!isDefensePosition && !isOlPosition && positionGroup === 'rb' && (
                     <>
                       <StatTile label="Carries" value={current.total_carries} />
                       <StatTile
@@ -325,10 +516,9 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
                       />
                     </>
                   )}
-                  {positionGroup === 'qb' && (
+                  {!isDefensePosition && !isOlPosition && positionGroup === 'qb' && (
                     <>
                       <StatTile label="Snaps total" value={current.snaps_total.toLocaleString()} />
-                      <StatTile label="" value="" />
                     </>
                   )}
                 </div>
@@ -362,7 +552,9 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
               <div className="bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3 border border-slate-200 dark:border-slate-700 text-xs">
                 <span className="font-bold text-slate-500 dark:text-slate-400">Depth: </span>
                 <span className="text-slate-800 dark:text-slate-100">
-                  {player.snap_pct_avg >= 70
+                  {player.is_starter
+                    ? 'Starter (depth chart)'
+                    : player.snap_pct_avg >= 70
                     ? 'Starter (workhorse)'
                     : player.snap_pct_avg >= 40
                     ? 'Starter / committee'

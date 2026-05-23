@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -12,6 +12,7 @@ import PlayoffView from './components/PlayoffView';
 import LiveScoresBar from './components/LiveScoresBar';
 import TierListView, { type TierListState } from './components/TierListView';
 import TeamOffenseModal from './components/TeamOffenseModal';
+import TeamsView from './components/TeamsView';
 import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
@@ -128,7 +129,7 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS';
+  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS';
   const [viewMode, setViewModeRaw] = useState<ViewMode>('SCHEDULE');
 
   // Navigation stack: every setViewMode() that actually changes view pushes the
@@ -137,7 +138,8 @@ export default function App() {
   const [navStack, setNavStack] = useState<ViewMode[]>([]);
   // Stash so Back from HISTORY → TIERS reopens the team/player modal the user
   // was looking at when they clicked History.
-  type ModalReturn = { team: string; focusPlayerId?: string | null; detailPlayerId?: string | null };
+  type TeamModalTab = 'overview' | 'builder';
+  type ModalReturn = { team: string; focusPlayerId?: string | null; detailPlayerId?: string | null; activeTab?: TeamModalTab };
   const [modalReturn, setModalReturn] = useState<ModalReturn | null>(null);
   const setViewMode = (next: ViewMode) => {
     if (next !== viewMode) {
@@ -150,12 +152,13 @@ export default function App() {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
       setViewModeRaw(last);
-      // If we're returning to TIERS and we stashed a modal, restore it.
-      if (last === 'TIERS' && modalReturn) {
+      // If we're returning to a team-context view and we stashed a modal, restore it.
+      if ((last === 'TIERS' || last === 'TEAMS') && modalReturn) {
         setTeamModal({
           team: modalReturn.team,
           focusPlayerId: modalReturn.focusPlayerId ?? null,
           initialDetailPlayerId: modalReturn.detailPlayerId ?? null,
+          initialTab: modalReturn.activeTab ?? 'overview',
         });
         setModalReturn(null);
       }
@@ -166,7 +169,7 @@ export default function App() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS'>('SCHEDULE');
+  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS'>('SCHEDULE');
 
   const [compareList, setCompareList] = useState<string[]>([]);
 
@@ -193,6 +196,7 @@ export default function App() {
     team: string;
     focusPlayerId?: string | null;
     initialDetailPlayerId?: string | null;
+    initialTab?: TeamModalTab;
   } | null>(null);
 
   const toggleCompare = (playerId: string) => {
@@ -249,8 +253,8 @@ export default function App() {
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
       
-      {/* LEFT SIDEBAR (hidden in TIERS mode — TierListView renders its own pool panels) */}
-      {showSidebars && viewMode !== 'TIERS' && (
+      {/* LEFT SIDEBAR (hidden where the main view needs the full width) */}
+      {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
@@ -337,10 +341,11 @@ export default function App() {
           
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
-              {(['SCHEDULE', 'PLAYOFFS', 'TIERS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+              {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
+                  {mode === 'TEAMS' && <Shield size={14}/>}
                   {mode === 'TIERS' && <Layers size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
@@ -390,6 +395,7 @@ export default function App() {
               <button onClick={() => { setViewMode('TRENDING'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Trending</button>
               <button onClick={() => { setViewMode('PICKS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Picks</button>
               <button onClick={() => { setViewMode('PLAYOFFS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Playoffs</button>
+              <button onClick={() => { setViewMode('TEAMS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Teams</button>
               <button onClick={() => { setViewMode('TIERS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Tier List</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
@@ -402,7 +408,7 @@ export default function App() {
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
-            <div className="flex items-center gap-3 bg-white dark:bg-slate-800 rounded-xl px-3 py-2 shadow-lg border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-2 bg-white dark:bg-slate-800 rounded-xl px-2 py-2 shadow-lg border border-slate-200 dark:border-slate-700">
               <button onClick={() => setViewMode('SCHEDULE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Schedule">
                 <Calendar size={18} />
               </button>
@@ -414,6 +420,9 @@ export default function App() {
               </button>
               <button onClick={() => setViewMode('TIERS')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Tier List">
                 <Layers size={18} />
+              </button>
+              <button onClick={() => setViewMode('TEAMS')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Teams">
+                <Shield size={18} />
               </button>
               <button onClick={() => setViewMode('COMPARE')} className="p-2 rounded-md text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700" aria-label="Compare">
                 <BarChart2 size={18} />
@@ -529,6 +538,11 @@ export default function App() {
             <PlayoffView />
           )}
 
+          {/* VIEW: TEAMS */}
+          {viewMode === 'TEAMS' && (
+            <TeamsView onOpenTeam={(team) => setTeamModal({ team })} />
+          )}
+
           {/* VIEW: TIER LIST — always mounted, just hidden when off-screen,
               so navigating to Compare/History and back preserves all local state
               (drag assignments, search input, scroll position). */}
@@ -605,6 +619,7 @@ export default function App() {
           team={teamModal.team}
           focusPlayerId={teamModal.focusPlayerId ?? null}
           initialDetailPlayerId={teamModal.initialDetailPlayerId ?? null}
+          initialTab={teamModal.initialTab ?? 'overview'}
           onClose={() => setTeamModal(null)}
           compareList={compareList}
           onToggleCompare={toggleCompare}
@@ -614,17 +629,18 @@ export default function App() {
               team: teamModal.team,
               focusPlayerId: teamModal.focusPlayerId ?? null,
               detailPlayerId: ctx?.detailPlayerId ?? null,
+              activeTab: ctx?.activeTab ?? teamModal.initialTab ?? 'overview',
             });
             setTeamModal(null);
             setSelectedHistoryId(id);
-            setHistoryFrom('TIERS');
+            setHistoryFrom(viewMode === 'TEAMS' ? 'TEAMS' : 'TIERS');
             setViewMode('HISTORY');
           }}
         />
       )}
 
-      {/* RIGHT SIDEBAR (hidden in TIERS mode) */}
-      {showSidebars && viewMode !== 'TIERS' && (
+      {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
+      {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>

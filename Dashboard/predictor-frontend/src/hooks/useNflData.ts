@@ -319,13 +319,32 @@ export interface SeasonStats {
   total_receptions: number;
   total_targets: number;
   total_carries: number;
+  def_tackles_total?: number;
+  def_tackles_solo?: number;
+  def_tackle_assists?: number;
+  def_tackles_for_loss?: number;
+  def_sacks?: number;
+  def_qb_hits?: number;
+  def_interceptions?: number;
+  def_pass_defended?: number;
+  def_fumbles_forced?: number;
+  def_fumble_recoveries?: number;
   snaps_total: number;
   snap_pct_avg: number;
+  team_sacks_taken?: number | null;
+  team_sacks_taken_per_game?: number | null;
+  team_sacks_taken_rank?: number | null;
+  team_sacks_taken_rank_out_of?: number | null;
+  team_rush_tds?: number | null;
+  team_rush_tds_per_game?: number | null;
+  team_rush_tds_rank?: number | null;
+  team_rush_tds_rank_out_of?: number | null;
+  team_sacks_taken_team?: string | null;
 }
 
 export interface PlayerSeasonStatsResponse {
   player_id: string;
-  position_group?: 'qb' | 'rb' | 'wr' | 'te';
+  position_group?: 'qb' | 'rb' | 'wr' | 'te' | 'ol' | 'dl' | 'lb' | 'db';
   seasons: SeasonStats[];
 }
 
