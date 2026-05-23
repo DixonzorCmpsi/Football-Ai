@@ -20,6 +20,12 @@ DERIVED_CACHE_KEYS = (
 CURRENT_TEAM_OVERRIDES = {
     # David Njoku agreed to a one-year deal with the Chargers on 2026-05-11.
     "00-0033885": "LAC",
+    # DJ Moore: depth-chart feed surfaced him at WR1 for BUF; he's on CHI.
+    # Override until the upstream roster catches up. Confirmed 2026-05-23.
+    "00-0034827": "CHI",
+    # Kenneth Walker III: surfaced as KC starting RB; he's on SEA.
+    # Override until the upstream roster catches up. Confirmed 2026-05-23.
+    "00-0038134": "SEA",
 }
 
 
