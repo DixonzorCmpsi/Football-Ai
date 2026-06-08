@@ -105,6 +105,48 @@ def apply_current_roster_overrides() -> None:
             expr = pl.when(pl.col("gsis_id") == player_id).then(pl.lit(team)).otherwise(expr)
         model_data["df_depth_charts"] = depth.with_columns(expr.alias("team"))
 
+def _ensure_rookies_merged() -> None:
+    """Guarantee `df_profile` contains the current-season rookies.
+
+    Called after every `refresh_db_data` (which overwrites df_profile from DB and
+    therefore drops rookies merged in earlier). Prefers the cached CSV; if it's
+    missing, fetches from ESPN inline so a fresh install never starts
+    rookie-less.
+    """
+    profile = model_data.get("df_profile", pl.DataFrame())
+    if profile.is_empty():
+        return
+
+    try:
+        from ..routes.tier_list import (
+            _rookies_csv_path,
+            load_persisted_rookies_into_profile,
+            run_rookie_refresh,
+        )
+    except Exception as e:
+        logger.warning(f"Rookie merge skipped (import failed): {e}")
+        return
+
+    try:
+        csv_path = _rookies_csv_path(int(CURRENT_SEASON))
+        if os.path.exists(csv_path):
+            merged = load_persisted_rookies_into_profile()
+            if merged:
+                logger.info(f"Merged {merged} persisted rookies into df_profile")
+            return
+
+        result = run_rookie_refresh(persist=True)
+        if result.get("ok"):
+            logger.info(
+                f"Fetched {result.get('found', 0)} rookies from ESPN "
+                f"(added {result.get('added', 0)}); persisted to {result.get('persisted')}"
+            )
+        else:
+            logger.warning("ESPN rookie fetch returned no rookies on data reload")
+    except Exception as e:
+        logger.warning(f"Rookie merge after data reload failed: {e}")
+
+
 def refresh_db_data():
     logger.info("Loading dataframes from DB/CVS sources...")
     invalidate_derived_caches()
@@ -123,6 +165,7 @@ def refresh_db_data():
         model_data[key] = load_data_source(query, csv)
 
     apply_current_roster_overrides()
+    _ensure_rookies_merged()
 
     # If critical tables are empty, attempt an aggressive retry for player stats and snaps
     if ("df_player_stats" in model_data and model_data["df_player_stats"].is_empty()) or ("df_snap_counts" in model_data and model_data["df_snap_counts"].is_empty()):

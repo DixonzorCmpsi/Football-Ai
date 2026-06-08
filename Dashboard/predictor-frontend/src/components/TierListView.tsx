@@ -101,7 +101,7 @@ const PoolCard: React.FC<PoolCardProps> = ({
         onDragStart(player.player_id);
       }}
       onDragEnd={onDragEnd}
-      className={`group relative rounded-lg border bg-white dark:bg-slate-800 px-2 py-1.5 cursor-grab active:cursor-grabbing transition-all hover:shadow ${
+      className={`group relative rounded-lg border bg-white dark:bg-slate-800 px-2 py-1.5 cursor-grab active:cursor-grabbing transition-colors hover:shadow ${
         isComparing
           ? 'border-blue-500 ring-2 ring-blue-500/30'
           : tiered
@@ -261,7 +261,7 @@ const TierRow: React.FC<TierRowProps> = ({
         e.preventDefault();
         onDrop(tier);
       }}
-      className={`flex gap-2 items-stretch border-2 rounded-xl transition-all min-h-[5.5rem] ${
+      className={`flex gap-2 items-stretch border-2 rounded-xl transition-colors min-h-[5.5rem] ${
         isHover
           ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 dark:border-blue-500 shadow-inner'
           : `bg-white dark:bg-slate-900 ${style.ring}`
