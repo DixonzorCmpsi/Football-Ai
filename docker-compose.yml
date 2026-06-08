@@ -11,6 +11,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d football_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   # 2. Backend Service
   backend:
@@ -18,17 +23,24 @@ services:
     shm_size: '2gb'
     restart: always
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       - DB_CONNECTION_STRING=postgresql://admin:password@db:5432/football_ai
       - ALLOW_CSV_FALLBACK=false
       - RESTART_AFTER_ETL=false
-      - RUN_ETL_ON_STARTUP=false
+      - RUN_ETL_ON_STARTUP=true
       # Add other env vars from your .env file here
     volumes:
       - ./backend:/app
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import json, urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8000/health', timeout=5)); raise SystemExit(0 if data.get('ready') else 1)\""]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 30s
 
   # 3. Frontend Service
   frontend:
@@ -39,7 +51,8 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
