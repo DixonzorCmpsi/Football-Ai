@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Save,
   RotateCcw,
@@ -79,7 +79,7 @@ interface PoolCardProps {
   onClickName: (player: PoolPlayer) => void;
 }
 
-const PoolCard: React.FC<PoolCardProps> = ({
+const PoolCard: React.FC<PoolCardProps> = memo(({
   player,
   rank,
   tier,
@@ -212,7 +212,8 @@ const PoolCard: React.FC<PoolCardProps> = ({
       </div>
     </div>
   );
-};
+});
+PoolCard.displayName = 'PoolCard';
 
 // ───────────────────────────────────────── Tier row drop target
 
@@ -226,10 +227,10 @@ interface TierRowProps {
   onClickHistory: (id: string) => void;
   onToggleCompare: (id: string) => void;
   onClickName: (player: PoolPlayer) => void;
-  compareList: string[];
+  compareSet: Set<string>;
 }
 
-const TierRow: React.FC<TierRowProps> = ({
+const TierRow: React.FC<TierRowProps> = memo(({
   tier,
   players,
   onDrop,
@@ -239,7 +240,7 @@ const TierRow: React.FC<TierRowProps> = ({
   onClickHistory,
   onToggleCompare,
   onClickName,
-  compareList,
+  compareSet,
 }) => {
   const style = TIER_STYLES[tier];
   const sorted = useMemo(
@@ -284,7 +285,7 @@ const TierRow: React.FC<TierRowProps> = ({
         ) : (
           sorted.map((p) => {
             const tc = getTeamColor(p.team);
-            const isComp = compareList.includes(p.player_id);
+            const isComp = compareSet.has(p.player_id);
             return (
               <div
                 key={p.player_id}
@@ -351,7 +352,89 @@ const TierRow: React.FC<TierRowProps> = ({
       </div>
     </div>
   );
-};
+});
+TierRow.displayName = 'TierRow';
+
+interface PoolPanelProps {
+  label: string;
+  players: PoolPlayer[];
+  panelRef: React.RefObject<HTMLDivElement | null>;
+  otherRef: React.RefObject<HTMLDivElement | null>;
+  startRank: number;
+  loadingPool: boolean;
+  poolError: string | null;
+  position: Position;
+  assignments: Record<string, Tier>;
+  compareSet: Set<string>;
+  onScrollSync: (src: HTMLDivElement | null, dst: HTMLDivElement | null) => void;
+  onDragStart: (id: string) => void;
+  onDragEnd: () => void;
+  onClickHistory: (id: string) => void;
+  onToggleCompare: (id: string) => void;
+  onClickName: (player: PoolPlayer) => void;
+}
+
+const PoolPanel: React.FC<PoolPanelProps> = memo(({
+  label,
+  players,
+  panelRef,
+  otherRef,
+  startRank,
+  loadingPool,
+  poolError,
+  position,
+  assignments,
+  compareSet,
+  onScrollSync,
+  onDragStart,
+  onDragEnd,
+  onClickHistory,
+  onToggleCompare,
+  onClickName,
+}) => (
+  <aside className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col overflow-hidden h-[78vh]">
+    <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between">
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+        {label}
+      </h3>
+      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
+        {players.length}
+      </span>
+    </div>
+    <div
+      ref={panelRef}
+      onScroll={() => onScrollSync(panelRef.current, otherRef.current)}
+      className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin overscroll-contain"
+    >
+      {loadingPool ? (
+        <div className="text-xs text-slate-400 italic text-center mt-8">Loading {position}...</div>
+      ) : poolError ? (
+        <div className="px-3 py-8 text-center">
+          <div className="text-xs font-black text-red-500">Player API unavailable</div>
+          <div className="text-[10px] text-slate-400 mt-1">{poolError}</div>
+        </div>
+      ) : players.length === 0 ? (
+        <div className="text-xs text-slate-400 italic text-center mt-8">No players</div>
+      ) : (
+        players.map((p, idx) => (
+          <PoolCard
+            key={p.player_id}
+            player={p}
+            rank={startRank + idx}
+            tier={assignments[p.player_id] || null}
+            isComparing={compareSet.has(p.player_id)}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onClickHistory={onClickHistory}
+            onToggleCompare={onToggleCompare}
+            onClickName={onClickName}
+          />
+        ))
+      )}
+    </div>
+  </aside>
+));
+PoolPanel.displayName = 'PoolPanel';
 
 // ───────────────────────────────────────── Main view
 
@@ -405,20 +488,24 @@ const TierListView: React.FC<TierListViewProps> = ({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [refreshStatus, setRefreshStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
 
-  const { pool, loadingPool } = usePositionPool(position);
+  const { pool, loadingPool, poolError } = usePositionPool(position);
 
   // Synced scroll between left + right pool panes.
   const leftRef = useRef<HTMLDivElement | null>(null);
   const rightRef = useRef<HTMLDivElement | null>(null);
   const syncing = useRef(false);
-  const syncFrom = (src: HTMLDivElement | null, dst: HTMLDivElement | null) => {
+  const syncFrame = useRef<number | null>(null);
+  const syncFrom = useCallback((src: HTMLDivElement | null, dst: HTMLDivElement | null) => {
     if (!src || !dst || syncing.current) return;
-    syncing.current = true;
-    dst.scrollTop = src.scrollTop;
-    requestAnimationFrame(() => {
+    if (syncFrame.current != null) cancelAnimationFrame(syncFrame.current);
+    const nextTop = src.scrollTop;
+    syncFrame.current = requestAnimationFrame(() => {
+      syncing.current = true;
+      dst.scrollTop = nextTop;
       syncing.current = false;
+      syncFrame.current = null;
     });
-  };
+  }, []);
 
   // Load saved list ONLY when position changes (not on every state mutation —
   // otherwise typing in the list-name input would wipe assignments on every keystroke).
@@ -502,7 +589,7 @@ const TierListView: React.FC<TierListViewProps> = ({
     return buckets;
   }, [pool, assignments]);
 
-  const moveToTier = (tier: Tier) => {
+  const moveToTier = useCallback((tier: Tier) => {
     if (!draggingId) return;
     setAssignments((prev) => {
       const next = { ...prev };
@@ -512,15 +599,25 @@ const TierListView: React.FC<TierListViewProps> = ({
     });
     setDraggingId(null);
     setHoverTier(null);
-  };
+  }, [draggingId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const removeFromTier = (id: string) => {
+  const handleDragEnd = useCallback(() => {
+    setDraggingId(null);
+    setHoverTier(null);
+  }, []);
+
+  const handleOpenTeam = useCallback(
+    (player: PoolPlayer) => onOpenTeam(player.team, player.player_id),
+    [onOpenTeam],
+  );
+
+  const removeFromTier = useCallback((id: string) => {
     setAssignments((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
     });
-  };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = async () => {
     setSaveStatus('saving');
@@ -584,55 +681,8 @@ const TierListView: React.FC<TierListViewProps> = ({
   };
 
   const compareCount = compareList.length;
+  const compareSet = useMemo(() => new Set(compareList), [compareList]);
   const rookieCount = pool.filter((p) => p.is_rookie).length;
-
-  const PoolPanel: React.FC<{
-    label: string;
-    players: PoolPlayer[];
-    panelRef: React.RefObject<HTMLDivElement | null>;
-    otherRef: React.RefObject<HTMLDivElement | null>;
-    startRank: number;
-  }> = ({ label, players, panelRef, otherRef, startRank }) => (
-    <aside className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col overflow-hidden h-[78vh]">
-      <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between">
-        <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
-          {label}
-        </h3>
-        <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
-          {players.length}
-        </span>
-      </div>
-      <div
-        ref={panelRef}
-        onScroll={() => syncFrom(panelRef.current, otherRef.current)}
-        className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin"
-      >
-        {loadingPool ? (
-          <div className="text-xs text-slate-400 italic text-center mt-8">Loading {position}...</div>
-        ) : players.length === 0 ? (
-          <div className="text-xs text-slate-400 italic text-center mt-8">No players</div>
-        ) : (
-          players.map((p, idx) => (
-            <PoolCard
-              key={p.player_id}
-              player={p}
-              rank={startRank + idx}
-              tier={assignments[p.player_id] || null}
-              isComparing={compareList.includes(p.player_id)}
-              onDragStart={setDraggingId}
-              onDragEnd={() => {
-                setDraggingId(null);
-                setHoverTier(null);
-              }}
-              onClickHistory={onViewHistory}
-              onToggleCompare={onToggleCompare}
-              onClickName={(pl) => onOpenTeam(pl.team, pl.player_id)}
-            />
-          ))
-        )}
-      </div>
-    </aside>
-  );
 
   return (
     <div className="w-full">
@@ -764,12 +814,28 @@ const TierListView: React.FC<TierListViewProps> = ({
           panelRef={leftRef}
           otherRef={rightRef}
           startRank={1}
+          loadingPool={loadingPool}
+          poolError={poolError}
+          position={position}
+          assignments={assignments}
+          compareSet={compareSet}
+          onScrollSync={syncFrom}
+          onDragStart={setDraggingId}
+          onDragEnd={handleDragEnd}
+          onClickHistory={onViewHistory}
+          onToggleCompare={onToggleCompare}
+          onClickName={handleOpenTeam}
         />
         <div className="space-y-2">
           {loadingPool ? (
             <div className="flex flex-col items-center py-16 opacity-60">
               <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-sm font-bold text-slate-400 mt-3">Loading {position} pool...</p>
+            </div>
+          ) : poolError ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-900 px-4 py-10 text-center">
+              <p className="text-sm font-black text-red-600 dark:text-red-400">Player API unavailable</p>
+              <p className="text-xs text-red-500/80 dark:text-red-300/80 mt-1">{poolError}</p>
             </div>
           ) : (
             TIERS.filter((t) => t !== 'UNRANKED').map((tier) => (
@@ -784,7 +850,7 @@ const TierListView: React.FC<TierListViewProps> = ({
                 onClickHistory={onViewHistory}
                 onToggleCompare={onToggleCompare}
                 onClickName={(p) => onOpenTeam(p.team, p.player_id)}
-                compareList={compareList}
+                compareSet={compareSet}
               />
             ))
           )}
@@ -799,6 +865,17 @@ const TierListView: React.FC<TierListViewProps> = ({
           panelRef={rightRef}
           otherRef={leftRef}
           startRank={leftPool.length + 1}
+          loadingPool={loadingPool}
+          poolError={poolError}
+          position={position}
+          assignments={assignments}
+          compareSet={compareSet}
+          onScrollSync={syncFrom}
+          onDragStart={setDraggingId}
+          onDragEnd={handleDragEnd}
+          onClickHistory={onViewHistory}
+          onToggleCompare={onToggleCompare}
+          onClickName={handleOpenTeam}
         />
       </div>
 
