@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import axios from 'axios';
 import { ChevronDown, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, Plus, Save, Search, Trash2, X, RotateCcw, UserPlus } from 'lucide-react';
@@ -374,7 +374,7 @@ const BuilderSlot = ({
   );
 };
 
-const PlayerPoolCard = ({
+const PlayerPoolCard = memo(({
   player,
   selectedSlot,
   onAssign,
@@ -427,7 +427,8 @@ const PlayerPoolCard = ({
       </button>
     </div>
   );
-};
+});
+PlayerPoolCard.displayName = 'PlayerPoolCard';
 
 const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => {
   const [pool, setPool] = useState<OffensePlayer[]>([]);
@@ -526,6 +527,15 @@ const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => 
     return unique.includes(team) ? unique : [team, ...unique].sort();
   }, [pool, team]);
 
+  // Read-latest ref so the pool's "assign" button gets a stable callback
+  // and memoized PlayerPoolCards don't re-render when `selectedSlot` changes.
+  const selectedSlotRef = useRef(selectedSlot);
+  useEffect(() => { selectedSlotRef.current = selectedSlot; }, [selectedSlot]);
+  const handlePoolAssign = useCallback((player: OffensePlayer) => {
+    const slot = selectedSlotRef.current;
+    if (slot) assignPlayer(slot, player);
+  }, []);
+
   const playersById = useMemo(() => {
     const map = new Map<string, OffensePlayer>();
     const add = (player: OffensePlayer | null | undefined) => {
@@ -545,13 +555,13 @@ const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => 
     setPositionFilter(SLOT_META[slot.id].accept);
   };
 
-  const assignPlayer = (slot: SelectedSlot, player: OffensePlayer | null) => {
+  const assignPlayer = useCallback((slot: SelectedSlot, player: OffensePlayer | null) => {
     setAssignments((prev) => {
       const next = { ...prev, [slot.id]: [...prev[slot.id]] };
       next[slot.id][slot.option] = player;
       return next;
     });
-  };
+  }, []);
 
   const toggleSlotExpanded = (id: BuilderSlotId) => {
     setExpandedSlots((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -600,11 +610,11 @@ const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => 
     setSaveStatus('deleted');
   };
 
-  const clearDragState = () => {
+  const clearDragState = useCallback(() => {
     setDragPayload(null);
     setDraggingPlayer(null);
     setDragOverSlot(null);
-  };
+  }, []);
 
   const setDragData = (event: DragEvent, payload: DragPayload) => {
     const serialized = JSON.stringify(payload);
@@ -613,12 +623,12 @@ const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => 
     event.dataTransfer.setData('text/plain', serialized);
   };
 
-  const startPoolDrag = (player: OffensePlayer, event: DragEvent<HTMLDivElement>) => {
+  const startPoolDrag = useCallback((player: OffensePlayer, event: DragEvent<HTMLDivElement>) => {
     const payload: DragPayload = { type: 'pool', playerId: player.player_id };
     setDragPayload(payload);
     setDraggingPlayer(player);
     setDragData(event, payload);
-  };
+  }, []);
 
   const startAssignmentDrag = (player: OffensePlayer, slot: SelectedSlot, event: DragEvent<HTMLDivElement>) => {
     const payload: DragPayload = { type: 'assignment', playerId: player.player_id, from: slot };
@@ -832,7 +842,7 @@ const TeamBuilderView = ({ team, teamColor, teamData, onOpenDetail }: Props) => 
                     key={player.player_id}
                     player={player}
                     selectedSlot={selectedSlot}
-                    onAssign={(p) => selectedSlot && assignPlayer(selectedSlot, p)}
+                    onAssign={handlePoolAssign}
                     onOpenDetail={onOpenDetail}
                     onDragStart={startPoolDrag}
                     onDragEnd={clearDragState}

@@ -8,8 +8,10 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json ./
 
-# Install dependencies (use npm install to sync lockfile)
-RUN npm install --omit=dev
+# Install dependencies (use npm install to sync lockfile).
+# Dev deps (tsc, vite) are needed for `npm run build`; they don't leak
+# into the final image because Stage 2 only copies /app/build.
+RUN npm install
 
 # Copy source code
 COPY . .

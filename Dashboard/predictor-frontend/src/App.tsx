@@ -404,7 +404,7 @@ export default function App() {
         </SidePanelDrawer>
 
         {/* CONTENT */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 scroll-smooth dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { X, Plus, Check, History, Shield, TrendingUp, Maximize2 } from 'lucide-react';
 import { getTeamColor } from '../utils/nflColors';
@@ -151,7 +151,7 @@ const PlayerRow: React.FC<{
   onToggleCompare: (id: string) => void;
   onViewHistory: (id: string) => void;
   onOpenDetail: (p: OffensePlayer) => void;
-}> = ({ p, rank: _rank, groupTopSnap, groupTopPpg, isFocus, isComparing, onToggleCompare, onViewHistory, onOpenDetail }) => {
+}> = memo(({ p, rank: _rank, groupTopSnap, groupTopPpg, isFocus, isComparing, onToggleCompare, onViewHistory, onOpenDetail }) => {
   // Authoritative source: nflreadpy depth chart on the server. No client-side guessing.
   const isStarter = !!p.is_starter;
   const snapShare = groupTopSnap > 0 ? Math.min(100, (p.snap_pct_avg / groupTopSnap) * 100) : 0;
@@ -343,7 +343,8 @@ const PlayerRow: React.FC<{
       </div>
     </div>
   );
-};
+});
+PlayerRow.displayName = 'PlayerRow';
 
 const rankTone = (metric: TeamMetric) => {
   const pct = metric.rank_out_of > 0 ? metric.rank / metric.rank_out_of : 1;
@@ -448,7 +449,6 @@ const LineupGroup: React.FC<{
   onOpenDetail: (p: OffensePlayer) => void;
   onOpenGroup: () => void;
   className?: string;
-  listClassName?: string;
 }> = ({
   label,
   slot,
@@ -460,11 +460,13 @@ const LineupGroup: React.FC<{
   onOpenDetail,
   onOpenGroup,
   className = '',
-  listClassName = 'max-h-[22rem]',
 }) => {
   const topSnap = Math.max(0, ...players.map((p) => p.snap_pct_avg || 0));
   const topPpg = Math.max(0, ...players.map((p) => p.season_avg_pts || 0));
   const starterCount = players.filter((p) => p.is_starter).length;
+  const visibleLimit = label === 'WRs' || label === 'Offensive Line' ? 10 : 7;
+  const visiblePlayers = players.slice(0, visibleLimit);
+  const hiddenCount = Math.max(0, players.length - visiblePlayers.length);
 
   return (
     <section className={`min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/70 p-3 shadow-sm ${className}`}>
@@ -498,13 +500,13 @@ const LineupGroup: React.FC<{
         </div>
       </button>
 
-      <div className={`space-y-1.5 overflow-y-auto pr-1 scrollbar-thin ${listClassName}`}>
+      <div className="space-y-1.5">
         {players.length === 0 ? (
           <div className="text-[10px] italic text-slate-400 dark:text-slate-500 text-center py-2">
             No players
           </div>
         ) : (
-          players.map((p, idx) => (
+          visiblePlayers.map((p, idx) => (
             <PlayerRow
               key={p.player_id}
               p={p}
@@ -518,6 +520,15 @@ const LineupGroup: React.FC<{
               onOpenDetail={onOpenDetail}
             />
           ))
+        )}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={onOpenGroup}
+            className="w-full rounded-md border border-dashed border-slate-200 dark:border-slate-700 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-300 dark:hover:border-blue-700 transition"
+          >
+            {hiddenCount} more
+          </button>
         )}
       </div>
     </section>
@@ -576,7 +587,7 @@ const DefenseColumn: React.FC<{
                   </span>
                 </span>
               </button>
-              <div className="space-y-1.5 max-h-[20rem] overflow-y-auto pr-1 scrollbar-thin">
+              <div className="space-y-1.5">
                 {visible.length === 0 ? (
                   <div className="text-[10px] italic text-slate-400 dark:text-slate-500 text-center py-2">
                     No players
@@ -673,7 +684,7 @@ const PositionFocusModal: React.FC<{
 
   return (
     <div
-      className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 backdrop-blur-sm p-3 md:p-5 animate-in fade-in duration-150"
+      className="fixed inset-0 z-[65] flex items-center justify-center bg-black/45 p-3 md:p-5 animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
@@ -874,7 +885,7 @@ const TeamOffenseModal: React.FC<Props> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/55 backdrop-blur-sm p-2 md:p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/55 p-2 md:p-4 animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
@@ -1020,7 +1031,6 @@ const TeamOffenseModal: React.FC<Props> = ({
                         }}
                         onOpenDetail={setDetailPlayer}
                         onOpenGroup={() => setExpandedGroup({ label: 'QBs', slot: 'Backfield', players: data.qb })}
-                        listClassName="max-h-[18rem]"
                       />
                       <LineupGroup
                         label="RBs"
@@ -1035,7 +1045,6 @@ const TeamOffenseModal: React.FC<Props> = ({
                         }}
                         onOpenDetail={setDetailPlayer}
                         onOpenGroup={() => setExpandedGroup({ label: 'RBs', slot: 'Offset back', players: data.rb })}
-                        listClassName="max-h-[18rem]"
                       />
                     </div>
 
@@ -1052,7 +1061,6 @@ const TeamOffenseModal: React.FC<Props> = ({
                       }}
                       onOpenDetail={setDetailPlayer}
                       onOpenGroup={() => setExpandedGroup({ label: 'Offensive Line', slot: 'Line / pass pro', players: data.ol })}
-                      listClassName="max-h-[20rem]"
                     />
                   </div>
 
@@ -1070,7 +1078,6 @@ const TeamOffenseModal: React.FC<Props> = ({
                     onOpenDetail={setDetailPlayer}
                     onOpenGroup={() => setExpandedGroup({ label: 'WRs', slot: 'Perimeter', players: data.wr })}
                     className="xl:col-start-1 xl:row-start-1 xl:row-span-2"
-                    listClassName="max-h-[36rem]"
                   />
 
                   <LineupGroup
@@ -1087,7 +1094,6 @@ const TeamOffenseModal: React.FC<Props> = ({
                     onOpenDetail={setDetailPlayer}
                     onOpenGroup={() => setExpandedGroup({ label: 'TEs', slot: 'Tight end side', players: data.te })}
                     className="xl:col-start-3 xl:row-start-1"
-                    listClassName="max-h-[23rem]"
                   />
 
                   <div className="xl:col-span-3">
