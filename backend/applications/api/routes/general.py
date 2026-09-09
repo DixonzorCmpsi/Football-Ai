@@ -24,8 +24,24 @@ async def health_check():
         "models_loaded": len(model_data.get("models", {})),
         "meta_loaded": "meta_models" in model_data,
         "etl_script_exists": os.path.exists(ETL_SCRIPT_PATH),
-        "current_week": model_data.get("current_nfl_week", None)
+        "current_week": model_data.get("current_nfl_week", None),
+        "data_loaded_at": model_data.get("data_loaded_at"),
     }
+
+    counts = {}
+    for key in (
+        "df_profile",
+        "df_schedule",
+        "df_player_stats",
+        "df_snap_counts",
+        "df_features",
+        "df_lines",
+        "df_props",
+    ):
+        df = model_data.get(key)
+        counts[key] = int(df.height) if hasattr(df, "height") else 0
+    status["data_counts"] = counts
+    status["ready"] = counts["df_profile"] > 0
 
     # Quick DB probe if connection string is configured
     if DB_CONNECTION_STRING:
@@ -38,6 +54,9 @@ async def health_check():
             status["db_error"] = str(e)
     else:
         status["db_responding"] = False
+
+    if not status["ready"]:
+        status["status"] = "starting"
 
     return status
 

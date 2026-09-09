@@ -505,21 +505,31 @@ export type Tier = typeof TIERS[number];
 export const usePositionPool = (position: 'QB' | 'RB' | 'WR' | 'TE' | 'ALL' | null) => {
   const [pool, setPool] = useState<PoolPlayer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!position) return;
     setLoading(true);
+    setError(null);
     axios
       .get(`${API_BASE_URL}/tier_list/pool/${position}`)
-      .then((res) => setPool(res.data))
+      .then((res) => {
+        setPool(res.data);
+        setError(null);
+      })
       .catch((err) => {
         console.error('Pool fetch error:', err);
         setPool([]);
+        setError(
+          err?.response?.status
+            ? `Backend returned ${err.response.status}`
+            : 'Backend is not reachable',
+        );
       })
       .finally(() => setLoading(false));
   }, [position]);
 
-  return { pool, loadingPool: loading };
+  return { pool, loadingPool: loading, poolError: error };
 };
 
 export interface TierAssignment {
