@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 import os
 import json
 import requests
@@ -6,6 +6,7 @@ import polars as pl
 import subprocess
 from ..state import model_data
 from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE, RAG_DIR, logger
+from ..rate_limit import limiter
 from ..services.data_loader import refresh_app_state, refresh_db_data
 from ..services.prediction import get_player_card
 
@@ -129,7 +130,8 @@ async def remove_watchlist(player_id: str):
 
 # --- LIVE SCORES & STATS ---
 @router.post("/refresh/live-scores")
-async def refresh_live_scores(week: int = None):
+@limiter.limit("6/minute")
+async def refresh_live_scores(request: Request, week: int = None):
     """
     Trigger a live scores/stats update from ESPN API.
     This is faster than nflreadpy and can be run during/after games.

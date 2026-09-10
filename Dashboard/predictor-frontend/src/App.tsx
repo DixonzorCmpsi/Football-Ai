@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -13,6 +13,7 @@ import LiveScoresBar from './components/LiveScoresBar';
 import TierListView, { type TierListState } from './components/TierListView';
 import TeamOffenseModal from './components/TeamOffenseModal';
 import TeamsView from './components/TeamsView';
+import GameRanksView from './components/GameRanksView';
 import { getTeamColor } from './utils/nflColors';
 
 // --- HELPER: Status Badge Styles ---
@@ -129,7 +130,7 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS';
+  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS' | 'GAME_RANKS';
   const [viewMode, setViewModeRaw] = useState<ViewMode>('SCHEDULE');
 
   // Navigation stack: every setViewMode() that actually changes view pushes the
@@ -169,7 +170,7 @@ export default function App() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
-  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS'>('SCHEDULE');
+  const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS' | 'GAME_RANKS'>('SCHEDULE');
 
   const [compareList, setCompareList] = useState<string[]>([]);
 
@@ -314,7 +315,11 @@ export default function App() {
         <header className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
           
           <div className="flex items-center gap-1 pr-8">
-             <button onClick={() => setShowSidebars(!showSidebars)} className="hidden lg:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+             <button
+                onClick={() => setShowSidebars(!showSidebars)}
+                aria-label={showSidebars ? 'Collapse side panels' : 'Expand side panels'}
+                className="hidden lg:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+             >
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
 
@@ -341,12 +346,13 @@ export default function App() {
           
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
-              {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+              {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'TEAMS' && <Shield size={14}/>}
                   {mode === 'TIERS' && <Layers size={14}/>}
+                  {mode === 'GAME_RANKS' && <ListOrdered size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
                           <BarChart2 size={14}/>
@@ -354,7 +360,7 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode}</span>
+                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode}</span>
                 </button>
               ))}
             </div>
@@ -397,6 +403,7 @@ export default function App() {
               <button onClick={() => { setViewMode('PLAYOFFS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Playoffs</button>
               <button onClick={() => { setViewMode('TEAMS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Teams</button>
               <button onClick={() => { setViewMode('TIERS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Tier List</button>
+              <button onClick={() => { setViewMode('GAME_RANKS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Ranks</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
             </div>
@@ -543,10 +550,32 @@ export default function App() {
             <TeamsView onOpenTeam={(team) => setTeamModal({ team })} />
           )}
 
+          {/* VIEW: RANKS — per-game situation explainer + start/sit tiers.
+              Always mounted, just hidden when off-screen, so drilling into a
+              player's history and coming back preserves the selected game,
+              position filter, and tier board exactly as left. */}
+          <div
+            className={`mx-auto w-full transition-all duration-300 ${showSidebars ? 'max-w-6xl' : 'max-w-[1900px]'}`}
+            style={{ display: viewMode === 'GAME_RANKS' ? 'block' : 'none' }}
+          >
+            <GameRanksView
+              games={games}
+              loadingSchedule={loadingSchedule}
+              week={activeWeek}
+              compareList={compareList}
+              onToggleCompare={toggleCompare}
+              onOpenHistory={(id) => {
+                setSelectedHistoryId(id);
+                setHistoryFrom('GAME_RANKS');
+                setViewMode('HISTORY');
+              }}
+            />
+          </div>
+
           {/* VIEW: TIER LIST — always mounted, just hidden when off-screen,
               so navigating to Compare/History and back preserves all local state
               (drag assignments, search input, scroll position). */}
-          <div style={{ display: viewMode === 'TIERS' ? 'block' : 'none' }}>
+          <div className="mx-auto w-full max-w-[2200px] px-2" style={{ display: viewMode === 'TIERS' ? 'block' : 'none' }}>
             <TierListView
               state={tierState}
               onStateChange={setTierState}
@@ -571,6 +600,7 @@ export default function App() {
               onBack={() => { if (navStack.length) goBack(); else setViewMode('SCHEDULE'); }}
               compareList={compareList}
               onToggleCompare={toggleCompare}
+              onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('GAME'); setViewMode('HISTORY'); }}
             />
           )}
 

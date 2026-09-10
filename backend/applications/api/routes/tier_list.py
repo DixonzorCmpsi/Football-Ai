@@ -11,11 +11,13 @@ from datetime import datetime
 from typing import List, Optional
 
 import polars as pl
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..config import CURRENT_SEASON, DB_CONNECTION_STRING, RAG_DIR, logger
+from ..rate_limit import limiter
 from ..services.utils import calculate_fantasy_points, get_headshot_url, get_team_abbr, normalize_name
+from ..services.adp import get_adp_map, lookup_adp
 from ..state import model_data
 
 # Cache the encoder + candidate embeddings across requests; they're expensive to build.
@@ -1506,6 +1508,9 @@ async def get_position_pool(position: str, include_rookies_only: bool = False):
 
     stats_summary = _aggregate_player_stats(stats_df, snaps_df)
 
+    adp_map = get_adp_map(int(CURRENT_SEASON))
+    adp_names = list(adp_map.keys())
+
     results = []
     for row in pool.iter_rows(named=True):
         pid = str(row.get("player_id"))
@@ -1536,6 +1541,7 @@ async def get_position_pool(position: str, include_rookies_only: bool = False):
                 "age": row.get("age"),
                 "height": row.get("height"),
                 "weight": row.get("weight"),
+                "adp": lookup_adp(row.get("player_name") or "", adp_map, adp_names),
                 "season": int(CURRENT_SEASON),
                 "stats_season": stats_season,
                 "stats": {
@@ -1556,9 +1562,15 @@ async def get_position_pool(position: str, include_rookies_only: bool = False):
             }
         )
 
-    # Default sort: highest projected PPG first. (Frontend re-sorts by draft pick
-    # when the user has the "Rookies only" filter on.)
-    results.sort(key=lambda r: (r["stats"]["season_avg_pts"] or 0, r["is_rookie"]), reverse=True)
+    # Default sort: real ADP (Sleeper/ESPN-style consensus draft board) first —
+    # this is the order a user actually drafts in, which is what they're tiering
+    # against. Players with no ADP (deep bench/practice squad, no real draft
+    # signal) sort after every ADP-ranked player, by projected PPG as a fallback.
+    # (Frontend re-sorts by draft pick when "Rookies only" is on.)
+    NO_ADP = float("inf")
+    results.sort(
+        key=lambda r: (r["adp"] if r["adp"] is not None else NO_ADP, -(r["stats"]["season_avg_pts"] or 0)),
+    )
     return results
 
 
@@ -2038,7 +2050,8 @@ def _backfill_draft_numbers_for_existing_rookies():
 
 
 @router.post("/refresh/rookies")
-async def refresh_rookies(source: str = "all"):
+@limiter.limit("3/minute")
+async def refresh_rookies(request: Request, source: str = "all"):
     """Refresh roster data to pick up the latest draft class.
 
     `source` query param:

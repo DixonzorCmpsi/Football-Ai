@@ -2,6 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi import _rate_limit_exceeded_handler
 import os
 import joblib
 import json
@@ -10,6 +13,7 @@ import polars as pl
 
 from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, DB_CONNECTION_STRING, CURRENT_SEASON
 from .state import model_data
+from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
 from .services.etl import etl_trigger_wrapper, run_daily_etl_async
 from .routes import players, games, general, debug, tier_list
@@ -175,6 +179,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+# Per-IP rate limiting. CORS is wide open (allow_origins=["*"]) with no auth,
+# so nothing else stood between the public internet and unlimited calls into
+# ETL triggers / external-fetch routes. Default is generous for normal read
+# traffic; expensive routes set a tighter limit where they're defined.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.include_router(players.router)
 app.include_router(games.router)

@@ -619,10 +619,11 @@ async def get_team_roster_cards(team_abbr: str, week: int):
         ranked = pl.read_database_uri(q, DB_CONNECTION_STRING)
     except: pass
 
-    if ranked.is_empty():
-        team_col = "team_abbr" if "team_abbr" in model_data["df_profile"].columns else "team"
-        candidates = model_data["df_profile"].filter(
-            (pl.col(team_col) == team_abbr) & 
+    df_profile = model_data["df_profile"]
+    if ranked.is_empty() and ("team_abbr" in df_profile.columns or "team" in df_profile.columns):
+        team_col = "team_abbr" if "team_abbr" in df_profile.columns else "team"
+        candidates = df_profile.filter(
+            (pl.col(team_col) == team_abbr) &
             (pl.col("status") == "ACT")
         ).select(["player_id", "position"])
         ranked = candidates
@@ -860,10 +861,15 @@ def get_team_injury_report(team_abbr: str, week: int):
         # Get Avg Snaps from Map
         avg_snaps = snap_map.get(pid, 0.0)
         avg_pct = pct_map.get(pid, 0.0)
-        
-        # Filter Logic: Only render players with > 35% snap percentage for O-Line and Defense
+        has_snap_data = pid in pct_map
+
+        # Filter Logic: Only hide O-Line/Defense players once we actually know
+        # their snap share is low. Missing snap data (week 1, or an injured
+        # player whose absence IS the trailing-window sample) must not be
+        # treated as "0% played" — that silently dropped every lineman and
+        # defender from the report whenever recent snaps were unavailable.
         if position in OL_POSITIONS or position in DEF_POSITIONS:
-            if avg_pct < 0.35:
+            if has_snap_data and avg_pct < 0.35:
                 continue
 
         report.append({

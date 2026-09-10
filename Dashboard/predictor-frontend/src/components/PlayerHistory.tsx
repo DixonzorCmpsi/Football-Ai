@@ -1,7 +1,8 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Check, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
+import PlayerPerformanceCharts, { pointColor } from './PlayerPerformanceCharts';
 
 interface Props {
   playerId: string;
@@ -29,6 +30,7 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
       .sort((a, b) => b.season - a.season);
   }, [history]);
 
+  const [viewMode, setViewMode] = useState<'table' | 'visual'>('table');
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   useEffect(() => {
     if (seasons.length === 0) {
@@ -63,7 +65,8 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
   const totalPoints = rows.reduce((acc, r) => acc + (r.points || 0), 0);
   const totalTDs = rows.reduce((acc, r) => acc + (r.touchdowns || 0), 0);
   const gamesWithPoints = rows.filter((r) => (r.points || 0) > 0).length;
-  const avgPoints = gamesWithPoints > 0 ? (totalPoints / gamesWithPoints).toFixed(1) : '0.0';
+  const avgPointsNum = gamesWithPoints > 0 ? totalPoints / gamesWithPoints : 0;
+  const avgPoints = avgPointsNum.toFixed(1);
   const avgSnapPct =
     rows.length > 0
       ? (rows.reduce((acc, r) => acc + (r.snap_percentage || 0), 0) / rows.length * 100).toFixed(0)
@@ -200,10 +203,33 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
           <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 ml-2">
             ← → to cycle · {rows.length} games
           </span>
+
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700 ml-auto">
+            <button
+              onClick={() => setViewMode('table')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
+                viewMode === 'table'
+                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <Table2 size={13} /> Table
+            </button>
+            <button
+              onClick={() => setViewMode('visual')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
+                viewMode === 'visual'
+                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <LineChart size={13} /> Visual
+            </button>
+          </div>
         </div>
       )}
 
-      {/* HISTORY TABLE */}
+      {/* HISTORY TABLE / VISUAL */}
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col transition-colors duration-300">
         {loadingHistory ? (
           <div className="p-20 text-center text-slate-400 dark:text-slate-500 animate-pulse font-bold">
@@ -213,6 +239,13 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
           <div className="p-20 text-center text-slate-400 dark:text-slate-500 font-bold">
             No games for {currentSeason?.season || 'this season'} yet.
           </div>
+        ) : viewMode === 'visual' ? (
+          <PlayerPerformanceCharts
+            rows={rows}
+            position={cardData?.position || 'WR'}
+            season={currentSeason?.season || new Date().getFullYear()}
+            teamColor={teamColor}
+          />
         ) : (
           <div className="overflow-x-auto scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             <table className="w-full text-sm text-left whitespace-nowrap">
@@ -274,11 +307,8 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
                     </td>
                     <td className="px-6 py-4 text-right bg-slate-50/30 dark:bg-slate-900/30">
                       <span
-                        className={`font-black text-base ${
-                          game.points >= 15
-                            ? 'text-green-600 dark:text-green-400'
-                            : 'text-slate-700 dark:text-slate-300'
-                        }`}
+                        className="font-black text-base"
+                        style={{ color: pointColor(game.points || 0, avgPointsNum) }}
                       >
                         {game.points?.toFixed(1) || '0.0'}
                       </span>

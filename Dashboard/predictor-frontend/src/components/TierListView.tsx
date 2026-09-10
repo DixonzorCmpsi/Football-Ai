@@ -22,7 +22,6 @@ import {
   type TierAssignment,
 } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
-import TierVisualizations from './TierVisualizations';
 
 type Position = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
 const POSITIONS: Position[] = ['ALL', 'QB', 'RB', 'WR', 'TE'];
@@ -168,6 +167,10 @@ const PoolCard: React.FC<PoolCardProps> = memo(({
               </span>
             ) : player.is_rookie ? (
               <span className="font-mono text-slate-400 italic">UDFA</span>
+            ) : player.adp != null ? (
+              <span className="font-mono text-slate-600 dark:text-slate-300">
+                ADP {player.adp.toFixed(1)}
+              </span>
             ) : (
               <span className="font-mono text-slate-600 dark:text-slate-300">
                 {player.stats.season_avg_pts.toFixed(1)} proj
@@ -221,7 +224,10 @@ interface TierRowProps {
   tier: Tier;
   players: PoolPlayer[];
   onDrop: (tier: Tier) => void;
+  onDropBefore: (tier: Tier, beforeId: string) => void;
   onDragOver: (tier: Tier | null) => void;
+  onCardDragStart: (id: string) => void;
+  onCardDragEnd: () => void;
   isHover: boolean;
   onRemove: (id: string) => void;
   onClickHistory: (id: string) => void;
@@ -230,11 +236,18 @@ interface TierRowProps {
   compareSet: Set<string>;
 }
 
+// Order within a tier is a persisted, manually-set sequence (via onDropBefore) —
+// NOT re-sorted by points on every render. The parent computes `players` already
+// in the right order; this component just renders it and offers card-level drop
+// zones so a card can be inserted before any existing one.
 const TierRow: React.FC<TierRowProps> = memo(({
   tier,
   players,
   onDrop,
+  onDropBefore,
   onDragOver,
+  onCardDragStart,
+  onCardDragEnd,
   isHover,
   onRemove,
   onClickHistory,
@@ -243,10 +256,6 @@ const TierRow: React.FC<TierRowProps> = memo(({
   compareSet,
 }) => {
   const style = TIER_STYLES[tier];
-  const sorted = useMemo(
-    () => [...players].sort((a, b) => b.stats.season_avg_pts - a.stats.season_avg_pts),
-    [players],
-  );
   return (
     <div
       onDragEnter={(e) => {
@@ -278,18 +287,35 @@ const TierRow: React.FC<TierRowProps> = memo(({
         <span className="text-[10px] mt-0.5 font-mono opacity-80">{players.length}</span>
       </div>
       <div className="flex-1 flex flex-wrap gap-2 p-2">
-        {sorted.length === 0 ? (
+        {players.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-xs font-bold text-slate-300 dark:text-slate-600 italic">
             Drop players here
           </div>
         ) : (
-          sorted.map((p) => {
+          players.map((p) => {
             const tc = getTeamColor(p.team);
             const isComp = compareSet.has(p.player_id);
             return (
               <div
                 key={p.player_id}
-                className={`relative bg-white dark:bg-slate-800 rounded-lg border shadow-sm pl-2 pr-1.5 py-1.5 flex items-center gap-2 min-w-[148px] ${
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('text/plain', p.player_id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  onCardDragStart(p.player_id);
+                }}
+                onDragEnd={onCardDragEnd}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onDropBefore(tier, p.player_id);
+                }}
+                className={`relative bg-white dark:bg-slate-800 rounded-lg border shadow-sm pl-2 pr-1.5 py-1.5 flex items-center gap-2 min-w-[148px] cursor-grab active:cursor-grabbing ${
                   isComp
                     ? 'border-blue-500 ring-2 ring-blue-500/30'
                     : 'border-slate-200 dark:border-slate-700'
@@ -358,15 +384,12 @@ TierRow.displayName = 'TierRow';
 interface PoolPanelProps {
   label: string;
   players: PoolPlayer[];
-  panelRef: React.RefObject<HTMLDivElement | null>;
-  otherRef: React.RefObject<HTMLDivElement | null>;
   startRank: number;
   loadingPool: boolean;
   poolError: string | null;
   position: Position;
   assignments: Record<string, Tier>;
   compareSet: Set<string>;
-  onScrollSync: (src: HTMLDivElement | null, dst: HTMLDivElement | null) => void;
   onDragStart: (id: string) => void;
   onDragEnd: () => void;
   onClickHistory: (id: string) => void;
@@ -374,18 +397,18 @@ interface PoolPanelProps {
   onClickName: (player: PoolPlayer) => void;
 }
 
+// Each pool panel scrolls independently — they used to be scroll-synced (one
+// panel's scroll drove the other via rAF), which doubled scroll-handler cost
+// on every tick and made this page feel sluggish for no real benefit.
 const PoolPanel: React.FC<PoolPanelProps> = memo(({
   label,
   players,
-  panelRef,
-  otherRef,
   startRank,
   loadingPool,
   poolError,
   position,
   assignments,
   compareSet,
-  onScrollSync,
   onDragStart,
   onDragEnd,
   onClickHistory,
@@ -401,11 +424,7 @@ const PoolPanel: React.FC<PoolPanelProps> = memo(({
         {players.length}
       </span>
     </div>
-    <div
-      ref={panelRef}
-      onScroll={() => onScrollSync(panelRef.current, otherRef.current)}
-      className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin overscroll-contain"
-    >
+    <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin overscroll-contain">
       {loadingPool ? (
         <div className="text-xs text-slate-400 italic text-center mt-8">Loading {position}...</div>
       ) : poolError ? (
@@ -417,18 +436,22 @@ const PoolPanel: React.FC<PoolPanelProps> = memo(({
         <div className="text-xs text-slate-400 italic text-center mt-8">No players</div>
       ) : (
         players.map((p, idx) => (
-          <PoolCard
-            key={p.player_id}
-            player={p}
-            rank={startRank + idx}
-            tier={assignments[p.player_id] || null}
-            isComparing={compareSet.has(p.player_id)}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            onClickHistory={onClickHistory}
-            onToggleCompare={onToggleCompare}
-            onClickName={onClickName}
-          />
+          // content-visibility skips layout/paint for rows scrolled out of view —
+          // this list can run past 300 players, and that was the single biggest
+          // cost behind the page feeling slow to scroll.
+          <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 46px' }}>
+            <PoolCard
+              player={p}
+              rank={startRank + idx}
+              tier={assignments[p.player_id] || null}
+              isComparing={compareSet.has(p.player_id)}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onClickHistory={onClickHistory}
+              onToggleCompare={onToggleCompare}
+              onClickName={onClickName}
+            />
+          </div>
         ))
       )}
     </div>
@@ -438,10 +461,16 @@ PoolPanel.displayName = 'PoolPanel';
 
 // ───────────────────────────────────────── Main view
 
+const ASSIGNABLE_TIERS: Tier[] = ['S', 'A', 'B', 'C', 'D', 'F'];
+
 export interface TierListState {
   position: Position;
   listName: string;
   assignments: Record<string, Tier>;
+  // Manually-set display order within each tier (player_ids). Only touched by
+  // drag actions — never auto-resorted by points — so a player dropped between
+  // two others stays exactly where the user put it.
+  tierOrder?: Partial<Record<Tier, string[]>>;
   search: string;
   showRookiesOnly: boolean;
 }
@@ -466,6 +495,7 @@ const TierListView: React.FC<TierListViewProps> = ({
   onOpenTeam,
 }) => {
   const { position, listName, assignments, search, showRookiesOnly } = state;
+  const tierOrder = state.tierOrder || {};
 
   // Helpers so the body reads the same as before with local setters.
   const setPosition = (p: Position) => onStateChange({ ...state, position: p });
@@ -489,23 +519,6 @@ const TierListView: React.FC<TierListViewProps> = ({
   const [refreshStatus, setRefreshStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
 
   const { pool, loadingPool, poolError } = usePositionPool(position);
-
-  // Synced scroll between left + right pool panes.
-  const leftRef = useRef<HTMLDivElement | null>(null);
-  const rightRef = useRef<HTMLDivElement | null>(null);
-  const syncing = useRef(false);
-  const syncFrame = useRef<number | null>(null);
-  const syncFrom = useCallback((src: HTMLDivElement | null, dst: HTMLDivElement | null) => {
-    if (!src || !dst || syncing.current) return;
-    if (syncFrame.current != null) cancelAnimationFrame(syncFrame.current);
-    const nextTop = src.scrollTop;
-    syncFrame.current = requestAnimationFrame(() => {
-      syncing.current = true;
-      dst.scrollTop = nextTop;
-      syncing.current = false;
-      syncFrame.current = null;
-    });
-  }, []);
 
   // Load saved list ONLY when position changes (not on every state mutation —
   // otherwise typing in the list-name input would wipe assignments on every keystroke).
@@ -546,8 +559,10 @@ const TierListView: React.FC<TierListViewProps> = ({
   }, [pool, showRookiesOnly, search]);
 
   // Ranked pool:
-  //   - Rookies-only filter on  → sort by draft pick ASC (undrafted last)
-  //   - Otherwise               → sort by projected PPG DESC
+  //   - Rookies-only filter on → sort by draft pick ASC (undrafted last)
+  //   - Otherwise              → sort by real ADP ASC (this is the order people
+  //     actually draft in — matches the board they're tiering against), with
+  //     projected PPG as the tiebreak for players with no ADP signal.
   const rankedPool = useMemo(() => {
     const arr = [...filteredPool];
     if (showRookiesOnly) {
@@ -558,19 +573,15 @@ const TierListView: React.FC<TierListViewProps> = ({
         return a.player_name.localeCompare(b.player_name);
       });
     } else {
-      arr.sort((a, b) => (b.stats.season_avg_pts || 0) - (a.stats.season_avg_pts || 0));
+      arr.sort((a, b) => {
+        const aAdp = a.adp ?? Infinity;
+        const bAdp = b.adp ?? Infinity;
+        if (aAdp !== bAdp) return aAdp - bAdp;
+        return (b.stats.season_avg_pts || 0) - (a.stats.season_avg_pts || 0);
+      });
     }
     return arr;
   }, [filteredPool, showRookiesOnly]);
-
-  // Split into two halves for left/right panels.
-  const { leftPool, rightPool } = useMemo(() => {
-    const mid = Math.ceil(rankedPool.length / 2);
-    return {
-      leftPool: rankedPool.slice(0, mid),
-      rightPool: rankedPool.slice(mid),
-    };
-  }, [rankedPool]);
 
   const tierBuckets = useMemo(() => {
     const buckets: Record<Tier, PoolPlayer[]> = {
@@ -589,17 +600,86 @@ const TierListView: React.FC<TierListViewProps> = ({
     return buckets;
   }, [pool, assignments]);
 
-  const moveToTier = useCallback((tier: Tier) => {
-    if (!draggingId) return;
-    setAssignments((prev) => {
-      const next = { ...prev };
-      if (tier === 'UNRANKED') delete next[draggingId];
-      else next[draggingId] = tier;
-      return next;
+  // Tier rows render this — tierOrder's manual sequence first, then any tier
+  // members missing from tierOrder (legacy saved lists, auto-tier races) appended
+  // sorted by points so nothing silently disappears.
+  const orderedTierPlayers = useMemo(() => {
+    const poolById = new Map(pool.map((p) => [p.player_id, p]));
+    const result: Record<Tier, PoolPlayer[]> = {
+      UNRANKED: [],
+      S: [],
+      A: [],
+      B: [],
+      C: [],
+      D: [],
+      F: [],
+    };
+    ASSIGNABLE_TIERS.forEach((tier) => {
+      const seen = new Set<string>();
+      const ordered: PoolPlayer[] = [];
+      (tierOrder[tier] || []).forEach((id) => {
+        if (assignments[id] === tier && poolById.has(id) && !seen.has(id)) {
+          seen.add(id);
+          ordered.push(poolById.get(id)!);
+        }
+      });
+      const leftover = tierBuckets[tier]
+        .filter((p) => !seen.has(p.player_id))
+        .sort((a, b) => b.stats.season_avg_pts - a.stats.season_avg_pts);
+      result[tier] = [...ordered, ...leftover];
     });
-    setDraggingId(null);
-    setHoverTier(null);
-  }, [draggingId]); // eslint-disable-line react-hooks/exhaustive-deps
+    return result;
+  }, [pool, assignments, tierOrder, tierBuckets]);
+
+  // Single entry point for every tier mutation: assign/move/unassign a player,
+  // and place them at a specific position (before `beforeId`, or appended to the
+  // end when null). Assignments (membership) and tierOrder (display sequence)
+  // are updated together in one onStateChange call so they never fall out of sync.
+  const placePlayer = useCallback(
+    (tier: Tier, playerId: string, beforeId: string | null) => {
+      const nextAssignments = { ...assignments };
+      if (tier === 'UNRANKED') delete nextAssignments[playerId];
+      else nextAssignments[playerId] = tier;
+
+      const nextOrder: Partial<Record<Tier, string[]>> = {};
+      ASSIGNABLE_TIERS.forEach((t) => {
+        nextOrder[t] = (tierOrder[t] || []).filter((id) => id !== playerId);
+      });
+      if (tier !== 'UNRANKED') {
+        const arr = nextOrder[tier] || [];
+        if (beforeId && beforeId !== playerId) {
+          const idx = arr.indexOf(beforeId);
+          if (idx === -1) arr.push(playerId);
+          else arr.splice(idx, 0, playerId);
+        } else {
+          arr.push(playerId);
+        }
+        nextOrder[tier] = arr;
+      }
+      onStateChange({ ...state, assignments: nextAssignments, tierOrder: nextOrder });
+    },
+    [assignments, tierOrder, state, onStateChange],
+  );
+
+  const moveToTier = useCallback(
+    (tier: Tier) => {
+      if (!draggingId) return;
+      placePlayer(tier, draggingId, null);
+      setDraggingId(null);
+      setHoverTier(null);
+    },
+    [draggingId, placePlayer],
+  );
+
+  const moveToTierBefore = useCallback(
+    (tier: Tier, beforeId: string) => {
+      if (!draggingId) return;
+      placePlayer(tier, draggingId, beforeId);
+      setDraggingId(null);
+      setHoverTier(null);
+    },
+    [draggingId, placePlayer],
+  );
 
   const handleDragEnd = useCallback(() => {
     setDraggingId(null);
@@ -611,13 +691,10 @@ const TierListView: React.FC<TierListViewProps> = ({
     [onOpenTeam],
   );
 
-  const removeFromTier = useCallback((id: string) => {
-    setAssignments((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const removeFromTier = useCallback(
+    (id: string) => placePlayer('UNRANKED', id, null),
+    [placePlayer],
+  );
 
   const handleSave = async () => {
     setSaveStatus('saving');
@@ -637,7 +714,7 @@ const TierListView: React.FC<TierListViewProps> = ({
 
   const handleReset = () => {
     if (!confirm(`Clear all tier assignments for ${position}?`)) return;
-    setAssignments({});
+    onStateChange({ ...state, assignments: {}, tierOrder: {} });
   };
 
   const handleAutoTier = () => {
@@ -645,6 +722,7 @@ const TierListView: React.FC<TierListViewProps> = ({
       (a, b) => b.stats.season_avg_pts - a.stats.season_avg_pts,
     );
     const next: Record<string, Tier> = {};
+    const nextOrder: Partial<Record<Tier, string[]>> = { S: [], A: [], B: [], C: [], D: [], F: [] };
     const cuts: { tier: Tier; pct: number }[] = [
       { tier: 'S', pct: 0.05 },
       { tier: 'A', pct: 0.15 },
@@ -654,22 +732,19 @@ const TierListView: React.FC<TierListViewProps> = ({
       { tier: 'F', pct: 1.0 },
     ];
     const eligible = ranked.filter((p) => p.stats.games_played > 0);
+    const assign = (p: PoolPlayer, pct: number) => {
+      const tier = cuts.find((c) => pct <= c.pct)?.tier || 'F';
+      next[p.player_id] = tier;
+      nextOrder[tier]!.push(p.player_id);
+    };
     if (eligible.length === 0) {
       // offseason: tier the top 60 by name order alphabetically into S/A/B
       const fallback = [...pool].slice(0, 60);
-      fallback.forEach((p, i) => {
-        const pct = (i + 1) / fallback.length;
-        const tier = cuts.find((c) => pct <= c.pct)?.tier || 'F';
-        next[p.player_id] = tier;
-      });
+      fallback.forEach((p, i) => assign(p, (i + 1) / fallback.length));
     } else {
-      eligible.forEach((p, i) => {
-        const pct = (i + 1) / eligible.length;
-        const tier = cuts.find((c) => pct <= c.pct)?.tier || 'F';
-        next[p.player_id] = tier;
-      });
+      eligible.forEach((p, i) => assign(p, (i + 1) / eligible.length));
     }
-    setAssignments(next);
+    onStateChange({ ...state, assignments: next, tierOrder: nextOrder });
   };
 
   const handleRefreshRookies = async () => {
@@ -806,20 +881,21 @@ const TierListView: React.FC<TierListViewProps> = ({
         </button>
       </div>
 
-      {/* THREE-COLUMN LAYOUT: pool-left | tier rows | pool-right */}
-      <div className="grid gap-3 grid-cols-1 lg:grid-cols-[260px_1fr_260px]">
+      {/* TWO-COLUMN LAYOUT: single pool panel | tier rows. A single panel (instead
+          of splitting the pool top/bottom across two side columns) is simpler to
+          work through and lets tier rows use the width the second panel used to
+          take — they already grow vertically/wrap horizontally on their own as
+          players are added, so this is the panel that needed the room. */}
+      <div className="grid gap-4 grid-cols-1 lg:grid-cols-[420px_minmax(0,1fr)]">
         <PoolPanel
-          label="Pool · Top half"
-          players={leftPool}
-          panelRef={leftRef}
-          otherRef={rightRef}
+          label="Pool"
+          players={rankedPool}
           startRank={1}
           loadingPool={loadingPool}
           poolError={poolError}
           position={position}
           assignments={assignments}
           compareSet={compareSet}
-          onScrollSync={syncFrom}
           onDragStart={setDraggingId}
           onDragEnd={handleDragEnd}
           onClickHistory={onViewHistory}
@@ -842,10 +918,13 @@ const TierListView: React.FC<TierListViewProps> = ({
               <TierRow
                 key={tier}
                 tier={tier}
-                players={tierBuckets[tier]}
+                players={orderedTierPlayers[tier]}
                 isHover={hoverTier === tier}
                 onDragOver={setHoverTier}
                 onDrop={moveToTier}
+                onDropBefore={moveToTierBefore}
+                onCardDragStart={setDraggingId}
+                onCardDragEnd={handleDragEnd}
                 onRemove={removeFromTier}
                 onClickHistory={onViewHistory}
                 onToggleCompare={onToggleCompare}
@@ -855,33 +934,10 @@ const TierListView: React.FC<TierListViewProps> = ({
             ))
           )}
           <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center italic mt-2">
-            Drag from a side panel into a tier. Click <X size={10} className="inline" /> on a tier
+            Drag from the pool panel into a tier. Click <X size={10} className="inline" /> on a tier
             card to remove.
           </p>
         </div>
-        <PoolPanel
-          label="Pool · Bottom half"
-          players={rightPool}
-          panelRef={rightRef}
-          otherRef={leftRef}
-          startRank={leftPool.length + 1}
-          loadingPool={loadingPool}
-          poolError={poolError}
-          position={position}
-          assignments={assignments}
-          compareSet={compareSet}
-          onScrollSync={syncFrom}
-          onDragStart={setDraggingId}
-          onDragEnd={handleDragEnd}
-          onClickHistory={onViewHistory}
-          onToggleCompare={onToggleCompare}
-          onClickName={handleOpenTeam}
-        />
-      </div>
-
-      {/* INSIGHTS — moved BELOW tier rows */}
-      <div className="mt-6">
-        <TierVisualizations pool={filteredPool} assignments={assignments} position={position} />
       </div>
     </div>
   );

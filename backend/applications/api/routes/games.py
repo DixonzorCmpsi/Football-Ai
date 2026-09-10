@@ -6,25 +6,71 @@ from ..services.prediction import get_team_roster_cards, get_team_injury_report
 from ..services.utils import get_team_abbr
 from ..services.betting_insights import get_game_insights
 from ..services.parlay_recommender import get_parlay_recommendations, ParlayRecommender
-from ..config import logger
+from ..services.weather import get_game_weather
+from .tier_list import _get_last_season_team_rankings
+from ..config import CURRENT_SEASON, logger
 
 router = APIRouter()
+
+
+def _derive_game_script(over_under, spread, home_off, home_def, away_off, away_def) -> dict | None:
+    """Read on how the game is likely to play out, built only from real inputs
+    already on the matchup (Vegas total/spread) and last-season team-strength
+    ranks — no fabricated grade, just transparent thresholds.
+    """
+    if over_under is None:
+        return None
+
+    abs_spread = abs(spread) if spread is not None else None
+    home_implied = round((over_under - spread) / 2, 1) if spread is not None else None
+    away_implied = round((over_under + spread) / 2, 1) if spread is not None else None
+
+    if abs_spread is not None and abs_spread >= 9.5:
+        tag, label = "BLOWOUT_RISK", "Blowout risk"
+        summary = f"Spread of {abs_spread:g} points is the widest signal here — expect a lopsided game script late."
+    elif over_under >= 47:
+        tag, label = "SHOOTOUT", "Shootout"
+        summary = f"O/U {over_under:g} is a high total — both offenses are expected to move the ball."
+    elif over_under <= 40:
+        tag, label = "GRIND_IT_OUT", "Grind it out"
+        summary = f"O/U {over_under:g} is a low total — expect a run-heavy, clock-controlled game."
+    else:
+        tag, label = "BALANCED", "Balanced"
+        summary = f"O/U {over_under:g} is middle-of-the-road — no strong lean either way."
+
+    def side_strength(off, deff):
+        bits = []
+        if off and off.get("overall"):
+            bits.append(f"offense ranks #{off['overall']['rank']}/{off['overall']['rank_out_of']}")
+        if deff and deff.get("overall"):
+            bits.append(f"defense ranks #{deff['overall']['rank']}/{deff['overall']['rank_out_of']}")
+        return ", ".join(bits)
+
+    return {
+        "tag": tag,
+        "label": label,
+        "summary": summary,
+        "home_implied_total": home_implied,
+        "away_implied_total": away_implied,
+        "home_strength_note": side_strength(home_off, home_def) or None,
+        "away_strength_note": side_strength(away_off, away_def) or None,
+    }
 
 @router.get("/schedule/{week}")
 async def get_schedule(week: int):
     try:
         if model_data["df_schedule"].is_empty(): return []
         
-        max_week = model_data["df_schedule"]["week"].max()
-        
         # Allow querying future weeks (playoffs) even if empty, don't fallback to max_week if week > max_week
         # This allows the frontend to receive an empty list for Week 19+ instead of Week 18 data
         target_week = week
         
         sched_df = model_data["df_schedule"].filter(pl.col("week") == int(target_week))
+        if "season" in sched_df.columns:
+            sched_df = sched_df.filter(pl.col("season").cast(pl.Int64, strict=False) == int(CURRENT_SEASON))
         
         # Sort by gameday and gametime (Earliest first)
-        if "gameday" in sched_df.columns and "gametime" in sched_df.columns:
+        if not sched_df.is_empty() and "gameday" in sched_df.columns and "gametime" in sched_df.columns:
             sched_df = sched_df.sort(["gameday", "gametime"])
             logger.info(f"Sorted schedule for Week {week}. First game: {sched_df['home_team'][0]} vs {sched_df['away_team'][0]} at {sched_df['gameday'][0]} {sched_df['gametime'][0]}")
             
@@ -124,6 +170,28 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
                         except (ValueError, TypeError):
                             spread = None
 
+        weather = None
+        try:
+            weather = get_game_weather(home_team, gameday)
+        except Exception as e:
+            logger.warning(f"Weather lookup failed for {away_team}@{home_team} week {week}: {e}")
+
+        home_rankings, away_rankings = None, None
+        game_script = None
+        try:
+            home_rankings = _get_last_season_team_rankings(home_team)
+            away_rankings = _get_last_season_team_rankings(away_team)
+            game_script = _derive_game_script(
+                over_under,
+                spread,
+                (home_rankings or {}).get("offense"),
+                (home_rankings or {}).get("defense"),
+                (away_rankings or {}).get("offense"),
+                (away_rankings or {}).get("defense"),
+            )
+        except Exception as e:
+            logger.warning(f"Game script derivation failed for {away_team}@{home_team} week {week}: {e}")
+
         return {
             "matchup": f"{away_team} @ {home_team}",
             "week": week,
@@ -136,7 +204,11 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
             "home_roster": home_cards,
             "away_roster": away_cards,
             "home_injuries": home_injuries,
-            "away_injuries": away_injuries
+            "away_injuries": away_injuries,
+            "weather": weather,
+            "home_rankings": home_rankings,
+            "away_rankings": away_rankings,
+            "game_script": game_script,
         }
     except Exception as e: 
         logger.exception(f"Matchup endpoint error: {e}")

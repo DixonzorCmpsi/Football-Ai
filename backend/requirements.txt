@@ -35,3 +35,4 @@ beautifulsoup4
 crawl4ai
 undetected-chromedriver
 selenium
+slowapi

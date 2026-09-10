@@ -15,18 +15,40 @@ DERIVED_CACHE_KEYS = (
 )
 
 # Short-lived current-roster corrections for moves that upstream offseason feeds
-# can lag on. Keep these specific and dated so they can be removed once source
-# rosters catch up.
-CURRENT_TEAM_OVERRIDES = {
+# can lag on. Each entry carries the date it was confirmed so `_warn_stale_overrides`
+# can flag ones that are old enough to have been overtaken by another move —
+# a hardcoded correction that itself goes stale is exactly how Kenneth Walker III
+# stayed on SEA in-app for months after being traded to KC.
+CURRENT_TEAM_OVERRIDES_DATED = {
     # David Njoku agreed to a one-year deal with the Chargers on 2026-05-11.
-    "00-0033885": "LAC",
+    "00-0033885": ("LAC", "2026-05-11"),
     # DJ Moore: depth-chart feed surfaced him at WR1 for BUF; he's on CHI.
-    # Override until the upstream roster catches up. Confirmed 2026-05-23.
-    "00-0034827": "CHI",
-    # Kenneth Walker III: surfaced as KC starting RB; he's on SEA.
-    # Override until the upstream roster catches up. Confirmed 2026-05-23.
-    "00-0038134": "SEA",
+    "00-0034827": ("CHI", "2026-05-23"),
+    # Kenneth Walker III: traded from SEA to KC.
+    "00-0038134": ("KC", "2026-09-10"),
 }
+CURRENT_TEAM_OVERRIDES = {pid: team for pid, (team, _) in CURRENT_TEAM_OVERRIDES_DATED.items()}
+
+# Overrides older than this are past their useful life: either the source feed
+# has long since caught up, or (as with Kenneth Walker III above) the player
+# has moved again and the override is now actively wrong. Surface them loudly
+# instead of trusting hardcoded data forever.
+_OVERRIDE_STALE_AFTER_DAYS = 60
+
+
+def _warn_stale_overrides() -> None:
+    today = datetime.now().date()
+    for player_id, (team, confirmed) in CURRENT_TEAM_OVERRIDES_DATED.items():
+        try:
+            age_days = (today - datetime.strptime(confirmed, "%Y-%m-%d").date()).days
+        except ValueError:
+            continue
+        if age_days > _OVERRIDE_STALE_AFTER_DAYS:
+            logger.warning(
+                "CURRENT_TEAM_OVERRIDES entry for %s -> %s is %d days old (confirmed %s) — "
+                "re-verify the player's actual current team; it may have changed again.",
+                player_id, team, age_days, confirmed,
+            )
 
 
 def invalidate_derived_caches() -> None:
@@ -84,6 +106,8 @@ def apply_current_roster_overrides() -> None:
     """Patch known offseason roster-feed lag in loaded profile/depth-chart frames."""
     if not CURRENT_TEAM_OVERRIDES:
         return
+
+    _warn_stale_overrides()
 
     profile = model_data.get("df_profile", pl.DataFrame())
     if not profile.is_empty() and "player_id" in profile.columns:
@@ -164,6 +188,25 @@ def refresh_db_data():
     for key, (query, csv) in sources.items():
         model_data[key] = load_data_source(query, csv)
 
+    # Keep only the active season. A schedule table can retain prior seasons,
+    # which must not drive the current-week calculation or game board.
+    schedule = model_data["df_schedule"]
+    if not schedule.is_empty() and "season" in schedule.columns:
+        model_data["df_schedule"] = schedule.filter(
+            pl.col("season").cast(pl.Int64, strict=False) == int(CURRENT_SEASON)
+        )
+
+    # A new season can have a published schedule before the production database
+    # is populated. In that case use the checked-in current-season fixture.
+    if model_data["df_schedule"].is_empty():
+        schedule_path = os.path.join(RAG_DIR, f"schedule_{CURRENT_SEASON}.csv")
+        if os.path.exists(schedule_path):
+            try:
+                model_data["df_schedule"] = enforce_types(pl.read_csv(schedule_path, ignore_errors=True))
+                logger.info("Loaded %s schedule rows from the local season fixture", model_data["df_schedule"].height)
+            except Exception as e:
+                logger.warning("Unable to load local season schedule %s: %s", schedule_path, e)
+
     apply_current_roster_overrides()
     _ensure_rookies_merged()
 
@@ -219,6 +262,25 @@ def refresh_db_data():
 def refresh_app_state():
     logger.info("Refreshing app state (scheduler) ...")
     try:
+        sched = model_data.get("df_schedule", pl.DataFrame())
+        if not sched.is_empty() and "gameday" in sched.columns and "week" in sched.columns:
+            if "season" in sched.columns:
+                sched = sched.filter(pl.col("season").cast(pl.Int64, strict=False) == int(CURRENT_SEASON))
+
+            # The current-season schedule, not the provider's cached week, is
+            # authoritative during the preseason and on opening week.
+            if not sched.is_empty():
+                dated = sched.with_columns(
+                    pl.col("gameday").cast(pl.Utf8).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("_game_date")
+                )
+                upcoming = dated.filter(pl.col("_game_date") >= datetime.now().date())
+                source = upcoming if not upcoming.is_empty() else dated
+                active_week = source.sort("_game_date").select(pl.col("week").first()).item()
+                if active_week is not None:
+                    model_data["current_nfl_week"] = int(active_week)
+                    logger.info("Active NFL Week from %s schedule: %s", CURRENT_SEASON, active_week)
+                    return
+
         base_week = nfl.get_current_week()
         
         # Smart week detection: Only advance the week if ALL games in base_week have been played
