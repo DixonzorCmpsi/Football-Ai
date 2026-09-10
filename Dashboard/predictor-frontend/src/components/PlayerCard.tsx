@@ -119,7 +119,7 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
   return (
     <div 
       onClick={() => onClick(data)}
-      className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col min-h-[9rem] h-auto overflow-hidden border bg-white dark:bg-slate-900 ${
+      className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-colors duration-200 flex flex-col min-h-[9rem] h-auto overflow-hidden border bg-white dark:bg-slate-900 ${
         isSelected 
           ? 'border-blue-500 ring-2 ring-blue-500/20 dark:ring-blue-500/40' 
           : 'border-slate-200 dark:border-white/10 hover:border-blue-300 dark:hover:border-blue-700'
@@ -140,7 +140,7 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
       {onToggleCompare && (
           <button 
             onClick={(e) => { e.stopPropagation(); onToggleCompare(data.player_id); }}
-            className={`absolute top-2 right-2 z-20 p-1.5 rounded-full transition-all shadow-sm ${
+            className={`absolute top-2 right-2 z-20 p-1.5 rounded-full transition-colors shadow-sm ${
               isSelected 
                 ? 'bg-blue-600 text-white hover:bg-blue-700' 
                 : 'bg-white/80 dark:bg-black/40 text-slate-400 hover:text-blue-500 hover:bg-white dark:hover:bg-slate-800'
@@ -194,7 +194,7 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
       </div>
 
       {/* --- VEGAS PROPS GRID --- */}
-      <div className="bg-slate-50 dark:bg-black/20 rounded-lg px-2 py-1.5 space-y-1 border border-slate-100 dark:border-white/5 mt-auto relative z-10 backdrop-blur-sm">
+      <div className="bg-slate-50 dark:bg-black/20 rounded-lg px-2 py-1.5 space-y-1 border border-slate-100 dark:border-white/5 mt-auto relative z-10">
         
         <div className="flex justify-between items-center text-[10px] border-b border-slate-200 dark:border-white/10 pb-1 mb-1">
           <span className="text-slate-500 dark:text-white/60 font-medium">Implied Total</span>

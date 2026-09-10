@@ -956,4 +956,7 @@ const GameRanksView: React.FC<GameRanksViewProps> = ({ games, loadingSchedule, w
   );
 };
 
-export default GameRanksView;
+// Mounted for the whole session and hidden with display:none so local state
+// (scroll position, drag assignments, filters) survives navigation. Without
+// memo, any App state change re-renders this entire tree while it is off-screen.
+export default memo(GameRanksView);

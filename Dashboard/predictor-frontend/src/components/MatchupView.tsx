@@ -204,7 +204,15 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                         // content-visibility skips layout/paint for cards scrolled out of
                         // view — a full two-team roster can run ~180 cards deep, and that
                         // was the single biggest cost behind sluggish/inconsistent scroll.
-                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 220px' }}>
+                        //
+                        // The `auto` in contain-intrinsic-size is load-bearing: PlayerCard is
+                        // min-h-[9rem] h-auto and its prop rows render conditionally, so real
+                        // heights range ~144-260px. A fixed placeholder guess resolves to a
+                        // different height on every reveal, which shifts everything below it
+                        // and makes scrolling back up feel like content is snapping into
+                        // place. `auto` caches each card's last real size so it only pays
+                        // that correction once.
+                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 176px' }}>
                             <PlayerCard
                                 data={p}
                                 teamColor={getTeamColor(away)}
@@ -224,7 +232,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                 </div>
                 <div className="space-y-3">
                     {homeRoster.map(p => (
-                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 220px' }}>
+                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 176px' }}>
                             <PlayerCard
                                 data={p}
                                 teamColor={getTeamColor(home)}
@@ -259,7 +267,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                         </h3>
                         <div className="space-y-2">
                             {awayInjuries.length > 0 ? awayInjuries.map(p => (
-                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}>
+                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 68px' }}>
                                     <InjuryCard player={p} />
                                 </div>
                             )) : (
@@ -273,7 +281,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                         </h3>
                         <div className="space-y-2">
                             {homeInjuries.length > 0 ? homeInjuries.map(p => (
-                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}>
+                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 68px' }}>
                                     <InjuryCard player={p} />
                                 </div>
                             )) : (
