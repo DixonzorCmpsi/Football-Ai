@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { ArrowLeft, Activity, Users, TrendingUp } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Activity, Users, TrendingUp, ListOrdered } from 'lucide-react';
 import MatchupBanner from './MatchupBanner';
 import PlayerCard from './PlayerCard';
 import PlayerModal from './PlayerModal';
 import MatchupInsights from './MatchupInsights';
+import { GameCard, gameKey } from './GameRanksView';
+import type { FetchedMatchup } from './GameRanksView';
+import { MatchupSkeleton } from './Skeleton';
 import { getTeamColor } from '../utils/nflColors';
-import type { MatchupData, InjuryData } from '../hooks/useNflData';
+import type { MatchupData, InjuryData, ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
 
 interface MatchupViewProps {
@@ -15,13 +18,14 @@ interface MatchupViewProps {
   onBack: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
+  onOpenHistory?: (id: string) => void;
 }
 
 type PositionFilter = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
-type ViewTab = 'ROSTER' | 'INJURIES' | 'INSIGHTS';
+type ViewTab = 'ROSTER' | 'INJURIES' | 'INSIGHTS' | 'RANK';
 type InjuryFilter = 'ALL' | 'OFFENSE' | 'DEFENSE' | 'SKILL';
 
-const InjuryCard = ({ player }: { player: InjuryData }) => {
+const InjuryCard = React.memo(({ player }: { player: InjuryData }) => {
     const getStatusColor = (status: string) => {
         const s = status.toLowerCase();
         if (s.includes('out') || s.includes('ir')) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
@@ -54,9 +58,9 @@ const InjuryCard = ({ player }: { player: InjuryData }) => {
             </div>
         </div>
     );
-};
+});
 
-const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, compareList, onToggleCompare }) => {
+const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory }) => {
   const [data, setData] = useState<MatchupData | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,14 +79,24 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
     }).catch(err => { console.error(err); setLoading(false); });
   }, [week, home, away]);
 
-  if (loading) return <div className="flex h-full items-center justify-center"><div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div></div>;
-  if (!data) return <div className="p-10 text-center text-slate-400">Matchup Data Unavailable</div>;
-
-  const processRoster = (roster: PlayerData[]) => {
-    let processed = [...roster];
+  // Hooks must run unconditionally, before the loading/empty-data early
+  // returns below — these previously ran as plain per-render computations
+  // (not memoized), which meant every unrelated re-render (opening the
+  // player modal, toggling a filter for the OTHER tab, etc.) re-sorted and
+  // re-filtered rosters and injury reports that hadn't actually changed.
+  // That churn is worse now that the injury filter fix below roughly
+  // triples the O-line/defense rows in each team's injury list.
+  const homeRoster = useMemo(() => {
+    let processed = [...(data?.home_roster ?? [])];
     if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
     return processed.sort((a, b) => (b.average_points || 0) - (a.average_points || 0));
-  };
+  }, [data?.home_roster, filterPos]);
+
+  const awayRoster = useMemo(() => {
+    let processed = [...(data?.away_roster ?? [])];
+    if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
+    return processed.sort((a, b) => (b.average_points || 0) - (a.average_points || 0));
+  }, [data?.away_roster, filterPos]);
 
   const filterInjuries = (injuries: InjuryData[] | undefined) => {
     if (!injuries) return [];
@@ -95,56 +109,87 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
     }).sort((a, b) => b.avg_snaps - a.avg_snaps);
   };
 
-  const homeRoster = processRoster(data.home_roster);
-  const awayRoster = processRoster(data.away_roster);
-  const homeInjuries = filterInjuries(data.home_injuries);
-  const awayInjuries = filterInjuries(data.away_injuries);
+  const homeInjuries = useMemo(() => filterInjuries(data?.home_injuries), [data?.home_injuries, injuryFilter]);
+  const awayInjuries = useMemo(() => filterInjuries(data?.away_injuries), [data?.away_injuries, injuryFilter]);
+
+  const rankGame: ScheduleGame | null = data ? {
+    home_team: home,
+    away_team: away,
+    gameday: data.gameday,
+    gametime: data.gametime,
+    game_total: data.over_under ?? undefined,
+  } : null;
+  // Already fetched for the Roster tab — hand it straight to the Rank tab's
+  // board instead of letting it re-fetch the same matchup from scratch.
+  const preloadedMatchup: FetchedMatchup | null = useMemo(() => data ? {
+    home_roster: data.home_roster,
+    away_roster: data.away_roster,
+    weather: data.weather ?? null,
+    home_rankings: data.home_rankings ?? null,
+    away_rankings: data.away_rankings ?? null,
+    game_script: data.game_script ?? null,
+    over_under: data.over_under ?? null,
+    spread: data.spread ?? null,
+    home_win_prob: data.home_win_prob ?? null,
+    away_win_prob: data.away_win_prob ?? null,
+  } : null, [data]);
+
+  if (loading) return <MatchupSkeleton />;
+  if (!data || !rankGame || !preloadedMatchup) return <div className="p-10 text-center text-slate-400">Matchup Data Unavailable</div>;
+
+  const viewTabs = (
+    <div className="flex bg-slate-200 dark:bg-slate-800 p-1 rounded-lg">
+        <button
+            onClick={() => setActiveTab('ROSTER')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'ROSTER' ? 'bg-white dark:bg-slate-700 shadow text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+        >
+            <Users size={12} /> Roster
+        </button>
+        <button
+            onClick={() => setActiveTab('INJURIES')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'INJURIES' ? 'bg-white dark:bg-slate-700 shadow text-red-600 dark:text-red-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+        >
+            <Activity size={12} /> Injuries
+        </button>
+        <button
+            onClick={() => setActiveTab('INSIGHTS')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'INSIGHTS' ? 'bg-white dark:bg-slate-700 shadow text-green-600 dark:text-green-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+        >
+            <TrendingUp size={12} /> Insights
+        </button>
+        <button
+            onClick={() => setActiveTab('RANK')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'RANK' ? 'bg-white dark:bg-slate-700 shadow text-purple-600 dark:text-purple-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+        >
+            <ListOrdered size={12} /> Rank
+        </button>
+    </div>
+  );
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col relative bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
-      
-      <div className="flex items-center justify-between mb-2 shrink-0">
-        <button onClick={onBack} className="flex items-center text-xs font-bold text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-500 transition-colors">
-          <ArrowLeft size={14} className="mr-1" /> Back to Schedule
-        </button>
-        
-        {/* View Tabs */}
-        <div className="flex bg-slate-200 dark:bg-slate-800 p-1 rounded-lg">
-            <button 
-                onClick={() => setActiveTab('ROSTER')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'ROSTER' ? 'bg-white dark:bg-slate-700 shadow text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
-            >
-                <Users size={14} /> Roster
-            </button>
-            <button 
-                onClick={() => setActiveTab('INJURIES')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'INJURIES' ? 'bg-white dark:bg-slate-700 shadow text-red-600 dark:text-red-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
-            >
-                <Activity size={14} /> Injuries
-            </button>
-            <button 
-                onClick={() => setActiveTab('INSIGHTS')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'INSIGHTS' ? 'bg-white dark:bg-slate-700 shadow text-green-600 dark:text-green-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
-            >
-                <TrendingUp size={14} /> Insights
-            </button>
-        </div>
-      </div>
 
-      <div className="mb-1 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
-        <MatchupBanner 
-          matchup={data.matchup} 
+      <div
+        className={`mb-1 rounded-xl overflow-hidden shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0 ${
+          activeTab === 'ROSTER' ? 'mr-10 lg:mr-12 xl:mr-14' : ''
+        }`}
+      >
+        <MatchupBanner
+          matchup={data.matchup}
           gameTime={data.gametime}
           gameDay={data.gameday}
           overUnder={data.over_under || null}
           spread={data.spread || null}
           homeWinProb={data.home_win_prob || null}
           awayWinProb={data.away_win_prob || null}
+          weather={data.weather ?? null}
+          gameScript={data.game_script ?? null}
+          tabs={viewTabs}
         />
       </div>
 
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
-        <div className="flex-1 overflow-y-auto pr-10 lg:pr-12 xl:pr-14 pb-4" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div className={`flex-1 overflow-y-auto overscroll-contain pb-4 ${activeTab === 'ROSTER' ? 'pr-10 lg:pr-12 xl:pr-14' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
           <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
           
           {activeTab === 'ROSTER' ? (
@@ -156,14 +201,18 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                 </div>
                 <div className="space-y-3">
                     {awayRoster.map(p => (
-                        <PlayerCard 
-                            key={p.player_id} 
-                            data={p} 
-                            teamColor={getTeamColor(away)}
-                            onClick={setSelectedPlayer}
-                            isSelected={compareList.includes(p.player_id)}
-                            onToggleCompare={onToggleCompare}
-                        />
+                        // content-visibility skips layout/paint for cards scrolled out of
+                        // view — a full two-team roster can run ~180 cards deep, and that
+                        // was the single biggest cost behind sluggish/inconsistent scroll.
+                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 220px' }}>
+                            <PlayerCard
+                                data={p}
+                                teamColor={getTeamColor(away)}
+                                onClick={setSelectedPlayer}
+                                isSelected={compareList.includes(p.player_id)}
+                                onToggleCompare={onToggleCompare}
+                            />
+                        </div>
                     ))}
                 </div>
                 </div>
@@ -175,14 +224,15 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                 </div>
                 <div className="space-y-3">
                     {homeRoster.map(p => (
-                        <PlayerCard 
-                            key={p.player_id} 
-                            data={p} 
-                            teamColor={getTeamColor(home)}
-                            onClick={setSelectedPlayer}
-                            isSelected={compareList.includes(p.player_id)}
-                            onToggleCompare={onToggleCompare}
-                        />
+                        <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 220px' }}>
+                            <PlayerCard
+                                data={p}
+                                teamColor={getTeamColor(home)}
+                                onClick={setSelectedPlayer}
+                                isSelected={compareList.includes(p.player_id)}
+                                onToggleCompare={onToggleCompare}
+                            />
+                        </div>
                     ))}
                 </div>
                 </div>
@@ -209,7 +259,9 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                         </h3>
                         <div className="space-y-2">
                             {awayInjuries.length > 0 ? awayInjuries.map(p => (
-                                <InjuryCard key={p.player_id} player={p} />
+                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}>
+                                    <InjuryCard player={p} />
+                                </div>
                             )) : (
                                 <div className="text-center py-8 text-slate-400 text-sm italic">No injuries reported</div>
                             )}
@@ -221,7 +273,9 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                         </h3>
                         <div className="space-y-2">
                             {homeInjuries.length > 0 ? homeInjuries.map(p => (
-                                <InjuryCard key={p.player_id} player={p} />
+                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}>
+                                    <InjuryCard player={p} />
+                                </div>
                             )) : (
                                 <div className="text-center py-8 text-slate-400 text-sm italic">No injuries reported</div>
                             )}
@@ -229,8 +283,21 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, onBack, com
                     </div>
                 </div>
             </div>
-          ) : (
+          ) : activeTab === 'INSIGHTS' ? (
             <MatchupInsights week={week} home={home} away={away} />
+          ) : (
+            <GameCard
+              key={gameKey(week, away, home)}
+              game={rankGame}
+              week={week}
+              expanded
+              onToggleExpand={() => undefined}
+              onToggleCompare={onToggleCompare}
+              onOpenHistory={onOpenHistory || (() => undefined)}
+              compareList={compareList}
+              preloadedMatchup={preloadedMatchup}
+              bannerless
+            />
           )}
 
         </div>

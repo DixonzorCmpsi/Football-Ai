@@ -29,3 +29,13 @@ node_modules/
 # Claude Code local config
 .claude/
 .gstack/
+
+# QA/debug screenshots dropped at repo root and backend/ root by manual test runs.
+# Model evaluation plots live in subdirectories and stay tracked.
+/*.png
+/backend/*.png
+
+# Ad-hoc local check scripts and UI layout scratchpads
+/check_frontend.py
+/check_tiers.py
+Dashboard/predictor-frontend/scratch/

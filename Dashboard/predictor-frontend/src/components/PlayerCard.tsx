@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Plus, Check } from 'lucide-react';
 import type { PlayerData } from '../types';
 import { usePicks } from '../contexts/PicksContext';
@@ -12,9 +12,13 @@ interface PlayerCardProps {
   onToggleCompare?: (id: string) => void;
 }
 
-const PlayerCard: React.FC<PlayerCardProps> = ({ 
-    data, 
-    teamColor = '#3b82f6', 
+// Rendered in bulk (up to ~90 per team on a matchup roster) — memoized so a
+// parent re-render (hover, filter toggle) doesn't force every card offscreen
+// to redo its own layout/paint work, which is what made long rosters feel
+// sluggish to scroll.
+const PlayerCard: React.FC<PlayerCardProps> = memo(({
+    data,
+    teamColor = '#3b82f6',
     onClick,
     isSelected,
     onToggleCompare
@@ -148,10 +152,13 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
 
       {/* --- HEADER GRID --- */}
       <div className="grid grid-cols-[auto_1fr_auto] gap-3 mb-1 items-center relative z-10">
-        <img 
-          src={data.image} 
-          alt={data.player_name} 
-          className="w-10 h-10 rounded-full object-cover bg-slate-100 dark:bg-black/30 border-2 border-white dark:border-white/20 shadow-md" 
+        <img
+          src={data.image}
+          alt={data.player_name}
+          loading="lazy"
+          width={40}
+          height={40}
+          className="w-10 h-10 rounded-full object-cover bg-slate-100 dark:bg-black/30 border-2 border-white dark:border-white/20 shadow-md"
         />
         
         <div className="min-w-0 flex flex-col justify-center">
@@ -217,6 +224,7 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
       </div>
     </div>
   );
-};
+});
+PlayerCard.displayName = 'PlayerCard';
 
 export default PlayerCard;

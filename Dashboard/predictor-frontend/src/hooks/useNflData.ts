@@ -93,6 +93,46 @@ export interface InjuryData {
   headshot?: string;
 }
 
+export interface GameWeather {
+  is_dome: boolean;
+  roof: string;
+  temp_f: number | null;
+  wind_mph: number | null;
+  condition: string;
+  precip_chance: number | null;
+}
+
+export interface TeamRankMetric {
+  label: string;
+  value: number;
+  rank: number;
+  rank_out_of: number;
+  lower_is_better: boolean;
+}
+
+export interface TeamSideRankings {
+  metrics: Record<string, TeamRankMetric>;
+  average_rank: number;
+  overall?: TeamRankMetric;
+}
+
+export interface TeamRankings {
+  season: number;
+  source: string;
+  offense: TeamSideRankings | null;
+  defense: TeamSideRankings | null;
+}
+
+export interface GameScript {
+  tag: 'SHOOTOUT' | 'GRIND_IT_OUT' | 'BLOWOUT_RISK' | 'BALANCED';
+  label: string;
+  summary: string;
+  home_implied_total: number | null;
+  away_implied_total: number | null;
+  home_strength_note: string | null;
+  away_strength_note: string | null;
+}
+
 export interface MatchupData {
     matchup: string;
     week: number;
@@ -106,6 +146,10 @@ export interface MatchupData {
     spread?: number | null;
     home_win_prob?: number | null;
     away_win_prob?: number | null;
+    weather?: GameWeather | null;
+    home_rankings?: TeamRankings | null;
+    away_rankings?: TeamRankings | null;
+    game_script?: GameScript | null;
 }
 
 export interface ScheduleGame {
@@ -286,22 +330,30 @@ export const useSchedule = (week: number) => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // `active` guards every state update below so a StrictMode double-invoke
+    // (mount -> cleanup -> mount) can't let the first, discarded run's stale
+    // promises clobber state the second, real run already set — without this,
+    // `games` bounces empty/populated/empty/populated a few times before
+    // settling, which was forcing GameCard to unmount/remount on each bounce.
+    let active = true;
     if (!week || week < 1) {
-        Promise.resolve().then(() => setGames([]));
-        return; 
+        Promise.resolve().then(() => { if (active) setGames([]); });
+        return () => { active = false; };
     }
-    
-    Promise.resolve().then(() => setLoading(true));
-    Promise.resolve().then(() => setGames([])); // Clear old games immediately
+
+    Promise.resolve().then(() => { if (active) setLoading(true); });
+    Promise.resolve().then(() => { if (active) setGames([]); }); // Clear old games immediately
 
     axios.get(`${API_BASE_URL}/schedule/${week}`)
-      .then(res => setGames(res.data))
+      .then(res => { if (active) setGames(res.data); })
       .catch(err => {
           console.error("Error fetching schedule:", err);
-          Promise.resolve().then(() => setGames([])); // Ensure empty array on error
+          if (active) setGames([]); // Ensure empty array on error
       })
-      .finally(() => Promise.resolve().then(() => setLoading(false)));
-  }, [week]); 
+      .finally(() => { if (active) setLoading(false); });
+
+    return () => { active = false; };
+  }, [week]);
 
   return { games, loadingSchedule: loading };
 };
@@ -478,6 +530,7 @@ export interface PoolPlayer {
   is_rookie: boolean;
   draft_year?: number | null;
   draft_number?: number | null;
+  adp?: number | null;
   age?: number | null;
   height?: number | null;
   weight?: number | null;
