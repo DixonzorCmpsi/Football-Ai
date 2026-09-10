@@ -80,6 +80,8 @@ export interface HistoryEntry {
   receptions: number;
   targets: number;
   carries: number;
+  interceptions?: number;
+  fumbles_lost?: number;
 }
 
 export interface InjuryData {

@@ -217,28 +217,43 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
       
       const playerRollingSnaps = histories.map(hist => {
           if (!hist || hist.length === 0) return 0;
-          // Take last 4 games (hist is sorted desc by week)
+          // hist is sorted season desc, week desc, so slice(0, 4) really is the 4
+          // most recent games — but early in a season those can reach back into
+          // the previous one. That's the intended "recent form" behaviour; the
+          // axis is labelled by games rather than weeks to avoid implying
+          // otherwise.
           const recentGames = hist.slice(0, 4);
           const totalSnaps = recentGames.reduce((acc: number, game: HistoryEntry) => acc + (game.snap_count || 0), 0);
           return totalSnaps / recentGames.length;
       });
 
-      const maxTDs = Math.max(...playerTotalTDs, 1); // ensure at least 1 to avoid division by zero
-      const maxSnaps = Math.max(...playerRollingSnaps, 1);
-
+      // Every axis is normalised against a FIXED absolute cap. Two of these used
+      // to be normalised against the max among the currently-selected players,
+      // which made the radar's shape depend on who else was in the comparison
+      // (the leader always pegged 100, and a single selected player pegged 100
+      // on those axes by definition). Caps are generous enough that real players
+      // rarely clip: 40 covers a big QB week, 20 TDs a monster season, and snap
+      // counts are a share of a ~70-snap game.
       const metrics = [
-          { key: 'prediction', label: 'Proj', cap: 25 },
-          { key: 'average_points', label: 'Avg', cap: 25 },
-          { key: 'ROLLING_SNAPS', label: 'Rolling Snaps (4wk)', cap: maxSnaps },
-          { key: 'implied_total', label: 'Game Script', cap: 35 }, 
-          { key: 'TOTAL_TDS', label: 'Total TDs', cap: maxTDs } 
+          { key: 'prediction', label: 'Proj', cap: 40 },
+          { key: 'average_points', label: 'Avg', cap: 40 },
+          { key: 'ROLLING_SNAPS', label: 'Snaps (last 4 games)', cap: 70 },
+          { key: 'implied_total', label: 'Implied Team Total', cap: 35 },
+          { key: 'TOTAL_TDS', label: 'Total TDs', cap: 20 }
       ];
 
       const getPlayerMetric = (p: PlayerData, key: string) => {
           switch (key) {
               case 'prediction': return p.prediction || 0;
               case 'average_points': return p.average_points || 0;
-              case 'implied_total': return (p as any).implied_total || (p.overunder ? p.overunder / 2 : 0);
+              case 'implied_total': {
+                  if (p.implied_total) return p.implied_total;
+                  // Fallback mirrors prediction.py: (total / 2) - (spread / 2).
+                  // Using total/2 alone assumes an even split, which systematically
+                  // overrates underdogs and underrates favourites.
+                  if (!p.overunder) return 0;
+                  return (p.overunder / 2) - ((p.spread ?? 0) / 2);
+              }
               // non-numeric or unsupported metrics default to 0
               default: return 0;
           }
@@ -266,13 +281,28 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
 
   const lineData = React.useMemo(() => {
       if (histories.length === 0) return [];
+      // The API returns multiple seasons (sorted season desc, week desc). Keying
+      // purely on week collapsed e.g. 2025 Wk5 and 2024 Wk5 into one point and
+      // silently dropped whichever came second, so prior-season games vanished
+      // while the axis still read as a clean season timeline. Key on season+week
+      // and restrict the chart to the most recent season present.
+      const latestSeason = Math.max(
+          ...histories.flatMap(h => h.map((g: HistoryEntry) => g.season ?? 0)),
+      );
       const allWeeks = new Set<number>();
-      histories.forEach(h => h.forEach((game: HistoryEntry) => allWeeks.add(game.week)));
+      histories.forEach(h =>
+          h.forEach((game: HistoryEntry) => {
+              if ((game.season ?? latestSeason) === latestSeason) allWeeks.add(game.week);
+          }),
+      );
       const sortedWeeks = Array.from(allWeeks).sort((a, b) => a - b);
       return sortedWeeks.map(week => {
           const point: Record<string, number | string | null> = { week: `Wk ${week}` };
           histories.forEach((hist, idx) => {
-              const game = hist.find((g: HistoryEntry) => g.week === week);
+              const game = hist.find(
+                  (g: HistoryEntry) =>
+                      g.week === week && (g.season ?? latestSeason) === latestSeason,
+              );
               point[`player_${idx}`] = game ? game.points : null;
           });
           return point;
@@ -284,27 +314,52 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
       
       return players.map((p, idx) => {
           const hist = histories[idx] || [];
-          if (hist.length === 0) return { name: p.player_name, yards: 0, tds: 0, other: 0 };
+          if (hist.length === 0) return { name: p.player_name, yards: 0, tds: 0, receptions: 0, turnovers: 0, other: 0 };
 
           const totalGames = hist.length;
           const totalPts = hist.reduce((acc, g) => acc + (g.points || 0), 0);
-          
-          // Calculate components (Standard Scoring approx)
-          const totalYardsPts = hist.reduce((acc, g) => 
+
+          // These constants mirror calculate_fantasy_points() in
+          // backend/applications/api/services/utils.py exactly: PPR, passing TDs
+          // at 4, rushing/receiving TDs at 6. Scoring passing TDs at 6 here (as
+          // this used to) inflated every QB's TD band by 50% and pushed the
+          // residual negative, so the stack no longer summed to their average.
+          const totalYardsPts = hist.reduce((acc, g) =>
               acc + ((g.passing_yds || 0) * 0.04) + ((g.rushing_yds || 0) * 0.1) + ((g.receiving_yds || 0) * 0.1), 0);
-          
-          const totalTDPts = hist.reduce((acc, g) => acc + ((g.touchdowns || 0) * 6), 0);
-          
+
+          const totalTDPts = hist.reduce((acc, g) => {
+              const passTds = g.passing_tds || 0;
+              // `touchdowns` is the combined pass+rush+rec total from the API.
+              const nonPassTds = Math.max(0, (g.touchdowns || 0) - passTds);
+              return acc + passTds * 4 + nonPassTds * 6;
+          }, 0);
+
+          // PPR receptions are the single largest scoring component for WR/TE.
+          // They used to vanish into the unlabeled "Other" bucket, which hid the
+          // main thing a "Scoring Mix" chart is supposed to show.
+          const totalRecPts = hist.reduce((acc, g) => acc + (g.receptions || 0), 0);
+
+          // Interceptions and fumbles lost are -2 apiece. Rendered as a negative
+          // band so the stack actually reconciles to the player's average instead
+          // of overshooting it (2 INTs used to inflate a QB's bar by 4 points).
+          const totalTurnoverPts = hist.reduce(
+              (acc, g) => acc + ((g.interceptions || 0) + (g.fumbles_lost || 0)) * -2, 0);
+
           const avgYards = totalYardsPts / totalGames;
           const avgTDs = totalTDPts / totalGames;
+          const avgRec = totalRecPts / totalGames;
+          const avgTurnovers = totalTurnoverPts / totalGames;
           const avgTotal = totalPts / totalGames;
-          // "Other" captures PPR, Bonuses, or scoring diffs
-          const avgOther = Math.max(0, avgTotal - avgYards - avgTDs);
+          // Whatever the four modelled components don't explain — bonuses, or drift
+          // from the backend's precomputed y_fantasy_points_ppr column when present.
+          const avgOther = avgTotal - avgYards - avgTDs - avgRec - avgTurnovers;
 
           return {
               name: p.player_name,
               yards: parseFloat(avgYards.toFixed(1)),
               tds: parseFloat(avgTDs.toFixed(1)),
+              receptions: parseFloat(avgRec.toFixed(1)),
+              turnovers: parseFloat(avgTurnovers.toFixed(1)),
               other: parseFloat(avgOther.toFixed(1))
           };
       });
@@ -420,6 +475,8 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
                                 <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
                                 <Bar dataKey="yards" name="Yards" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />
                                 <Bar dataKey="tds" name="TDs" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="receptions" name="Receptions (PPR)" stackId="a" fill="#f59e0b" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="turnovers" name="Turnovers" stackId="a" fill="#ef4444" radius={[0, 0, 0, 0]} />
                                 <Bar dataKey="other" name="Other" stackId="a" fill="#64748b" radius={[0, 4, 4, 0]} />
                             </BarChart>
                         )}

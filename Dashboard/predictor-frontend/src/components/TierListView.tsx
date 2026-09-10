@@ -438,8 +438,10 @@ const PoolPanel: React.FC<PoolPanelProps> = memo(({
         players.map((p, idx) => (
           // content-visibility skips layout/paint for rows scrolled out of view —
           // this list can run past 300 players, and that was the single biggest
-          // cost behind the page feeling slow to scroll.
-          <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 46px' }}>
+          // cost behind the page feeling slow to scroll. `auto` in
+          // contain-intrinsic-size caches each row's real height so a reveal
+          // doesn't reflow the rows below it (see MatchupView for the details).
+          <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 46px' }}>
             <PoolCard
               player={p}
               rank={startRank + idx}
@@ -943,4 +945,7 @@ const TierListView: React.FC<TierListViewProps> = ({
   );
 };
 
-export default TierListView;
+// Mounted for the whole session and hidden with display:none so local state
+// (scroll position, drag assignments, filters) survives navigation. Without
+// memo, any App state change re-renders this entire tree while it is off-screen.
+export default memo(TierListView);

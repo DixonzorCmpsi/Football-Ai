@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
@@ -68,7 +68,7 @@ const SidebarPlayerItem = ({
   const statusColor = getStatusColor(player.injury_status);
 
   return (
-    <div className="group relative bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-start gap-3 mb-2 transition-all hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer">
+    <div className="group relative bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 flex items-start gap-3 mb-2 transition-shadow hover:shadow-md hover:ring-2 hover:ring-blue-50 dark:hover:ring-blue-900 cursor-pointer">
       <div className="flex-1 flex gap-3 min-w-0" onClick={() => onClick && onClick(player.player_id)}>
           <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden border border-slate-200 dark:border-slate-600 shrink-0 relative">
             {player.image ? (
@@ -142,12 +142,12 @@ export default function App() {
   type TeamModalTab = 'overview' | 'builder';
   type ModalReturn = { team: string; focusPlayerId?: string | null; detailPlayerId?: string | null; activeTab?: TeamModalTab };
   const [modalReturn, setModalReturn] = useState<ModalReturn | null>(null);
-  const setViewMode = (next: ViewMode) => {
+  const setViewMode = useCallback((next: ViewMode) => {
     if (next !== viewMode) {
       setNavStack((prev) => (prev[prev.length - 1] === viewMode ? prev : [...prev, viewMode]));
     }
     setViewModeRaw(next);
-  };
+  }, [viewMode]);
   const goBack = () => {
     setNavStack((prev) => {
       if (prev.length === 0) return prev;
@@ -200,12 +200,34 @@ export default function App() {
     initialTab?: TeamModalTab;
   } | null>(null);
 
-  const toggleCompare = (playerId: string) => {
+  const toggleCompare = useCallback((playerId: string) => {
     setCompareList(prev => {
         if (prev.includes(playerId)) return prev.filter(id => id !== playerId);
         return [...prev, playerId];
     });
-  };
+  }, []);
+
+  // GameRanksView and TierListView stay mounted for the whole session (hidden via
+  // display:none) so their local state survives navigation. That means an unstable
+  // prop re-renders a 300+ card tree even while it is off-screen, so every handler
+  // they receive is memoised and both components are wrapped in React.memo.
+  const openHistoryFromRanks = useCallback((id: string) => {
+    setSelectedHistoryId(id);
+    setHistoryFrom('GAME_RANKS');
+    setViewMode('HISTORY');
+  }, [setViewMode]);
+
+  const openHistoryFromTiers = useCallback((id: string) => {
+    setSelectedHistoryId(id);
+    setHistoryFrom('TIERS');
+    setViewMode('HISTORY');
+  }, [setViewMode]);
+
+  const openCompareFromTiers = useCallback(() => setViewMode('COMPARE'), [setViewMode]);
+  const openTeamFromTiers = useCallback(
+    (team: string, focusPlayerId?: string | null) => setTeamModal({ team, focusPlayerId }),
+    [],
+  );
 
   useEffect(() => {
     if (viewMode === 'COMPARE' && compareList.length > 2) {
@@ -441,7 +463,7 @@ export default function App() {
           </div>
           
           {viewMode === 'SCHEDULE' && (
-            <div className={`mx-auto transition-all duration-300 ${showSidebars ? 'max-w-5xl' : 'max-w-6xl'}`}>
+            <div className={`mx-auto ${showSidebars ? 'max-w-5xl' : 'max-w-6xl'}`}>
               <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6">Week {activeWeek} Matchups</h2>
               
               {loadingSchedule ? (
@@ -460,7 +482,7 @@ export default function App() {
                     <div 
                       key={idx} 
                       onClick={() => { setSelectedGame({ home: game.home_team, away: game.away_team }); setViewMode('GAME'); }} 
-                      className="bg-white dark:bg-slate-800 rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-all group border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 relative overflow-hidden"
+                      className="bg-white dark:bg-slate-800 rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-shadow group border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 relative overflow-hidden"
                     >
                       {game.game_total && (
                         <div className="absolute top-0 left-1/2 -translate-x-1/2 bg-slate-100 dark:bg-slate-900 px-3 py-1 rounded-b-lg border-x border-b border-slate-200 dark:border-slate-700 shadow-sm z-10">
@@ -555,7 +577,7 @@ export default function App() {
               player's history and coming back preserves the selected game,
               position filter, and tier board exactly as left. */}
           <div
-            className={`mx-auto w-full transition-all duration-300 ${showSidebars ? 'max-w-6xl' : 'max-w-[1900px]'}`}
+            className={`mx-auto w-full ${showSidebars ? 'max-w-6xl' : 'max-w-[1900px]'}`}
             style={{ display: viewMode === 'GAME_RANKS' ? 'block' : 'none' }}
           >
             <GameRanksView
@@ -564,11 +586,7 @@ export default function App() {
               week={activeWeek}
               compareList={compareList}
               onToggleCompare={toggleCompare}
-              onOpenHistory={(id) => {
-                setSelectedHistoryId(id);
-                setHistoryFrom('GAME_RANKS');
-                setViewMode('HISTORY');
-              }}
+              onOpenHistory={openHistoryFromRanks}
             />
           </div>
 
@@ -581,13 +599,9 @@ export default function App() {
               onStateChange={setTierState}
               compareList={compareList}
               onToggleCompare={toggleCompare}
-              onViewHistory={(id) => {
-                setSelectedHistoryId(id);
-                setHistoryFrom('TIERS');
-                setViewMode('HISTORY');
-              }}
-              onOpenCompare={() => setViewMode('COMPARE')}
-              onOpenTeam={(team, focusPlayerId) => setTeamModal({ team, focusPlayerId })}
+              onViewHistory={openHistoryFromTiers}
+              onOpenCompare={openCompareFromTiers}
+              onOpenTeam={openTeamFromTiers}
             />
           </div>
 

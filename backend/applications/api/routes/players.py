@@ -485,7 +485,12 @@ async def get_player_history(player_id: str):
                 "receptions": int(row.get('receptions') or 0),
                 "targets": int(row.get('targets') or 0),
                 "carries": int(row.get('rush_attempts') or 0),
-                "pass_attempts": int(row.get('attempts') or row.get('pass_attempts') or 0)
+                "pass_attempts": int(row.get('attempts') or row.get('pass_attempts') or 0),
+                # Negative-scoring plays. calculate_fantasy_points() already docks
+                # 2 points apiece, but without these the client can't reconcile a
+                # points breakdown against the total it's given.
+                "interceptions": int(row.get('interceptions') or 0),
+                "fumbles_lost": int(row.get('fumbles_lost') or 0)
             })
         return history
     except Exception as e:
