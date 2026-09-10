@@ -9,3 +9,5 @@ fastapi
 pydantic
 python-dotenv
 sqlalchemy
+slowapi
+requests
