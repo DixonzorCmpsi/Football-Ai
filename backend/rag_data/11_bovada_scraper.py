@@ -1,12 +1,16 @@
 import time
 import json
 import os
+import sys
 import re
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 import undetected_chromedriver as uc
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _chrome_driver import build_driver
 
 
 # --- CONFIG ---
@@ -41,8 +45,14 @@ def setup_driver():
         print("💻 Local environment detected: Running standard profile. To reduce memory, set BOVADA_CHUNK_SIZE smaller or enable swap on the host.")
 
     # 3. Initialize with error handling
+    #
+    # The driver path was pinned to the Docker image's /usr/local/bin/chromedriver,
+    # which does not exist off the container - so this step could only ever run in
+    # Docker and failed instantly anywhere else. Use that binary when it is really
+    # there, otherwise let undetected_chromedriver resolve a driver matching the
+    # locally installed Chrome.
     try:
-        driver = uc.Chrome(options=options, driver_executable_path="/usr/local/bin/chromedriver", use_subprocess=False)
+        driver = build_driver(uc, options)
         return driver
     except Exception as e:
         print(f"❌ Driver initialization failed: {e}")
