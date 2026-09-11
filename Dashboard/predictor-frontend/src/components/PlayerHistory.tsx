@@ -1,8 +1,9 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart } from 'lucide-react';
+import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 import PlayerPerformanceCharts, { pointColor } from './PlayerPerformanceCharts';
+import PlayerStorylines from './PlayerStorylines';
 import { sizedPlayerImage } from '../utils/playerImage';
 
 interface Props {
@@ -31,7 +32,7 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
       .sort((a, b) => b.season - a.season);
   }, [history]);
 
-  const [viewMode, setViewMode] = useState<'table' | 'visual'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'visual' | 'storylines'>('table');
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   useEffect(() => {
     if (seasons.length === 0) {
@@ -226,13 +227,33 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
             >
               <LineChart size={13} /> Visual
             </button>
+            <button
+              onClick={() => setViewMode('storylines')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
+                viewMode === 'storylines'
+                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <Newspaper size={13} /> Storylines
+            </button>
           </div>
         </div>
       )}
 
       {/* HISTORY TABLE / VISUAL */}
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col transition-colors duration-300">
-        {loadingHistory ? (
+        {/* Storylines are checked BEFORE the loading/empty guards on purpose: a
+            player with no games yet (a rookie, or anyone pre-kickoff) is exactly
+            who you open this page to read about, and the old guards rendered
+            "No games for this season yet" over everything. */}
+        {viewMode === 'storylines' ? (
+          <PlayerStorylines
+            playerId={playerId}
+            playerName={cardData?.name}
+            teamColor={teamColor}
+          />
+        ) : loadingHistory ? (
           <div className="p-20 text-center text-slate-400 dark:text-slate-500 animate-pulse font-bold">
             Loading Season History...
           </div>
