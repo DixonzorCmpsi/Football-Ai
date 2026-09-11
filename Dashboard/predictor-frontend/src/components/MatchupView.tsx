@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Users, TrendingUp, ListOrdered } from 'lucide-react';
 import MatchupBanner from './MatchupBanner';
 import PlayerCard from './PlayerCard';
@@ -16,6 +16,8 @@ interface MatchupViewProps {
   home: string;
   away: string;
   onBack: () => void;
+  /** Lets the host header's Back button pop an in-page tab before leaving the view. */
+  onInnerNav?: (entry: { label: string; back: () => void } | null) => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
   onOpenHistory?: (id: string) => void;
@@ -60,12 +62,35 @@ const InjuryCard = React.memo(({ player }: { player: InjuryData }) => {
     );
 });
 
-const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory }) => {
+const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory, onInnerNav }) => {
   const [data, setData] = useState<MatchupData | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerData | null>(null);
   const [loading, setLoading] = useState(true);
   const [filterPos, setFilterPos] = useState<PositionFilter>('ALL');
   const [activeTab, setActiveTab] = useState<ViewTab>('ROSTER');
+  // Tabs are real navigation, not just a filter: switching to Rank/Injuries/Insights
+  // pushes the tab you came from so the header Back button returns you to the roster
+  // instead of skipping the whole game page and landing on the schedule.
+  const [tabStack, setTabStack] = useState<ViewTab[]>([]);
+  const goToTab = useCallback((next: ViewTab) => {
+    if (next === activeTab) return;
+    setTabStack((prev) => [...prev, activeTab]);
+    setActiveTab(next);
+  }, [activeTab]);
+  const tabBack = useCallback(() => {
+    if (tabStack.length === 0) return;
+    setActiveTab(tabStack[tabStack.length - 1]);
+    setTabStack((prev) => prev.slice(0, -1));
+  }, [tabStack]);
+  useEffect(() => {
+    if (!onInnerNav) return;
+    onInnerNav(
+      tabStack.length > 0
+        ? { label: tabStack[tabStack.length - 1].toLowerCase(), back: tabBack }
+        : null,
+    );
+    return () => onInnerNav(null);
+  }, [tabStack, tabBack, onInnerNav]);
   const [injuryFilter, setInjuryFilter] = useState<InjuryFilter>('ALL');
 
   useEffect(() => {
@@ -163,25 +188,33 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
   const viewTabs = (
     <div className="flex bg-slate-200 dark:bg-slate-800 p-1 rounded-lg">
         <button
-            onClick={() => setActiveTab('ROSTER')}
+            onClick={() => goToTab('ROSTER')}
+            data-testid="tab-ROSTER"
+            data-active={activeTab === 'ROSTER'}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'ROSTER' ? 'bg-white dark:bg-slate-700 shadow text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
         >
             <Users size={12} /> Roster
         </button>
         <button
-            onClick={() => setActiveTab('INJURIES')}
+            onClick={() => goToTab('INJURIES')}
+            data-testid="tab-INJURIES"
+            data-active={activeTab === 'INJURIES'}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'INJURIES' ? 'bg-white dark:bg-slate-700 shadow text-red-600 dark:text-red-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
         >
             <Activity size={12} /> Injuries
         </button>
         <button
-            onClick={() => setActiveTab('INSIGHTS')}
+            onClick={() => goToTab('INSIGHTS')}
+            data-testid="tab-INSIGHTS"
+            data-active={activeTab === 'INSIGHTS'}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'INSIGHTS' ? 'bg-white dark:bg-slate-700 shadow text-green-600 dark:text-green-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
         >
             <TrendingUp size={12} /> Insights
         </button>
         <button
-            onClick={() => setActiveTab('RANK')}
+            onClick={() => goToTab('RANK')}
+            data-testid="tab-RANK"
+            data-active={activeTab === 'RANK'}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${activeTab === 'RANK' ? 'bg-white dark:bg-slate-700 shadow text-purple-600 dark:text-purple-400' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
         >
             <ListOrdered size={12} /> Rank

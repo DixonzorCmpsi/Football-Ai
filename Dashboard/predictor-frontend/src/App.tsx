@@ -149,7 +149,19 @@ export default function App() {
     }
     setViewModeRaw(next);
   }, [viewMode]);
+  // A mounted view can claim the Back button for its own in-page steps (e.g. the
+  // game page's Roster/Injuries/Insights/Rank tabs). While claimed, Back pops that
+  // step instead of leaving the view entirely.
+  const [innerNav, setInnerNav] = useState<{ label: string; back: () => void } | null>(null);
+  const handleInnerNav = useCallback(
+    (entry: { label: string; back: () => void } | null) => setInnerNav(entry),
+    [],
+  );
   const goBack = () => {
+    if (innerNav) {
+      innerNav.back();
+      return;
+    }
     setNavStack((prev) => {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
@@ -358,19 +370,24 @@ export default function App() {
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
 
-             {navStack.length > 0 && (
+             {(innerNav || navStack.length > 0) && (() => {
+               const backLabel = (innerNav ? innerNav.label : navStack[navStack.length - 1]).toLowerCase();
+               return (
                <button
                  onClick={goBack}
+                 data-testid="header-back"
+                 data-back-to={backLabel}
                  className="flex items-center gap-1 px-2 py-1.5 mr-1 text-xs font-bold text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg transition"
-                 title={`Back to ${navStack[navStack.length - 1]}`}
+                 title={`Back to ${backLabel}`}
                >
                  <ArrowLeft size={14} />
                  <span className="hidden sm:inline">Back</span>
                  <span className="hidden md:inline text-slate-400 dark:text-slate-500 font-mono text-[10px] normal-case">
-                   · {navStack[navStack.length - 1].toLowerCase()}
+                   · {backLabel}
                  </span>
                </button>
-             )}
+               );
+             })()}
 
              <div className="font-black text-xl italic tracking-tighter select-none cursor-pointer hidden sm:flex items-center gap-1 z-50 relative whitespace-nowrap" onClick={() => setViewMode('SCHEDULE')}>
                 <span className="text-2xl font-black text-slate-800 dark:text-slate-100">THE SPOT</span>
@@ -662,6 +679,7 @@ export default function App() {
               compareList={compareList}
               onToggleCompare={toggleCompare}
               onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('GAME'); setViewMode('HISTORY'); }}
+              onInnerNav={handleInnerNav}
             />
           )}
 
