@@ -8,6 +8,7 @@ import { GameCard, gameKey } from './GameRanksView';
 import type { FetchedMatchup } from './GameRanksView';
 import { MatchupSkeleton } from './Skeleton';
 import { getTeamColor } from '../utils/nflColors';
+import { sizedPlayerImage } from '../utils/playerImage';
 import type { MatchupData, InjuryData, ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
 
@@ -41,7 +42,15 @@ const InjuryCard = React.memo(({ player }: { player: InjuryData }) => {
             <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center border border-slate-200 dark:border-slate-700">
                     {player.headshot ? (
-                        <img src={player.headshot} alt={player.name} className="w-full h-full object-cover" />
+                        <img
+                            src={sizedPlayerImage(player.headshot, 40)}
+                            alt={player.name}
+                            width={40}
+                            height={40}
+                            loading="lazy"
+                            decoding="async"
+                            className="w-full h-full object-cover"
+                        />
                     ) : (
                         <span className="text-xs font-bold text-slate-400">{player.position}</span>
                     )}
@@ -92,6 +101,12 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
     return () => onInnerNav(null);
   }, [tabStack, tabBack, onInnerNav]);
   const [injuryFilter, setInjuryFilter] = useState<InjuryFilter>('ALL');
+  // The feed returns a status line for the whole roster, so ~80% of the "injury
+  // report" is healthy players marked Active. Rendering those is both the bulk of
+  // the scroll cost and noise on a screen whose entire job is telling you who is
+  // hurt. Default to the players with an actual designation; the toggle still
+  // shows the full roster status.
+  const [injuredOnly, setInjuredOnly] = useState(true);
 
   useEffect(() => {
     import('../lib/api').then(({ fetchMatchup }) => {
@@ -146,19 +161,59 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
     return processed.sort(byRosterOrder);
   }, [data?.away_roster, filterPos]);
 
+  // Mirrors the backend ordering (see _injury_sort_key in prediction.py) so the
+  // list reads like a depth chart: starters first, skill offense then the line
+  // then defense, rather than hopping between a receiver and a safety because
+  // one happened to average more snaps.
+  const INJURY_POS_GROUP: Record<string, number> = {
+    QB: 0, RB: 0, FB: 0, WR: 0, TE: 0,
+    T: 1, OT: 1, G: 1, OG: 1, C: 1, OL: 1,
+    DE: 2, DT: 2, NT: 2, DL: 2, EDGE: 2, LB: 2, ILB: 2, OLB: 2,
+    CB: 2, S: 2, SS: 2, FS: 2, DB: 2,
+  };
+  const INJURY_POS_ORDER: Record<string, number> = {
+    QB: 0, RB: 1, FB: 2, WR: 3, TE: 4,
+    T: 0, OT: 0, G: 1, OG: 1, C: 2, OL: 3,
+    DE: 0, EDGE: 0, DT: 1, NT: 1, DL: 2, LB: 3, ILB: 3, OLB: 3,
+    CB: 4, S: 5, SS: 5, FS: 5, DB: 6,
+  };
+  const injurySortKey = (p: InjuryData): (number | string)[] => {
+    const pos = (p.position || '').trim().toUpperCase();
+    return [
+      p.is_starter ? 0 : 1,
+      p.pos_group ?? INJURY_POS_GROUP[pos] ?? 3,
+      INJURY_POS_ORDER[pos] ?? 99,
+      p.pos_rank ?? 99,
+      -(p.avg_snaps || 0),
+    ];
+  };
+  const byInjuryOrder = (a: InjuryData, b: InjuryData) => {
+    const ka = injurySortKey(a);
+    const kb = injurySortKey(b);
+    for (let i = 0; i < ka.length; i++) {
+      if (ka[i] !== kb[i]) return (ka[i] as number) - (kb[i] as number);
+    }
+    return (a.name || '').localeCompare(b.name || '');
+  };
+
+  const HEALTHY_STATUSES = new Set(['ACTIVE', 'ACT', 'NA', '']);
+  const isDesignated = (p: InjuryData) =>
+    !HEALTHY_STATUSES.has((p.status || '').trim().toUpperCase());
+
   const filterInjuries = (injuries: InjuryData[] | undefined) => {
     if (!injuries) return [];
     return injuries.filter(p => {
+        if (injuredOnly && !isDesignated(p)) return false;
         if (injuryFilter === 'ALL') return true;
         if (injuryFilter === 'OFFENSE') return ['T', 'G', 'C', 'OT', 'OG', 'OL'].includes(p.position);
         if (injuryFilter === 'DEFENSE') return ['DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'].includes(p.position);
         if (injuryFilter === 'SKILL') return ['QB', 'RB', 'WR', 'TE', 'FB'].includes(p.position);
         return true;
-    }).sort((a, b) => b.avg_snaps - a.avg_snaps);
+    }).sort(byInjuryOrder);
   };
 
-  const homeInjuries = useMemo(() => filterInjuries(data?.home_injuries), [data?.home_injuries, injuryFilter]);
-  const awayInjuries = useMemo(() => filterInjuries(data?.away_injuries), [data?.away_injuries, injuryFilter]);
+  const homeInjuries = useMemo(() => filterInjuries(data?.home_injuries), [data?.home_injuries, injuryFilter, injuredOnly]);
+  const awayInjuries = useMemo(() => filterInjuries(data?.away_injuries), [data?.away_injuries, injuryFilter, injuredOnly]);
 
   const rankGame: ScheduleGame | null = data ? {
     home_team: home,
@@ -314,6 +369,17 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                             {f === 'OFFENSE' ? 'O-Line' : f}
                         </button>
                     ))}
+                    <button
+                        onClick={() => setInjuredOnly(v => !v)}
+                        data-testid="injured-only-toggle"
+                        data-active={injuredOnly}
+                        title={injuredOnly
+                            ? 'Showing only players with an injury designation'
+                            : 'Showing every player on the roster status report'}
+                        className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-colors ${injuredOnly ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-slate-700'}`}
+                    >
+                        {injuredOnly ? 'Injured only' : 'Full roster'}
+                    </button>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-8">
@@ -323,7 +389,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                         </h3>
                         <div className="space-y-2">
                             {awayInjuries.length > 0 ? awayInjuries.map(p => (
-                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 68px' }}>
+                                <div
+                                    key={p.player_id}
+                                    data-testid="injury-row"
+                                    data-injury-pos={p.position}
+                                    data-injury-starter={p.is_starter ? '1' : '0'}
+                                    data-injury-status={p.status}
+                                    style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}
+                                >
                                     <InjuryCard player={p} />
                                 </div>
                             )) : (
@@ -337,7 +410,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                         </h3>
                         <div className="space-y-2">
                             {homeInjuries.length > 0 ? homeInjuries.map(p => (
-                                <div key={p.player_id} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 68px' }}>
+                                <div
+                                    key={p.player_id}
+                                    data-testid="injury-row"
+                                    data-injury-pos={p.position}
+                                    data-injury-starter={p.is_starter ? '1' : '0'}
+                                    data-injury-status={p.status}
+                                    style={{ contentVisibility: 'auto', containIntrinsicSize: '0 68px' }}
+                                >
                                     <InjuryCard player={p} />
                                 </div>
                             )) : (

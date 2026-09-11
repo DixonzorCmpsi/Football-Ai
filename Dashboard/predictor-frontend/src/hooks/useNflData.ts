@@ -93,6 +93,12 @@ export interface InjuryData {
   avg_snaps: number;
   avg_pct?: number;
   headshot?: string;
+  /** Depth-chart starter (pos_rank === 1 at any lineup slot). */
+  is_starter?: boolean;
+  /** Best depth-chart rank across lineup slots; lower is higher on the chart. */
+  pos_rank?: number | null;
+  /** 0 = skill offense, 1 = offensive line, 2 = defense, 3 = other. */
+  pos_group?: number;
 }
 
 export interface GameWeather {
