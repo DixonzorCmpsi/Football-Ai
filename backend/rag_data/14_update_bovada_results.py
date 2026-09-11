@@ -81,6 +81,36 @@ def update_prop_results(week: int = None):
         return
     
     print(f"   📥 Loaded {len(df_stats)} player stat records")
+
+    # weekly_player_stats_* is keyed by player_id and carries NO player_name,
+    # while bovada_player_props only knows the sportsbook's display name. Join
+    # the two through player_profiles, which has both. Without this every prop
+    # lookup raised ColumnNotFoundError: "player_name" and no prop ever got
+    # graded.
+    def _norm_name(col):
+        # Sportsbooks write "Jr.", "II", periods and casing inconsistently.
+        return (
+            col.str.to_lowercase()
+               .str.replace_all(r"[.'`]", "")
+               .str.replace_all(r"\s+(jr|sr|ii|iii|iv|v)$", "")
+               .str.strip_chars()
+        )
+
+    try:
+        df_profiles = pl.read_database(
+            "SELECT player_id, player_name FROM player_profiles", ENGINE
+        ).unique(subset=["player_id"])
+    except Exception as e:
+        print(f"❌ Error loading player_profiles for name join: {e}")
+        return
+
+    if "player_name" not in df_stats.columns:
+        df_stats = df_stats.join(df_profiles, on="player_id", how="left")
+
+    # Normalised key on both sides so "A.J. Brown" matches "AJ Brown".
+    df_stats = df_stats.with_columns(_norm_name(pl.col("player_name")).alias("_name_key"))
+    matched_names = df_stats.get_column("_name_key").unique().to_list()
+    print(f"   🔗 Joined names onto stats ({len(matched_names)} distinct players)")
     
     # Process each prop
     updated_props = []
@@ -105,8 +135,17 @@ def update_prop_results(week: int = None):
             continue
         
         # Find player's stats for this week
+        name_key = (
+            str(player_name or "").lower()
+            .replace(".", "").replace("'", "").replace("`", "")
+            .strip()
+        )
+        for suffix in (" jr", " sr", " ii", " iii", " iv", " v"):
+            if name_key.endswith(suffix):
+                name_key = name_key[: -len(suffix)].strip()
+                break
         player_stats = df_stats.filter(
-            (pl.col("player_name") == player_name) &
+            (pl.col("_name_key") == name_key) &
             (pl.col("week") == week_num)
         )
         

@@ -1,10 +1,14 @@
 import time
 import json
 import os
+import sys
 import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _chrome_driver import build_driver
 
 # --- CONFIG ---
 BOVADA_NFL_URL = "https://www.bovada.lv/sports/football/nfl"
@@ -32,7 +36,7 @@ def setup_driver():
 
     # 3. Initialize with error handling
     try:
-        driver = uc.Chrome(options=options, driver_executable_path="/usr/local/bin/chromedriver", use_subprocess=False)
+        driver = build_driver(uc, options)
         return driver
     except Exception as e:
         print(f"❌ Driver initialization failed: {e}")
