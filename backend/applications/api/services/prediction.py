@@ -453,9 +453,9 @@ async def get_player_card(player_id: str, week: int):
 
             if p_props.is_empty():
                 all_names = week_props["player_name"].unique().to_list()
-                matches = get_close_matches(p_name, all_names, n=1, cutoff=0.6)
-                if matches:
-                    p_props = week_props.filter(pl.col("player_name") == matches[0])
+                match = _safe_prop_name_match(p_name, all_names)
+                if match:
+                    p_props = week_props.filter(pl.col("player_name") == match)
 
             if not p_props.is_empty():
                 props_data = p_props.select(["prop_type", "line", "odds", "implied_prob"]).to_dicts()
@@ -780,6 +780,39 @@ def _injury_sort_key(row: dict):
         -(row.get("avg_snaps") or 0),
         row.get("name") or "",
     )
+
+
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _surname(name: str) -> str:
+    """Last meaningful token of a name, ignoring generational suffixes."""
+    tokens = [t for t in str(name or "").replace(".", "").lower().split() if t]
+    while len(tokens) > 1 and tokens[-1] in _NAME_SUFFIXES:
+        tokens.pop()
+    return tokens[-1] if tokens else ""
+
+
+def _safe_prop_name_match(name: str, candidates: list, cutoff: float = 0.8):
+    """Fuzzy-match a player to a betting-line name without crossing players.
+
+    difflib at the old 0.6 cutoff mapped "Kenny Pickett" (CAR backup QB, no props
+    offered) onto "Kyle Pitts" (ATL TE), so the app showed one player's receiving
+    lines under another player's name -- worse than showing none, because the
+    numbers look like real market signal. Requiring the surname to agree keeps
+    the useful cases ("Michael Pittman Jr" vs "Michael Pittman") and drops the
+    dangerous ones.
+    """
+    if not name or not candidates:
+        return None
+    target = _surname(name)
+    if not target:
+        return None
+    same_surname = [c for c in candidates if _surname(c) == target]
+    if not same_surname:
+        return None
+    hits = get_close_matches(str(name), same_surname, n=1, cutoff=cutoff)
+    return hits[0] if hits else None
 
 
 def get_team_injury_report(team_abbr: str, week: int):
