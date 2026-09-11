@@ -7,6 +7,22 @@ from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from feature_history import (
+    LAG_COLUMNS,
+    add_player_lags,
+    add_season_average,
+    add_team_shares,
+    attach_snap_counts,
+    build_upcoming_rows,
+    derive_metrics,
+    normalize_weekly_stats,
+)
+
+# How many prior seasons to pull in purely so that week-1 lag features are real
+# numbers instead of zeros. Only the current season is ever written out.
+HISTORY_SEASONS = 2
+
 # --- Configuration ---
 load_dotenv()
 
@@ -36,6 +52,103 @@ def load_table(engine, table_name):
     except Exception as e:
         print(f"     ⚠️ Warning: Could not load {table_name}: {e}")
         return pd.DataFrame()
+
+def load_prior_seasons(seasons, profiles):
+    """Prior-season weekly stats, normalized into the current derived schema.
+
+    Read from the cached CSVs in rag_data (the DB only ever holds the current
+    season). Returns an empty frame when nothing is cached, in which case the
+    generator degrades to its old current-season-only behaviour rather than
+    failing the ETL.
+    """
+    pfr_to_gsis = {}
+    if profiles is not None and not profiles.empty and "pfr_id" in profiles.columns:
+        valid = profiles.dropna(subset=["pfr_id", "player_id"])
+        pfr_to_gsis = dict(zip(valid["pfr_id"].astype(str), valid["player_id"].astype(str)))
+
+    frames = []
+    for season in seasons:
+        path = RAG_DATA_DIR / f"weekly_player_stats_{season}.csv"
+        if not path.exists():
+            print(f"   - no cached stats for {season}, skipping")
+            continue
+        df = pd.read_csv(path, low_memory=False)
+        if df.empty:
+            continue
+        df = normalize_weekly_stats(df, season)
+
+        snap_path = RAG_DATA_DIR / f"weekly_snap_counts_{season}.csv"
+        snaps = pd.read_csv(snap_path, low_memory=False) if snap_path.exists() else pd.DataFrame()
+        df = attach_snap_counts(df, snaps, pfr_to_gsis)
+
+        df = derive_metrics(df)
+        df = add_team_shares(df)
+        frames.append(df)
+        print(f"   - {season}: {len(df)} rows")
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def unplayed_games(schedule):
+    """Scheduled games with no score yet.
+
+    A week is only partly played for most of a game week -- in 2026 week 1, two
+    games were final while fourteen had not kicked off. Treating "week 1 exists
+    in the stats table" as "week 1 is done" pushed placeholder rows to week 2 and
+    left every player in those fourteen games with no feature row at all.
+    """
+    if schedule is None or schedule.empty:
+        return pd.DataFrame()
+    out = schedule
+    for col in ("home_score", "away_score"):
+        if col in out.columns:
+            scores = pd.to_numeric(out[col], errors="coerce")
+            out = out[scores.isna()]
+    return out
+
+
+def eligible_players(profiles, schedule, week):
+    """Skill players whose team has an unplayed game in `week`."""
+    if profiles is None or profiles.empty or schedule is None or schedule.empty:
+        return pd.DataFrame()
+
+    wk = schedule[schedule["week"] == week] if "week" in schedule.columns else schedule
+    if wk.empty:
+        return pd.DataFrame()
+
+    opponent = {}
+    for _, g in wk.iterrows():
+        home, away = g.get("home_team"), g.get("away_team")
+        if home and away:
+            opponent[home] = away
+            opponent[away] = home
+    if not opponent:
+        return pd.DataFrame()
+
+    team_col = "team_abbr" if "team_abbr" in profiles.columns else "team"
+    if team_col not in profiles.columns:
+        return pd.DataFrame()
+
+    rows = profiles.copy()
+    if "position" in rows.columns:
+        rows = rows[rows["position"].isin(["QB", "RB", "WR", "TE"])]
+    if "status" in rows.columns:
+        rows = rows[rows["status"].isin(["ACT", "DEV"])]
+    rows = rows[rows[team_col].isin(opponent.keys())]
+    if rows.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "player_id": rows["player_id"].astype(str),
+        "player_name": rows["player_name"] if "player_name" in rows.columns else rows["player_id"],
+        "position": rows["position"],
+        "team": rows[team_col],
+        "opponent_team": rows[team_col].map(opponent),
+    })
+    return out.dropna(subset=["opponent_team"]).reset_index(drop=True)
+
 
 def main():
     print(f"--- 🏭 Generating Production Features for {SEASON} (DB Centric) ---")
@@ -149,8 +262,6 @@ def main():
     # df_player['rolling_4wk_avg'] = df_player.groupby('player_id')['y_fantasy_points_ppr'] \
     #     .transform(lambda x: x.shift(1).rolling(window=4, min_periods=1).mean()).fillna(0)
     
-    df_player['player_season_avg_points'] = df_player.groupby('player_id')['y_fantasy_points_ppr']\
-        .transform(lambda x: x.expanding().mean().shift(1)).fillna(0)
     
     # --- MISSING FEATURE CALCS ---
     if 'team_receptions_share' not in df_player.columns: df_player['team_receptions_share'] = 0.0
@@ -167,23 +278,47 @@ def main():
     for col in ['receptions_redzone', 'targets_redzone', 'rush_touchdown_redzone']:
         if col not in df_player.columns: df_player[col] = 0.0
 
-    # --- LAG CALCULATION ---
-    # pass_attempts is now available for lagging!
-    lags = [
-        'offense_snaps', 'offense_pct', 'targets', 'receptions', 'receiving_yards', 
-        'rushing_yards', 'rush_attempts', 'y_fantasy_points_ppr', 
-        'pass_attempts', 'passing_yards', 'passing_touchdown', 'interception', 
-        'receiving_touchdown', 'rush_touchdown',
-        'team_targets_share', 'team_receptions_share', 'team_rush_attempts_share',
-        'receiving_air_yards', 'passing_air_yards', 'yards_after_catch', 
-        'ypr', 'ayptarget', 'ypc', 'adot', 'touches', 'passer_rating',
-        'receptions_redzone', 'targets_redzone'
-    ]
-    
-    for col in lags:
-        if col in df_player.columns:
-            for lag in [1, 2, 3]:
-                df_player[f'{col}_lag_{lag}'] = df_player.groupby('player_id')[col].shift(lag).fillna(0)
+    # --- LAG CALCULATION (history-aware) ---
+    # Lags are computed over prior seasons + this season + placeholder rows for
+    # the upcoming week, then trimmed back to the current season. Computing them
+    # over the current season alone left every lag at 0 in week 1, so the models
+    # emitted a near-constant deviation for every player.
+    df_player['season'] = SEASON
+    df_player['player_id'] = df_player['player_id'].astype(str)
+
+    print("7b. Loading prior seasons to seed lag features...")
+    df_prior = load_prior_seasons([SEASON - n for n in range(HISTORY_SEASONS, 0, -1)], df_profiles)
+    print(f"   -> {len(df_prior)} prior-season rows")
+
+    print("7c. Adding placeholder rows for the upcoming week...")
+    df_schedule = load_table(engine, "schedule")
+    if not df_schedule.empty and 'season' in df_schedule.columns:
+        df_schedule = df_schedule[df_schedule['season'] == SEASON]
+    played = set(df_player['week'].dropna().astype(int)) if 'week' in df_player.columns else set()
+    pending = unplayed_games(df_schedule)
+    if not pending.empty and 'week' in pending.columns:
+        target_week = int(pending['week'].dropna().astype(int).min())
+    else:
+        target_week = (max(played) if played else 0) + 1
+
+    roster = eligible_players(df_profiles, pending, target_week)
+    if not roster.empty and played:
+        existing = set(zip(df_player['player_id'], df_player['week'].astype(int)))
+        keep = [(pid, target_week) not in existing for pid in roster['player_id']]
+        roster = roster[keep]
+    df_upcoming = build_upcoming_rows(roster, SEASON, target_week)
+    print(f"   -> week {target_week}: {len(df_upcoming)} players to project")
+
+    combined = pd.concat(
+        [f for f in (df_prior, df_player, df_upcoming) if f is not None and not f.empty],
+        ignore_index=True, sort=False,
+    )
+    combined = add_player_lags(combined, LAG_COLUMNS)
+    combined = add_season_average(combined)
+
+    # Only the current season is written out; prior seasons were scaffolding.
+    df_player = combined[combined['season'] == SEASON].copy()
+    print(f"   -> {len(df_player)} current-season rows after seeding")
 
     # 8. Rename Columns to match Model Expectations
     rename_map = {
@@ -194,7 +329,11 @@ def main():
     }
     df_player.rename(columns=rename_map, inplace=True)
     df_player['opponent'] = df_player['opponent_team']
-    df_player.fillna(0, inplace=True)
+    # Only numeric columns get zero-filled. Seeding from prior seasons brings in
+    # arrow-backed string columns (names, game ids), and fillna(0) across the
+    # whole frame raises TypeError on those.
+    _num_cols = df_player.select_dtypes(include=['number']).columns
+    df_player[_num_cols] = df_player[_num_cols].fillna(0)
 
     # 9. Write to DB
     table_name = f"weekly_feature_set_{SEASON}"
