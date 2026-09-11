@@ -471,7 +471,11 @@ async def get_player_card(player_id: str, week: int):
             snap_count, snap_pct = snap_count, snap_pct
 
 
-    if snap_pct < 1.0 and snap_pct > 0: snap_pct *= 100
+    # offense_pct arrives as a 0-1 fraction. The bound must be inclusive: a player
+    # who took every snap is exactly 1.0, and excluding that case left every
+    # full-time starter reading "1%" instead of "100%".
+    if 0 < snap_pct <= 1.0:
+        snap_pct *= 100
 
     total_line = None 
     spread_val = None

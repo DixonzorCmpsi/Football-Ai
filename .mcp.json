@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "football-ai": {
+      "type": "stdio",
+      "command": "C:/dev/Football-Ai/backend/.venv/Scripts/python.exe",
+      "args": [
+        "C:/dev/Football-Ai/backend/run_mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}
