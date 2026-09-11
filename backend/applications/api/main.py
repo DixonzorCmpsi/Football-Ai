@@ -18,7 +18,7 @@ from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
 from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper
 from .services.storylines import storylines_wrapper
-from .routes import players, games, general, debug, tier_list
+from .routes import players, games, general, debug, tier_list, sleeper
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
 
 @asynccontextmanager
@@ -220,3 +220,4 @@ app.include_router(games.router)
 app.include_router(general.router)
 app.include_router(debug.router)
 app.include_router(tier_list.router)
+app.include_router(sleeper.router)

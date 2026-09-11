@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -16,6 +16,7 @@ import TeamsView from './components/TeamsView';
 import GameRanksView from './components/GameRanksView';
 import { getTeamColor } from './utils/nflColors';
 import { sizedPlayerImage } from './utils/playerImage';
+import SleeperView from './components/SleeperView';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
@@ -131,7 +132,7 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS' | 'GAME_RANKS' | 'TEAM_PAGE';
+  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS' | 'GAME_RANKS' | 'TEAM_PAGE' | 'MY_TEAM';
   const [viewMode, setViewModeRaw] = useState<ViewMode>('SCHEDULE');
 
   // Navigation stack: every setViewMode() that actually changes view pushes the
@@ -303,7 +304,7 @@ export default function App() {
       
       {/* LEFT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
+        <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
                 {/* Title Area */}
@@ -365,7 +366,7 @@ export default function App() {
              <button
                 onClick={() => setShowSidebars(!showSidebars)}
                 aria-label={showSidebars ? 'Collapse side panels' : 'Expand side panels'}
-                className="hidden lg:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                className="hidden xl:block p-2 text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
              >
                 {showSidebars ? <Minimize2 size={20} /> : <PanelLeft size={20} />}
              </button>
@@ -398,13 +399,14 @@ export default function App() {
           
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
-              {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
+              {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'MY_TEAM', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
                 <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'TEAMS' && <Shield size={14}/>}
                   {mode === 'TIERS' && <Layers size={14}/>}
                   {mode === 'GAME_RANKS' && <ListOrdered size={14}/>}
+                  {mode === 'MY_TEAM' && <Users size={14}/>}
                   {mode === 'COMPARE' && (
                       <div className="flex items-center gap-1">
                           <BarChart2 size={14}/>
@@ -412,7 +414,7 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode}</span>
+                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
                 </button>
               ))}
             </div>
@@ -456,6 +458,7 @@ export default function App() {
               <button onClick={() => { setViewMode('TEAMS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Teams</button>
               <button onClick={() => { setViewMode('TIERS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Tier List</button>
               <button onClick={() => { setViewMode('GAME_RANKS'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Ranks</button>
+              <button onClick={() => { setViewMode('MY_TEAM'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Team</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
             </div>
@@ -493,7 +496,7 @@ export default function App() {
           </div>
           
           {viewMode === 'SCHEDULE' && (
-            <div className={`mx-auto ${showSidebars ? 'max-w-5xl' : 'max-w-6xl'}`}>
+            <div className={`mx-auto w-full ${showSidebars ? 'max-w-7xl' : 'max-w-[1600px]'}`}>
               <h2 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-6">Week {activeWeek} Matchups</h2>
               
               {loadingSchedule ? (
@@ -609,7 +612,7 @@ export default function App() {
               player's history and coming back preserves the selected game,
               position filter, and tier board exactly as left. */}
           <div
-            className={`mx-auto w-full ${showSidebars ? 'max-w-6xl' : 'max-w-[1900px]'}`}
+            className={`mx-auto w-full px-2 ${showSidebars ? 'max-w-[1800px]' : 'max-w-[2200px]'}`}
             style={{ display: viewMode === 'GAME_RANKS' ? 'block' : 'none' }}
           >
             <GameRanksView
@@ -623,6 +626,17 @@ export default function App() {
               onSelectGame={setSelectedGame}
             />
           </div>
+
+          {/* VIEW: MY TEAM - import a Sleeper roster and analyze it. */}
+          {viewMode === 'MY_TEAM' && (
+            <div className="mx-auto w-full max-w-[1600px] px-2">
+              <SleeperView
+                week={safeWeek}
+                season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
+                onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+              />
+            </div>
+          )}
 
           {/* VIEW: TEAM PAGE - Overview / Team Builder as a full page rather
               than an overlay, so the sidebars stay usable and Back behaves. */}
@@ -724,7 +738,7 @@ export default function App() {
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden lg:flex transition-colors duration-300">
+        <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>
               <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-1">
