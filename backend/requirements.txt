@@ -36,3 +36,4 @@ crawl4ai
 undetected-chromedriver
 selenium
 slowapi
+mcp>=1.9,<2
