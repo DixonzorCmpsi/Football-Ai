@@ -453,9 +453,9 @@ async def get_player_card(player_id: str, week: int):
 
             if p_props.is_empty():
                 all_names = week_props["player_name"].unique().to_list()
-                matches = get_close_matches(p_name, all_names, n=1, cutoff=0.6)
-                if matches:
-                    p_props = week_props.filter(pl.col("player_name") == matches[0])
+                match = _safe_prop_name_match(p_name, all_names)
+                if match:
+                    p_props = week_props.filter(pl.col("player_name") == match)
 
             if not p_props.is_empty():
                 props_data = p_props.select(["prop_type", "line", "odds", "implied_prob"]).to_dicts()
@@ -743,6 +743,78 @@ def find_usage_boost_reason(player_id: str, week: int):
     except Exception as e:
         return {"found": False, "error": str(e)}
 
+# Injury-report ordering. Group first (skill offense -> offensive line -> defense
+# -> everyone else), then position within the group, so the list reads the way a
+# depth chart does instead of jumping between a receiver and a safety.
+_INJURY_POS_GROUP = {
+    "QB": 0, "RB": 0, "FB": 0, "WR": 0, "TE": 0,
+    "T": 1, "OT": 1, "G": 1, "OG": 1, "C": 1, "OL": 1,
+    "DE": 2, "DT": 2, "NT": 2, "DL": 2, "EDGE": 2,
+    "LB": 2, "ILB": 2, "OLB": 2,
+    "CB": 2, "S": 2, "SS": 2, "FS": 2, "DB": 2,
+}
+
+_INJURY_POS_ORDER = {
+    # Offense, skill
+    "QB": 0, "RB": 1, "FB": 2, "WR": 3, "TE": 4,
+    # Offensive line, left to right as conventionally listed
+    "T": 0, "OT": 0, "G": 1, "OG": 1, "C": 2, "OL": 3,
+    # Defense, front to back
+    "DE": 0, "EDGE": 0, "DT": 1, "NT": 1, "DL": 2,
+    "LB": 3, "ILB": 3, "OLB": 3,
+    "CB": 4, "S": 5, "SS": 5, "FS": 5, "DB": 6,
+}
+
+
+def _injury_pos_group(position: str | None) -> int:
+    return _INJURY_POS_GROUP.get((position or "").strip().upper(), 3)
+
+
+def _injury_sort_key(row: dict):
+    position = (row.get("position") or "").strip().upper()
+    return (
+        0 if row.get("is_starter") else 1,
+        row.get("pos_group", 3),
+        _INJURY_POS_ORDER.get(position, 99),
+        row.get("pos_rank") if row.get("pos_rank") is not None else 99,
+        -(row.get("avg_snaps") or 0),
+        row.get("name") or "",
+    )
+
+
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _surname(name: str) -> str:
+    """Last meaningful token of a name, ignoring generational suffixes."""
+    tokens = [t for t in str(name or "").replace(".", "").lower().split() if t]
+    while len(tokens) > 1 and tokens[-1] in _NAME_SUFFIXES:
+        tokens.pop()
+    return tokens[-1] if tokens else ""
+
+
+def _safe_prop_name_match(name: str, candidates: list, cutoff: float = 0.8):
+    """Fuzzy-match a player to a betting-line name without crossing players.
+
+    difflib at the old 0.6 cutoff mapped "Kenny Pickett" (CAR backup QB, no props
+    offered) onto "Kyle Pitts" (ATL TE), so the app showed one player's receiving
+    lines under another player's name -- worse than showing none, because the
+    numbers look like real market signal. Requiring the surname to agree keeps
+    the useful cases ("Michael Pittman Jr" vs "Michael Pittman") and drops the
+    dangerous ones.
+    """
+    if not name or not candidates:
+        return None
+    target = _surname(name)
+    if not target:
+        return None
+    same_surname = [c for c in candidates if _surname(c) == target]
+    if not same_surname:
+        return None
+    hits = get_close_matches(str(name), same_surname, n=1, cutoff=cutoff)
+    return hits[0] if hits else None
+
+
 def get_team_injury_report(team_abbr: str, week: int):
     """
     Returns a list of injured players for a team with their snap counts.
@@ -872,6 +944,22 @@ def get_team_injury_report(team_abbr: str, week: int):
     OL_POSITIONS = {'T', 'G', 'C', 'OT', 'OG', 'OL'}
     DEF_POSITIONS = {'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'}
 
+    # An injury report is only useful if the players who actually play are at the
+    # top. Snap average alone buries a starter who has missed time behind healthy
+    # backups, so order by depth-chart role first: skill offense, then the line,
+    # then defense, starters ahead of reserves within each.
+    starter_ids = model_data.get("starter_gsis_ids", set()) or set()
+    depth_rank = {}
+    df_depth = model_data.get("df_depth_charts", pl.DataFrame())
+    if not df_depth.is_empty() and "gsis_id" in df_depth.columns and "pos_rank" in df_depth.columns:
+        for r in (
+            df_depth.drop_nulls(subset=["gsis_id", "pos_rank"])
+            .group_by("gsis_id")
+            .agg(pl.col("pos_rank").min().alias("pos_rank"))
+            .iter_rows(named=True)
+        ):
+            depth_rank[r["gsis_id"]] = r["pos_rank"]
+
     report = []
     for row in team_injuries.iter_rows(named=True):
         pid = row['player_id']
@@ -914,9 +1002,11 @@ def get_team_injury_report(team_abbr: str, week: int):
             "status": status,
             "avg_snaps": round(avg_snaps if avg_snaps else 0.0, 1),
             "avg_pct": round(avg_pct * 100, 1) if avg_pct else 0.0,
-            "headshot": headshot
+            "headshot": headshot,
+            "is_starter": pid in starter_ids,
+            "pos_rank": depth_rank.get(pid),
+            "pos_group": _injury_pos_group(position),
         })
-        
-    # Sort by avg_snaps descending (importance)
-    report.sort(key=lambda x: x['avg_snaps'] or 0, reverse=True)
+
+    report.sort(key=_injury_sort_key)
     return report

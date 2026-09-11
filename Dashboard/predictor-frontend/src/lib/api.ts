@@ -85,3 +85,49 @@ export const fetchMatchup = async (week: number, home: string, away: string) => 
     return null;
   }
 };
+// --- Sleeper league integration -------------------------------------------
+// Sleeper's read API is public, so importing a team needs no credentials.
+// Errors are returned rather than thrown so the view can show the reason.
+
+export interface SleeperLeague {
+  league_id: string;
+  name: string;
+  season: string;
+  total_rosters: number;
+  status?: string;
+  scoring_type: string;
+  roster_positions: string[];
+  avatar?: string | null;
+}
+
+export interface SleeperTeam {
+  roster_id: number;
+  display_name: string;
+  team_name: string;
+  wins: number;
+  losses: number;
+  ties: number;
+  player_count: number;
+}
+
+const sleeperGet = async (path: string) => {
+  const res = await fetch(`${API_BASE_URL}${path}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json())?.detail || detail; } catch { /* keep statusText */ }
+    throw new Error(detail);
+  }
+  return res.json();
+};
+
+export const fetchSleeperUser = (username: string, season: number) =>
+  sleeperGet(`/sleeper/user/${encodeURIComponent(username)}?season=${season}`);
+
+export const fetchSleeperLeague = (leagueId: string) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}`);
+
+export const fetchSleeperRosterAnalysis = (leagueId: string, rosterId: number, week: number) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/roster/${rosterId}/analysis?week=${week}`);
+
+export const fetchSleeperWaivers = (leagueId: string, week: number, limit = 25) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/waivers?week=${week}&limit=${limit}`);

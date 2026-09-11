@@ -5,6 +5,7 @@ import PlayerCard from './PlayerCard'; // Using the consistent PlayerCard
 import { getTeamColor } from '../utils/nflColors'; // Import color utility
 import { searchPlayers } from '../lib/api';
 import type { PlayerData } from '../types';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface PlayerLookupProps {
   onViewHistory: (playerId: string) => void;
@@ -140,7 +141,17 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
                   <div className="font-bold text-slate-800 dark:text-slate-200 text-sm group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{p.player_name}</div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{p.position} • {p.team_abbr || p.team}</div>
                 </div>
-                {p.headshot && <img src={p.headshot} alt="headshot" className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-600" />}
+                {p.headshot && (
+                  <img
+                    src={sizedPlayerImage(p.headshot, 32)}
+                    alt="headshot"
+                    width={32}
+                    height={32}
+                    loading="lazy"
+                    decoding="async"
+                    className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-600"
+                  />
+                )}
               </div>
             ))}
           </div>

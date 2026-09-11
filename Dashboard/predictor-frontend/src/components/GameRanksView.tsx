@@ -153,7 +153,7 @@ const RankedPlayerCard = memo<{
             }
           : undefined
       }
-      className="relative w-full max-w-[200px] cursor-grab active:cursor-grabbing bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 shadow-md overflow-hidden transition-all hover:ring-2 hover:ring-blue-500/50"
+      className="relative w-full max-w-[200px] 2xl:max-w-[240px] cursor-grab active:cursor-grabbing bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 shadow-md overflow-hidden transition-all hover:ring-2 hover:ring-blue-500/50"
     >
       <div className="relative h-32 bg-slate-100 dark:bg-slate-800 flex items-end justify-center overflow-hidden">
         <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md text-white text-[9px] font-bold">
@@ -921,7 +921,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
               </p>
             </div>
           ) : (
-            <div className="grid gap-3 lg:grid-cols-[260px_1fr]">
+            <div className="grid gap-3 lg:grid-cols-[260px_1fr] 2xl:grid-cols-[300px_1fr] 2xl:gap-4">
               {/* Unranked pool — side panel */}
               <aside className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 flex flex-col overflow-hidden lg:h-[70vh]">
                 <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
