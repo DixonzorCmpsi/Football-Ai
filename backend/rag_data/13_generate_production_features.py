@@ -17,6 +17,11 @@ from feature_history import (
     build_upcoming_rows,
     derive_metrics,
     normalize_weekly_stats,
+    add_defense_vs_position,
+    add_opponent_features,
+    attach_game_points,
+    mirror_to_defense,
+    team_offense_from_players,
 )
 
 # How many prior seasons to pull in purely so that week-1 lag features are real
@@ -107,6 +112,39 @@ def unplayed_games(schedule):
             scores = pd.to_numeric(out[col], errors="coerce")
             out = out[scores.isna()]
     return out
+
+
+def load_schedules(seasons):
+    """Real final scores for the given seasons.
+
+    Points scored/allowed cannot be rebuilt from player box scores -- field
+    goals, extra points and defensive touchdowns are not in them -- so the
+    schedule is the only honest source. Falls back to an empty frame (leaving
+    those columns at 0) if nflreadpy is unavailable offline.
+    """
+    frames = []
+    local = RAG_DATA_DIR / f"schedule_{SEASON}.csv"
+    if local.exists():
+        try:
+            frames.append(pd.read_csv(local, low_memory=False))
+        except Exception as exc:
+            print(f"   - could not read {local.name}: {exc}")
+
+    prior = [s for s in seasons if s != SEASON]
+    if prior:
+        try:
+            import nflreadpy as nfl
+            df = nfl.load_schedules(seasons=prior).to_pandas()
+            frames.append(df)
+            print(f"   - loaded {len(df)} prior-season games for scores")
+        except Exception as exc:
+            print(f"   - prior-season schedules unavailable ({exc}); points stay 0")
+
+    if not frames:
+        return pd.DataFrame()
+    keep = ["season", "week", "home_team", "away_team", "home_score", "away_score"]
+    out = pd.concat(frames, ignore_index=True, sort=False)
+    return out[[c for c in keep if c in out.columns]]
 
 
 def eligible_players(profiles, schedule, week):
@@ -208,53 +246,10 @@ def main():
             
     if 'player_name' not in df_player.columns: df_player['player_name'] = df_player['player_id']
 
-    # 4. Engineer Defense vs. Position Features (DvP)
-    print("4. Engineering Defense vs. Position stats...")
-    dvp = df_player.groupby(['opponent_team', 'week', 'position'])['y_fantasy_points_ppr'].sum().reset_index()
-    dvp.sort_values(['opponent_team', 'position', 'week'], inplace=True)
-    
-    dvp['rolling_avg_points_allowed_to_pos'] = dvp.groupby(['opponent_team', 'position'])['y_fantasy_points_ppr']\
-        .transform(lambda x: x.shift(1).rolling(4, min_periods=1).mean()).fillna(0)
-    
-    dvp_wide = dvp.pivot_table(index=['opponent_team', 'week'], columns='position', values='rolling_avg_points_allowed_to_pos').reset_index()
-    dvp_wide.columns = [f"rolling_avg_points_allowed_to_{c}" if c in ['QB', 'RB', 'WR', 'TE'] else c for c in dvp_wide.columns]
-    
-    df_player = pd.merge(df_player, dvp_wide, on=['opponent_team', 'week'], how='left')
-    for pos in ['QB', 'RB', 'WR', 'TE']:
-        col = f"rolling_avg_points_allowed_to_{pos}"
-        if col in df_player.columns: df_player[col] = df_player[col].fillna(0)
-
-    # 5. Engineer General Opponent Defense Features
-    print("5. Engineering Opponent Defense features...")
-    if not df_defense.empty:
-        df_defense.sort_values(['team_abbr', 'week'], inplace=True)
-        if 'opponent_team' in df_defense.columns: df_defense.drop(columns=['opponent_team'], inplace=True)
-
-        metrics = ['points_allowed', 'passing_yards_allowed', 'rushing_yards_allowed', 'def_sacks', 'def_interceptions', 'def_qb_hits']
-        for col in metrics:
-            if col in df_defense.columns:
-                df_defense[f'rolling_avg_{col}_4_weeks'] = df_defense.groupby('team_abbr')[col].shift(1).rolling(4, min_periods=1).mean()
-                for lag in [1, 2, 3]:
-                    df_defense[f'opp_def_{col}_lag_{lag}'] = df_defense.groupby('team_abbr')[col].shift(lag)
-
-        df_def_merge = df_defense.rename(columns={'team_abbr': 'opponent_team'})
-        df_player = pd.merge(df_player, df_def_merge, on=['opponent_team', 'week'], how='left', suffixes=('', '_def'))
-
-    # 6. Engineer Opponent Offense Features
-    print("6. Engineering Opponent Offense features...")
-    if not df_offense.empty:
-        df_offense.sort_values(['team_abbr', 'week'], inplace=True)
-        if 'points_scored' in df_offense.columns: df_offense.rename(columns={'points_scored': 'total_off_points'}, inplace=True)
-        if 'opponent_team' in df_offense.columns: df_offense.drop(columns=['opponent_team'], inplace=True)
-
-        for col in ['total_off_points', 'total_yards', 'passing_yards', 'rushing_yards']:
-            if col in df_offense.columns:
-                df_offense[f'opp_off_rolling_{col}_4_weeks'] = df_offense.groupby('team_abbr')[col].shift(1).rolling(4, min_periods=1).mean()
-                for lag in [1, 2, 3]:
-                    df_offense[f'opp_off_{col}_lag_{lag}'] = df_offense.groupby('team_abbr')[col].shift(lag)
-
-        df_off_merge = df_offense.rename(columns={'team_abbr': 'opponent_team'})
-        df_player = pd.merge(df_player, df_off_merge, on=['opponent_team', 'week'], how='left', suffixes=('', '_off'))
+    # Steps 4-6 (DvP, opponent defense, opponent offense) used to be computed
+    # here from the current season's team tables alone -- 4 rows each in week 1,
+    # so all 17 opponent-derived model features were 0. They are now built from
+    # the combined multi-season frame below, after the seeding step.
 
     # 7. Engineer Player Lags & Baseline
     print("7. Engineering Player Lags & Baseline...")
@@ -313,6 +308,15 @@ def main():
         [f for f in (df_prior, df_player, df_upcoming) if f is not None and not f.empty],
         ignore_index=True, sort=False,
     )
+    print("7d. Rebuilding opponent context across seasons...")
+    schedules = load_schedules([SEASON - n for n in range(HISTORY_SEASONS, 0, -1)] + [SEASON])
+    team_off = team_offense_from_players(combined)
+    team_off = attach_game_points(team_off, schedules)
+    team_def = mirror_to_defense(team_off)
+    print(f"   -> {len(team_off)} team-games, {len(team_def)} defensive mirrors")
+    combined = add_opponent_features(combined, team_off, team_def)
+    combined = add_defense_vs_position(combined)
+
     combined = add_player_lags(combined, LAG_COLUMNS)
     combined = add_season_average(combined)
 
