@@ -53,6 +53,81 @@ def get_injury_status_for_week(player_id: str, week: int, default="Active"):
     
     return default
 
+# How many recent games it takes before the current season stands on its own.
+# Under this, the projection is blended with the player's prior-season form.
+CARRYOVER_GAMES = 4
+
+
+def prior_season_form(player_id: str, max_games: int = CARRYOVER_GAMES) -> tuple[float, int]:
+    """Per-game fantasy form from the player's most recent PRIOR seasons.
+
+    `df_player_stats` only ever holds the current season, and the baseline was
+    read from it alone -- so in week 1 every player started from 0.0 and the
+    projection collapsed to the model's deviation term. Brock Purdy, coming off a
+    16-18 pt/game season, projected 7.1.
+
+    Walks back from the most recent prior season and averages the last few games
+    the player actually produced in, so a player who missed last season falls
+    through to the one before rather than to zero.
+
+    Returns (average, games_used); (0.0, 0) when there is no history at all,
+    which is the honest answer for a rookie.
+    """
+    hist = model_data.get("df_player_stats_history")
+    if hist is None or hist.is_empty():
+        return 0.0, 0
+    if "player_id" not in hist.columns:
+        return 0.0, 0
+
+    rows = hist.filter(pl.col("player_id") == str(player_id))
+    if rows.is_empty():
+        return 0.0, 0
+
+    sort_cols, descending = [], []
+    if "season" in rows.columns:
+        sort_cols.append("season")
+        descending.append(True)
+    if "week" in rows.columns:
+        sort_cols.append("week")
+        descending.append(True)
+    if sort_cols:
+        rows = rows.sort(sort_cols, descending=descending)
+
+    points = []
+    for row in rows.iter_rows(named=True):
+        try:
+            pts = calculate_fantasy_points(row)
+        except Exception:
+            continue
+        if pts and pts > 0.0:
+            points.append(pts)
+        if len(points) >= max_games:
+            break
+
+    if not points:
+        return 0.0, 0
+    return sum(points) / len(points), len(points)
+
+
+def blend_with_prior(current_avg: float, current_games: int, player_id: str) -> float:
+    """Ease from last season's form into this season's as games accumulate.
+
+    Week 1 leans entirely on the prior season; by the time a player has
+    CARRYOVER_GAMES of current-season production, the prior season is gone. In
+    between it is a straight linear crossfade, so a projection never jumps.
+    """
+    current_games = max(0, int(current_games or 0))
+    if current_games >= CARRYOVER_GAMES:
+        return float(current_avg or 0.0)
+
+    prior_avg, prior_games = prior_season_form(player_id)
+    if prior_games == 0:
+        return float(current_avg or 0.0)
+
+    weight = current_games / float(CARRYOVER_GAMES)
+    return (weight * float(current_avg or 0.0)) + ((1.0 - weight) * prior_avg)
+
+
 def run_base_prediction(pid, pos, week):
     """
     Looks up features from DB. 
@@ -139,8 +214,10 @@ def run_base_prediction(pid, pos, week):
                 avg_recent_form = sum(valid_pts) / len(valid_pts)
             else:
                 avg_recent_form = float(features_dict.get('player_season_avg_points', 0.0))
+            avg_recent_form = blend_with_prior(avg_recent_form, len(valid_pts), pid)
         else:
-            avg_recent_form = float(features_dict.get('player_season_avg_points', 0.0))
+            avg_recent_form = blend_with_prior(
+                float(features_dict.get('player_season_avg_points', 0.0)), 0, pid)
 
         # --- 2. MODEL PREDICTION ---
         pred_dev = 0.0
