@@ -131,7 +131,7 @@ export default function App() {
   // If activeWeek is null, pass 0 to hooks so they return empty/loading, not Week 1 data
   const safeWeek = activeWeek || 0; 
   
-  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS' | 'GAME_RANKS';
+  type ViewMode = 'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'HISTORY' | 'TRENDING' | 'PICKS' | 'PLAYOFFS' | 'TIERS' | 'TEAMS' | 'GAME_RANKS' | 'TEAM_PAGE';
   const [viewMode, setViewModeRaw] = useState<ViewMode>('SCHEDULE');
 
   // Navigation stack: every setViewMode() that actually changes view pushes the
@@ -155,7 +155,7 @@ export default function App() {
       const last = prev[prev.length - 1];
       setViewModeRaw(last);
       // If we're returning to a team-context view and we stashed a modal, restore it.
-      if ((last === 'TIERS' || last === 'TEAMS') && modalReturn) {
+      if ((last === 'TIERS' || last === 'TEAMS' || last === 'TEAM_PAGE') && modalReturn) {
         setTeamModal({
           team: modalReturn.team,
           focusPlayerId: modalReturn.focusPlayerId ?? null,
@@ -163,6 +163,7 @@ export default function App() {
           initialTab: modalReturn.activeTab ?? 'overview',
         });
         setModalReturn(null);
+        if (last !== 'TEAM_PAGE') setViewModeRaw('TEAM_PAGE');
       }
       return prev.slice(0, -1);
     });
@@ -225,9 +226,20 @@ export default function App() {
   }, [setViewMode]);
 
   const openCompareFromTiers = useCallback(() => setViewMode('COMPARE'), [setViewMode]);
+  // Team Overview / Team Builder are destinations now, not dialogs: navigating
+  // means the header Back button and the nav stack work on them like any other
+  // view, and the trending sidebars stay togglable instead of being covered.
+  const openTeamPage = useCallback(
+    (team: string, focusPlayerId?: string | null, tab: TeamModalTab = 'overview') => {
+      setTeamModal({ team, focusPlayerId, initialTab: tab });
+      setViewMode('TEAM_PAGE');
+    },
+    [setViewMode],
+  );
+
   const openTeamFromTiers = useCallback(
-    (team: string, focusPlayerId?: string | null) => setTeamModal({ team, focusPlayerId }),
-    [],
+    (team: string, focusPlayerId?: string | null) => openTeamPage(team, focusPlayerId),
+    [openTeamPage],
   );
 
   useEffect(() => {
@@ -572,7 +584,7 @@ export default function App() {
 
           {/* VIEW: TEAMS */}
           {viewMode === 'TEAMS' && (
-            <TeamsView onOpenTeam={(team) => setTeamModal({ team })} />
+            <TeamsView onOpenTeam={(team) => openTeamPage(team)} />
           )}
 
           {/* VIEW: RANKS — per-game situation explainer + start/sit tiers.
@@ -594,6 +606,36 @@ export default function App() {
               onSelectGame={setSelectedGame}
             />
           </div>
+
+          {/* VIEW: TEAM PAGE - Overview / Team Builder as a full page rather
+              than an overlay, so the sidebars stay usable and Back behaves. */}
+          {viewMode === 'TEAM_PAGE' && teamModal && (
+            <div className="mx-auto w-full max-w-[2200px] px-2">
+              <TeamOffenseModal
+                asPage
+                team={teamModal.team}
+                focusPlayerId={teamModal.focusPlayerId ?? null}
+                initialDetailPlayerId={teamModal.initialDetailPlayerId ?? null}
+                initialTab={teamModal.initialTab ?? 'overview'}
+                onClose={() => { if (navStack.length) goBack(); else setViewMode('TEAMS'); }}
+                compareList={compareList}
+                onToggleCompare={toggleCompare}
+                onViewHistory={(id, ctx) => {
+                  // Stash which team/tab/player-detail was open so Back from
+                  // HISTORY returns you exactly where you left off.
+                  setModalReturn({
+                    team: teamModal.team,
+                    focusPlayerId: teamModal.focusPlayerId ?? null,
+                    detailPlayerId: ctx?.detailPlayerId ?? null,
+                    activeTab: ctx?.activeTab ?? teamModal.initialTab ?? 'overview',
+                  });
+                  setSelectedHistoryId(id);
+                  setHistoryFrom('TEAMS');
+                  setViewMode('HISTORY');
+                }}
+              />
+            </div>
+          )}
 
           {/* VIEW: TIER LIST — always mounted, just hidden when off-screen,
               so navigating to Compare/History and back preserves all local state
@@ -661,32 +703,6 @@ export default function App() {
 
         </div>
       </main>
-
-      {/* TEAM OFFENSE MODAL */}
-      {teamModal && (
-        <TeamOffenseModal
-          team={teamModal.team}
-          focusPlayerId={teamModal.focusPlayerId ?? null}
-          initialDetailPlayerId={teamModal.initialDetailPlayerId ?? null}
-          initialTab={teamModal.initialTab ?? 'overview'}
-          onClose={() => setTeamModal(null)}
-          compareList={compareList}
-          onToggleCompare={toggleCompare}
-          onViewHistory={(id, ctx) => {
-            // Capture modal state so Back from HISTORY reopens it naturally.
-            setModalReturn({
-              team: teamModal.team,
-              focusPlayerId: teamModal.focusPlayerId ?? null,
-              detailPlayerId: ctx?.detailPlayerId ?? null,
-              activeTab: ctx?.activeTab ?? teamModal.initialTab ?? 'overview',
-            });
-            setTeamModal(null);
-            setSelectedHistoryId(id);
-            setHistoryFrom(viewMode === 'TEAMS' ? 'TEAMS' : 'TIERS');
-            setViewMode('HISTORY');
-          }}
-        />
-      )}
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
