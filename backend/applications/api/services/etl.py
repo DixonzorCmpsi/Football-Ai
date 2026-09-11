@@ -118,6 +118,13 @@ async def run_injury_refresh_async() -> bool:
         except Exception:
             logger.exception("Injury refresh: reload after fetch failed")
             return False
+        # Stamp the time so /health (and the UI) can state how fresh the injury
+        # picture actually is instead of implying it is live.
+        from datetime import datetime, timezone
+        from ..state import model_data as _md
+        _md["injuries_updated_at"] = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        )
         logger.info("Injury refresh complete; injury map reloaded.")
         return True
     except Exception:

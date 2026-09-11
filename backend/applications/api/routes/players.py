@@ -385,6 +385,25 @@ async def get_player_season_stats(player_id: str, seasons: int = 5):
         return {"player_id": player_id, "seasons": []}
 
 
+@router.get("/player/{player_id}/storylines")
+async def get_storylines(player_id: str, limit: int = 5):
+    """Recent news storylines for one player, newest first.
+
+    Fed by a scheduled poll of ESPN's league news feed (see
+    services/storylines.py) - per-player queries are not possible against that
+    API, so the feed is accumulated locally and indexed by player.
+    """
+    from ..services.storylines import get_player_storylines, storylines_updated_at
+
+    items = get_player_storylines(player_id, limit=limit)
+    return {
+        "player_id": player_id,
+        "count": len(items),
+        "updated_at": storylines_updated_at(),
+        "storylines": items,
+    }
+
+
 @router.get("/player/history/{player_id}")
 async def get_player_history(player_id: str):
     """Return weekly history across the current season plus any cached prior seasons.

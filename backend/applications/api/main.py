@@ -6,6 +6,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi import _rate_limit_exceeded_handler
 import os
+from datetime import datetime, timedelta
 import joblib
 import json
 import asyncio
@@ -16,6 +17,7 @@ from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
 from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper
+from .services.storylines import storylines_wrapper
 from .routes import players, games, general, debug, tier_list
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
 
@@ -119,17 +121,28 @@ async def lifespan(app: FastAPI):
         # only refreshed with the 06:00 ETL, so a player ruled out overnight
         # still rendered as "Active" the next morning. Pull them on their own
         # short cycle. Tune with INJURY_REFRESH_MINUTES (0 disables).
-        injury_minutes = int(os.getenv('INJURY_REFRESH_MINUTES', '30'))
+        injury_minutes = int(os.getenv('INJURY_REFRESH_MINUTES', '15'))
         if injury_minutes > 0:
             scheduler.add_job(
                 injury_refresh_wrapper, 'interval', minutes=injury_minutes,
                 id='injury_refresh', max_instances=1, coalesce=True,
             )
+        # Player storylines: ESPN's league feed is capped at 50 articles and only
+        # covers the last several hours, so polling it a few times a day is what
+        # accumulates real per-player history. Tune with STORYLINE_REFRESH_HOURS.
+        storyline_hours = float(os.getenv('STORYLINE_REFRESH_HOURS', '3'))
+        if storyline_hours > 0:
+            scheduler.add_job(
+                storylines_wrapper, 'interval', hours=storyline_hours,
+                id='storylines', max_instances=1, coalesce=True,
+                next_run_time=datetime.now() + timedelta(seconds=45),
+            )
         scheduler.start()
         logger.info(
             "Scheduler active: ETL 06:00, rookie refresh 06:15, historical stats 06:20, "
-            "depth charts 06:25, app-state hourly, injuries every %s min.",
+            "depth charts 06:25, app-state hourly, injuries every %s min, storylines every %s h.",
             injury_minutes if injury_minutes > 0 else "off",
+            storyline_hours if storyline_hours > 0 else "off",
         )
         
         # Store scheduler in app state so we can shut it down

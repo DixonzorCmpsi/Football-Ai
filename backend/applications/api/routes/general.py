@@ -26,6 +26,10 @@ async def health_check():
         "meta_loaded": "meta_models" in model_data,
         "etl_script_exists": os.path.exists(ETL_SCRIPT_PATH),
         "current_week": model_data.get("current_nfl_week", None),
+        # Freshness of the two fastest-moving feeds, so the UI can show how
+        # stale the injury picture is rather than implying it is live.
+        "injuries_updated_at": model_data.get("injuries_updated_at"),
+        "storylines_updated_at": model_data.get("storylines_updated_at"),
         "data_loaded_at": model_data.get("data_loaded_at"),
     }
 
@@ -126,6 +130,16 @@ async def remove_watchlist(player_id: str):
         ids.remove(player_id)
         with open(WATCHLIST_FILE, 'w') as f: json.dump(ids, f)
     return ids
+
+
+# --- STORYLINES ---
+@router.post("/refresh/storylines")
+@limiter.limit("4/minute")
+async def refresh_storylines_now(request: Request):
+    """Pull the news feed immediately instead of waiting for the next tick."""
+    from ..services.storylines import refresh_storylines
+
+    return refresh_storylines()
 
 
 # --- INJURIES ---
