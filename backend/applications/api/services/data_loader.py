@@ -232,13 +232,41 @@ def refresh_db_data():
             
             # 1. Check if 'week' column exists (New Format)
             if "week" in df.columns:
-                # Find the LATEST week available in the file
-                max_wk = df.select(pl.col("week").max()).item()
-                logger.info(f"Filtering injury map to latest week: {max_wk}")
-                latest_report = df.filter(pl.col("week") == max_wk)
+                # Pick the week the app is actually showing, NOT max(week).
+                # This table accumulates across ETL runs and has held stray rows
+                # from other weeks/seasons; max(week) once resolved to a week-22
+                # block that masked every genuine current-week injury (a player
+                # ruled out the night before still rendered as "Active").
+                available = set(
+                    df.select(pl.col("week")).drop_nulls().unique().to_series().to_list()
+                )
+                target_wk = model_data.get("current_nfl_week")
+                if target_wk is None or target_wk not in available:
+                    fallback = df.select(pl.col("week").max()).item()
+                    logger.warning(
+                        "Injury map: current week %s unavailable (have %s); falling back to %s",
+                        model_data.get("current_nfl_week"), sorted(available), fallback,
+                    )
+                    target_wk = fallback
+                logger.info(f"Filtering injury map to week: {target_wk}")
+                latest_report = df.filter(pl.col("week") == target_wk)
                 
+                # One player can still have several rows for the same week if an
+                # older duplicate-laden table has not been rebuilt yet. Collapse to
+                # one row per player, preferring the most serious status so a stale
+                # "Active" duplicate can never hide a real "Out".
+                _RANK = {
+                    "ir": 6, "out": 5, "inactive": 5, "pup": 5, "sus": 5,
+                    "doubtful": 4, "questionable": 3, "na": 1, "active": 0,
+                }
                 rows = latest_report.select(["player_id", "injury_status"]).to_dicts()
-                model_data["injury_map"] = {r["player_id"]: r["injury_status"] for r in rows}
+                best: dict = {}
+                for r in rows:
+                    pid, st = r["player_id"], r["injury_status"]
+                    cur = best.get(pid)
+                    if cur is None or _RANK.get(str(st).lower(), 2) > _RANK.get(str(cur).lower(), 2):
+                        best[pid] = st
+                model_data["injury_map"] = best
             else:
                 # Fallback for old CSVs without week column
                 logger.warning("Injury CSV lacks 'week' column. Loading all rows (last write wins).")

@@ -22,6 +22,7 @@ import {
   type TierAssignment,
 } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 type Position = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
 const POSITIONS: Position[] = ['ALL', 'QB', 'RB', 'WR', 'TE'];
@@ -124,11 +125,10 @@ const PoolCard: React.FC<PoolCardProps> = memo(({
         <div className="w-7 h-7 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 shrink-0">
           {player.image ? (
             <img
-              src={player.image}
+              src={sizedPlayerImage(player.image, 32)}
               alt={player.player_name}
               className="w-full h-full object-cover"
-              loading="lazy"
-            />
+              loading="lazy" decoding="async" />
           ) : null}
         </div>
         <div className="flex-1 min-w-0">
@@ -323,7 +323,7 @@ const TierRow: React.FC<TierRowProps> = memo(({
               >
                 <span className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg" style={{ backgroundColor: tc }} />
                 <div className="w-7 h-7 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700 shrink-0 border border-slate-200 dark:border-slate-600 ml-1">
-                  {p.image && <img src={p.image} alt={p.player_name} className="w-full h-full object-cover" loading="lazy" />}
+                  {p.image && <img src={sizedPlayerImage(p.image, 28)} alt={p.player_name} className="w-full h-full object-cover" loading="lazy" decoding="async" />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1">

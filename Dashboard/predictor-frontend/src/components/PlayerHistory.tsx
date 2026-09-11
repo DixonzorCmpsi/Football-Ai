@@ -3,6 +3,7 @@ import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart } from 'lucid
 import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 import PlayerPerformanceCharts, { pointColor } from './PlayerPerformanceCharts';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface Props {
   playerId: string;
@@ -102,7 +103,7 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
           <div className="flex items-center gap-6 w-full xl:w-auto">
             <div className="h-24 w-24 rounded-full border-4 border-white/20 bg-black/20 overflow-hidden shadow-2xl shrink-0">
               {cardData?.image ? (
-                <img src={cardData.image} alt={cardData.name} className="w-full h-full object-cover" />
+                <img src={sizedPlayerImage(cardData.image, 96)} alt={cardData.name} className="w-full h-full object-cover" decoding="async" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-white/50 font-bold">...</div>
               )}

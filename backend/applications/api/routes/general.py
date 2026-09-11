@@ -128,6 +128,25 @@ async def remove_watchlist(player_id: str):
     return ids
 
 
+# --- INJURIES ---
+@router.post("/refresh/injuries")
+@limiter.limit("4/minute")
+async def refresh_injuries(request: Request):
+    """Pull the latest injury statuses from Sleeper on demand.
+
+    The scheduler already does this every INJURY_REFRESH_MINUTES, but news
+    breaks on its own schedule - this lets the app force a pull right before
+    lineups lock instead of waiting for the next tick.
+    """
+    from ..services.etl import run_injury_refresh_async
+    ok = await run_injury_refresh_async()
+    return {
+        "status": "ok" if ok else "failed",
+        "injuries_loaded": len(model_data.get("injury_map", {})),
+        "week": model_data.get("current_nfl_week"),
+    }
+
+
 # --- LIVE SCORES & STATS ---
 @router.post("/refresh/live-scores")
 @limiter.limit("6/minute")

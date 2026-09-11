@@ -4,6 +4,7 @@ import { X, Plus, Check, History, Shield, TrendingUp, Maximize2 } from 'lucide-r
 import { getTeamColor } from '../utils/nflColors';
 import PlayerDetailModal from './PlayerDetailModal';
 import TeamBuilderView from './TeamBuilderView';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 const API_BASE_URL =
   typeof window !== 'undefined' && window.__env && window.__env.API_BASE_URL
@@ -202,7 +203,7 @@ const PlayerRow: React.FC<{
     >
       <div className="w-7 h-7 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700 shrink-0 border border-slate-200 dark:border-slate-600">
         {p.image && (
-          <img src={p.image} alt={p.player_name} className="w-full h-full object-cover" loading="lazy" />
+          <img src={sizedPlayerImage(p.image, 28)} alt={p.player_name} className="w-full h-full object-cover" loading="lazy" decoding="async" />
         )}
       </div>
       <div className="flex-1 min-w-0">
