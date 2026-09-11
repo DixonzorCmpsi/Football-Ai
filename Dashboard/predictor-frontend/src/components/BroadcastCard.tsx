@@ -2,6 +2,7 @@ import React from 'react';
 import { TrendingUp, ExternalLink, Plus, Check } from 'lucide-react';
 import { getTeamColor } from '../utils/nflColors';
 import type { BroadcastCardData } from '../hooks/useNflData';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface BroadcastCardProps {
   data: BroadcastCardData | null;
@@ -113,7 +114,7 @@ const BroadcastCard: React.FC<BroadcastCardProps> = ({
           <div className="relative">
             <div className="w-28 h-28 rounded-full p-1 bg-gradient-to-br from-white/20 to-transparent shadow-2xl backdrop-blur-md">
                {image ? (
-                 <img src={image} alt={name} className="w-full h-full rounded-full object-cover border-4 border-white/10 bg-slate-800" />
+                 <img src={sizedPlayerImage(image, 112)} alt={name} className="w-full h-full rounded-full object-cover border-4 border-white/10 bg-slate-800" decoding="async" />
                ) : (
                  <div className="w-full h-full rounded-full bg-slate-700 flex items-center justify-center text-white/50 font-bold">IMG</div>
                )}

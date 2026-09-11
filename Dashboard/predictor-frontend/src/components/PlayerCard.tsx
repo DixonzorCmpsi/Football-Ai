@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { Plus, Check } from 'lucide-react';
 import type { PlayerData } from '../types';
 import { usePicks } from '../contexts/PicksContext';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface PlayerCardProps {
   data: PlayerData;
@@ -153,13 +154,12 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
       {/* --- HEADER GRID --- */}
       <div className="grid grid-cols-[auto_1fr_auto] gap-3 mb-1 items-center relative z-10">
         <img
-          src={data.image}
+          src={sizedPlayerImage(data.image, 40)}
           alt={data.player_name}
           loading="lazy"
           width={40}
           height={40}
-          className="w-10 h-10 rounded-full object-cover bg-slate-100 dark:bg-black/30 border-2 border-white dark:border-white/20 shadow-md"
-        />
+          className="w-10 h-10 rounded-full object-cover bg-slate-100 dark:bg-black/30 border-2 border-white dark:border-white/20 shadow-md" decoding="async" />
         
         <div className="min-w-0 flex flex-col justify-center">
           <div className="flex items-center">

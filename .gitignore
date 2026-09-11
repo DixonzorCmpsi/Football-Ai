@@ -39,3 +39,6 @@ node_modules/
 /check_frontend.py
 /check_tiers.py
 Dashboard/predictor-frontend/scratch/
+
+# Playwright profiling screenshots
+Dashboard/predictor-frontend/scripts/*.png

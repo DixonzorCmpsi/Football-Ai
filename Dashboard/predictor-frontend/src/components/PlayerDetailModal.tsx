@@ -3,6 +3,7 @@ import { X, History, Plus, Check, ChevronLeft, ChevronRight } from 'lucide-react
 import type { OffensePlayer } from './TeamOffenseModal';
 import { getTeamColor } from '../utils/nflColors';
 import { usePlayerSeasonStats, type SeasonStats } from '../hooks/useNflData';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface Props {
   player: OffensePlayer;
@@ -141,7 +142,7 @@ const PlayerDetailModal: React.FC<Props> = ({ player, onClose, isComparing, onTo
           <div className="relative shrink-0">
             <div className="w-20 h-20 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700 border-2 border-white dark:border-slate-600 shadow-md">
               {player.image && (
-                <img src={player.image} alt={player.player_name} className="w-full h-full object-cover" />
+                <img src={sizedPlayerImage(player.image, 80)} alt={player.player_name} className="w-full h-full object-cover" decoding="async" />
               )}
             </div>
             <div

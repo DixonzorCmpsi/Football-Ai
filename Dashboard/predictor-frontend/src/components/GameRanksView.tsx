@@ -9,6 +9,7 @@ import { RankBoardSkeleton } from './Skeleton';
 import MatchupBanner from './MatchupBanner';
 import type { ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 // ───────────────────────────────────────── Config: five start/sit tiers
 
@@ -131,7 +132,7 @@ const RankedPlayerCard = memo<{
         <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md text-white text-[9px] font-bold">
           {player.team}
         </div>
-        <img src={player.image} alt={player.player_name} loading="lazy" className="h-full object-cover object-top" />
+        <img src={sizedPlayerImage(player.image, 64)} alt={player.player_name} loading="lazy" className="h-full object-cover object-top" decoding="async" />
       </div>
 
       <div className="p-3 space-y-3">

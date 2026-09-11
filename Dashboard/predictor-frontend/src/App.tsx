@@ -15,6 +15,7 @@ import TeamOffenseModal from './components/TeamOffenseModal';
 import TeamsView from './components/TeamsView';
 import GameRanksView from './components/GameRanksView';
 import { getTeamColor } from './utils/nflColors';
+import { sizedPlayerImage } from './utils/playerImage';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
@@ -72,7 +73,7 @@ const SidebarPlayerItem = ({
       <div className="flex-1 flex gap-3 min-w-0" onClick={() => onClick && onClick(player.player_id)}>
           <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden border border-slate-200 dark:border-slate-600 shrink-0 relative">
             {player.image ? (
-              <img src={player.image} alt={player.player_name} className="object-cover w-full h-full" />
+              <img src={sizedPlayerImage(player.image, 40)} alt={player.player_name} className="object-cover w-full h-full" decoding="async" />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-500 text-xs">IMG</div>
             )}

@@ -15,7 +15,7 @@ from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, 
 from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
-from .services.etl import etl_trigger_wrapper, run_daily_etl_async
+from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper
 from .routes import players, games, general, debug, tier_list
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
 
@@ -115,8 +115,22 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(load_historical_stats, 'cron', hour=6, minute=20, id='historical_stats')
         # Daily depth chart refresh so `is_starter` tracks roster moves.
         scheduler.add_job(lambda: load_depth_charts(force=True), 'cron', hour=6, minute=25, id='depth_charts')
+        # Injuries are the most time-sensitive field in the app and previously
+        # only refreshed with the 06:00 ETL, so a player ruled out overnight
+        # still rendered as "Active" the next morning. Pull them on their own
+        # short cycle. Tune with INJURY_REFRESH_MINUTES (0 disables).
+        injury_minutes = int(os.getenv('INJURY_REFRESH_MINUTES', '30'))
+        if injury_minutes > 0:
+            scheduler.add_job(
+                injury_refresh_wrapper, 'interval', minutes=injury_minutes,
+                id='injury_refresh', max_instances=1, coalesce=True,
+            )
         scheduler.start()
-        logger.info("Scheduler active: ETL 06:00, rookie refresh 06:15, historical stats 06:20, depth charts 06:25, app-state hourly.")
+        logger.info(
+            "Scheduler active: ETL 06:00, rookie refresh 06:15, historical stats 06:20, "
+            "depth charts 06:25, app-state hourly, injuries every %s min.",
+            injury_minutes if injury_minutes > 0 else "off",
+        )
         
         # Store scheduler in app state so we can shut it down
         app.state.scheduler = scheduler

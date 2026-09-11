@@ -3,6 +3,7 @@ import type { CSSProperties, DragEvent } from 'react';
 import axios from 'axios';
 import { ChevronDown, ChevronRight, GripVertical, PanelLeftClose, PanelLeftOpen, Plus, Save, Search, Trash2, X, RotateCcw, UserPlus } from 'lucide-react';
 import type { OffensePlayer } from './TeamOffenseModal';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 const API_BASE_URL =
   typeof window !== 'undefined' && window.__env && window.__env.API_BASE_URL
@@ -232,7 +233,7 @@ const MiniPlayer = ({
     >
       <button type="button" onClick={() => onOpenDetail(player)} className="flex items-center gap-2 min-w-0 flex-1 text-left">
         <div className="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden shrink-0">
-          {player.image && <img src={player.image} alt={player.player_name} className="w-full h-full object-cover" />}
+          {player.image && <img src={sizedPlayerImage(player.image, 32)} alt={player.player_name} className="w-full h-full object-cover" decoding="async" />}
         </div>
         <div className="min-w-0">
           <div className="text-xs font-black text-slate-800 dark:text-slate-100 truncate">{player.player_name}</div>
@@ -400,7 +401,7 @@ const PlayerPoolCard = memo(({
     >
       <button type="button" onClick={() => onOpenDetail(player)} className="flex items-center gap-2 min-w-0 flex-1 text-left">
         <div className="w-8 h-8 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700 shrink-0">
-          {player.image && <img src={player.image} alt={player.player_name} className="w-full h-full object-cover" loading="lazy" />}
+          {player.image && <img src={sizedPlayerImage(player.image, 32)} alt={player.player_name} className="w-full h-full object-cover" loading="lazy" decoding="async" />}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1 min-w-0">

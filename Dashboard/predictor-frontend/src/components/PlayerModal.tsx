@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getTeamColor } from '../utils/nflColors';
 import type { PlayerData, HistoryItem } from '../types';
+import { sizedPlayerImage } from '../utils/playerImage';
 
 interface PlayerModalProps {
   player: PlayerData | null;
@@ -36,7 +37,7 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                 background: `linear-gradient(135deg, ${teamColor} 0%, #1e293b 100%)` 
             }}
         >
-          <img src={player.image} className="w-20 h-20 rounded-full border-4 border-white/20 bg-black/20 object-cover shadow-lg relative z-10" />
+          <img src={sizedPlayerImage(player.image, 80)} className="w-20 h-20 rounded-full border-4 border-white/20 bg-black/20 object-cover shadow-lg relative z-10" decoding="async" />
           
           <div className="flex-1 relative z-10 text-white">
             <h2 className="text-3xl font-black leading-none mb-1 drop-shadow-md">{player.player_name}</h2>

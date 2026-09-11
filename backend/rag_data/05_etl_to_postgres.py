@@ -297,6 +297,22 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
                                 conn.execute(text(f"DELETE FROM {tbl} WHERE season = {season} AND week IN ({weeks_str})"))
                                 conn.commit()
                                 logger.info(f"Smart Append: Deleted existing rows for season={season}, weeks={weeks}")
+                elif 'week' in schema:
+                    # Season-scoped tables (weekly_injuries_<season>, etc.) carry the season
+                    # in the table NAME and so have no `season` column. Without this branch the
+                    # pre-delete was skipped entirely and every ETL run COPY'd another full copy
+                    # of the CSV on top of the last: weekly_injuries_2026 reached ~70k rows for
+                    # ~6k real (player, week) pairs, and those stale duplicates masked current
+                    # injury statuses.
+                    df_keys = pl.read_csv(path, columns=['week']).unique()
+                    if not df_keys.is_empty():
+                        weeks = df_keys['week'].to_list()
+                        if weeks:
+                            with engine.connect() as conn:
+                                weeks_str = ",".join(map(str, weeks))
+                                conn.execute(text(f"DELETE FROM {tbl} WHERE week IN ({weeks_str})"))
+                                conn.commit()
+                                logger.info(f"Smart Append: Deleted existing rows for weeks={weeks} (season-scoped table)")
             except Exception as e:
                 logger.warning(f"Smart Append pre-delete failed (continuing): {e}")
 
