@@ -117,6 +117,10 @@ interface Props {
   focusPlayerId?: string | null;
   initialDetailPlayerId?: string | null;
   initialTab?: 'overview' | 'builder';
+  // Render as a full page in the normal content flow rather than a centred
+  // overlay. Team Overview and Team Builder are destinations you navigate to
+  // and Back out of, not dialogs, and as a dialog they trapped the sidebars.
+  asPage?: boolean;
   onClose: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
@@ -798,6 +802,7 @@ const TeamOffenseModal: React.FC<Props> = ({
   compareList,
   onToggleCompare,
   onViewHistory,
+  asPage = false,
 }) => {
   const [data, setData] = useState<TeamOffenseResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -884,15 +889,33 @@ const TeamOffenseModal: React.FC<Props> = ({
     return { total: all.length, injured: injured.length, rookies: rookies.length, avgAge };
   }, [data]);
 
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/55 p-2 md:p-4 animate-in fade-in duration-200"
-      onClick={onClose}
-    >
+  // As a page: no backdrop, no click-outside-to-close, no fixed positioning -
+  // just a panel that fills the content column so the trending sidebars stay
+  // usable beside it.
+  const Shell: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+    asPage ? (
+      <div className="w-full">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 w-full min-h-[calc(100vh-9rem)] flex flex-col overflow-hidden">
+          {children}
+        </div>
+      </div>
+    ) : (
       <div
-        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-[96rem] h-[94vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/55 p-2 md:p-4 animate-in fade-in duration-200"
+        onClick={onClose}
       >
+        <div
+          className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-[96rem] h-[94vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {children}
+        </div>
+      </div>
+    );
+
+  return (
+    <Shell>
+      <>
         {/* HEADER */}
         <div
           className="px-5 py-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-700"
@@ -1123,7 +1146,6 @@ const TeamOffenseModal: React.FC<Props> = ({
             />
           ) : null}
         </div>
-      </div>
 
       {expandedGroup && (
         <PositionFocusModal
@@ -1159,7 +1181,8 @@ const TeamOffenseModal: React.FC<Props> = ({
           onClose={() => setDetailPlayer(null)}
         />
       )}
-    </div>
+      </>
+    </Shell>
   );
 };
 
