@@ -1046,6 +1046,15 @@ def get_team_injury_report(team_abbr: str, week: int):
     # backups, so order by depth-chart role first: skill offense, then the line,
     # then defense, starters ahead of reserves within each.
     starter_ids = model_data.get("starter_gsis_ids", set()) or set()
+    # An injury report lists players on THIS team who might not play. Someone
+    # actually released is neither, and the feed keeps carrying them: 200 of
+    # 2,962 rows. Players whose status merely looks stale (still on the current
+    # depth chart, like Aaron Donald) are kept -- see departed_player_ids.
+    try:
+        from .data_loader import departed_player_ids
+        departed = departed_player_ids()
+    except Exception:
+        departed = set()
     depth_rank = {}
     df_depth = model_data.get("df_depth_charts", pl.DataFrame())
     if not df_depth.is_empty() and "gsis_id" in df_depth.columns and "pos_rank" in df_depth.columns:
@@ -1062,6 +1071,7 @@ def get_team_injury_report(team_abbr: str, week: int):
         pid = row['player_id']
         status = row.get('injury_status')
         if not status: continue # Skip if no status
+        if pid in departed: continue  # released and no longer on any depth chart
         
         # Get Profile Info
         name = "Unknown"

@@ -657,6 +657,43 @@ def _fetch_and_cache_depth_charts(season: int, force: bool = False) -> pl.DataFr
         return pl.DataFrame()
 
 
+# Profile roster statuses that CLAIM a player has left the team.
+#
+# On their own these are not trustworthy. Aaron Donald carries status EXE while
+# the depth chart -- pulled the same morning -- lists him at pos_rank 1 for LA
+# twice (NT on 09-01, RDE on 09-11). He is playing; the status field is what is
+# stale. Same shape as the roster-override bug: an undated field outranking a
+# dated feed.
+#
+# So a player counts as gone only when the status says so AND the current depth
+# chart does not list him for that team. Of 443 injury rows whose status claims
+# off-roster, 243 are still on a depth chart (stale status, keep) and 200 are
+# not (genuinely departed).
+#
+# RES (reserve/IR) and INA (inactive) are deliberately absent: those players are
+# on the roster and hurt, which is what an injury report is for.
+CLAIMED_OFF_ROSTER_STATUSES = {"RET", "CUT", "EXE"}
+
+
+def departed_player_ids() -> set:
+    """Players the profile calls gone AND the live depth chart does not list."""
+    profile = model_data.get("df_profile", pl.DataFrame())
+    depth = model_data.get("df_depth_charts", pl.DataFrame())
+    if profile.is_empty() or "status" not in profile.columns or "player_id" not in profile.columns:
+        return set()
+
+    claimed = profile.filter(pl.col("status").is_in(list(CLAIMED_OFF_ROSTER_STATUSES)))
+    if claimed.is_empty():
+        return set()
+    if depth.is_empty() or "gsis_id" not in depth.columns:
+        # With no feed to corroborate, keep everyone rather than hiding players
+        # on the strength of a field already shown to lag.
+        return set()
+
+    listed = set(depth.drop_nulls(subset=["gsis_id"])["gsis_id"].to_list())
+    return {p for p in claimed["player_id"].to_list() if p not in listed}
+
+
 def load_depth_charts(season: int = CURRENT_SEASON, force: bool = False) -> None:
     """Populate `model_data['df_depth_charts']` + precomputed `starter_gsis_ids`.
 
