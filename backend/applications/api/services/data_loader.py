@@ -14,41 +14,179 @@ DERIVED_CACHE_KEYS = (
     "season_team_sack_context_cache",
 )
 
-# Short-lived current-roster corrections for moves that upstream offseason feeds
-# can lag on. Each entry carries the date it was confirmed so `_warn_stale_overrides`
-# can flag ones that are old enough to have been overtaken by another move —
-# a hardcoded correction that itself goes stale is exactly how Kenneth Walker III
-# stayed on SEA in-app for months after being traded to KC.
-CURRENT_TEAM_OVERRIDES_DATED = {
-    # David Njoku agreed to a one-year deal with the Chargers on 2026-05-11.
-    "00-0033885": ("LAC", "2026-05-11"),
-    # DJ Moore: depth-chart feed surfaced him at WR1 for BUF; he's on CHI.
-    "00-0034827": ("CHI", "2026-05-23"),
-    # Kenneth Walker III: traded from SEA to KC.
-    "00-0038134": ("KC", "2026-09-10"),
-}
+# Short-lived current-roster corrections for moves that upstream feeds can lag on.
+#
+# These are a stopgap, never a source of truth. Each entry carries the date the
+# move was confirmed, and an override only wins if it is NEWER than the feed
+# observation it contradicts (see `_active_overrides`). That rule is what keeps
+# this table from rotting:
+#
+#   * Kenneth Walker III sat on SEA in-app for months after being traded to KC,
+#     because a hardcoded correction outlived the truth it encoded.
+#   * DJ Moore was pinned to CHI by an entry asserting the depth-chart feed was
+#     wrong about BUF. The feed was right. A stale human call silently beat fresh
+#     upstream data.
+#
+# Both failures share one cause: an undated, unconditional override outranking a
+# feed that had already caught up. Comparing timestamps removes the whole class.
+# Empty on purpose. Verified 2026-09-11 against a depth-chart feed pulled the same
+# day: LAC (Njoku) and KC (Walker) were already correct upstream, and CHI (Moore)
+# was simply wrong -- the feed had him on BUF all along. Add an entry only for a
+# move the feed has not caught up to yet, always with the date it was confirmed,
+# and delete it once `_active_overrides` starts logging that it is redundant.
+CURRENT_TEAM_OVERRIDES_DATED: dict = {}
 CURRENT_TEAM_OVERRIDES = {pid: team for pid, (team, _) in CURRENT_TEAM_OVERRIDES_DATED.items()}
 
 # Overrides older than this are past their useful life: either the source feed
-# has long since caught up, or (as with Kenneth Walker III above) the player
-# has moved again and the override is now actively wrong. Surface them loudly
-# instead of trusting hardcoded data forever.
+# has long since caught up, or (as with Kenneth Walker III) the player has moved
+# again and the override is now actively wrong. Surface them loudly instead of
+# trusting hardcoded data forever.
 _OVERRIDE_STALE_AFTER_DAYS = 60
+
+
+def _parse_date(value):
+    """Date part of an ISO timestamp or plain date string, or None.
+
+    Only the calendar date matters here, so take the leading YYYY-MM-DD and
+    ignore any time/zone suffix. (Slicing to 19 chars and then matching a format
+    ending in "Z" silently fails on every real feed timestamp.)
+    """
+    if value is None:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _latest_depth_rows(depth: pl.DataFrame) -> pl.DataFrame:
+    """One row per player: the most recent depth-chart observation."""
+    if depth.is_empty() or "gsis_id" not in depth.columns:
+        return depth
+    if "dt" in depth.columns:
+        return depth.sort("dt").unique(subset=["gsis_id"], keep="last")
+    return depth.unique(subset=["gsis_id"], keep="last")
+
+
+def _depth_chart_observed_on(depth: pl.DataFrame):
+    """Date the depth-chart feed was last observed, or None if unknown."""
+    if depth.is_empty() or "dt" not in depth.columns:
+        return None
+    try:
+        return _parse_date(depth["dt"].max())
+    except Exception:
+        return None
 
 
 def _warn_stale_overrides() -> None:
     today = datetime.now().date()
     for player_id, (team, confirmed) in CURRENT_TEAM_OVERRIDES_DATED.items():
-        try:
-            age_days = (today - datetime.strptime(confirmed, "%Y-%m-%d").date()).days
-        except ValueError:
+        confirmed_on = _parse_date(confirmed)
+        if confirmed_on is None:
             continue
+        age_days = (today - confirmed_on).days
         if age_days > _OVERRIDE_STALE_AFTER_DAYS:
             logger.warning(
-                "CURRENT_TEAM_OVERRIDES entry for %s -> %s is %d days old (confirmed %s) — "
+                "CURRENT_TEAM_OVERRIDES entry for %s -> %s is %d days old (confirmed %s) - "
                 "re-verify the player's actual current team; it may have changed again.",
                 player_id, team, age_days, confirmed,
             )
+
+
+def _active_overrides(depth: pl.DataFrame) -> dict:
+    """Decide which hardcoded overrides still outrank the live feed.
+
+    An override is honoured only when it is strictly newer than the depth-chart
+    observation it contradicts, or when the feed has no opinion on the player at
+    all. Anything else means upstream has caught up (or was never wrong), so the
+    feed wins and the override retires itself with a loud log line.
+    """
+    # `refresh_db_data` applies overrides once before the depth charts are loaded
+    # and again afterwards. Without a feed there is nothing to adjudicate against,
+    # and applying an override here would bake a stale team into df_profile that
+    # the later, better-informed pass can no longer undo -- which is exactly how
+    # DJ Moore kept showing as CHI even after his override had been retired.
+    if depth.is_empty() or "gsis_id" not in depth.columns or "team" not in depth.columns:
+        logger.info(
+            "Depth-chart feed not loaded yet; deferring roster overrides to the "
+            "post-load pass rather than guessing."
+        )
+        return {}
+
+    observed_on = _depth_chart_observed_on(depth)
+    frame = _latest_depth_rows(depth)
+    feed_team = dict(zip(frame["gsis_id"].to_list(), frame["team"].to_list()))
+
+    active = {}
+    for player_id, (team, confirmed) in CURRENT_TEAM_OVERRIDES_DATED.items():
+        current = feed_team.get(player_id)
+        if current is None:
+            # Feed has no row for this player, so the override is the only signal.
+            active[player_id] = team
+            continue
+        if current == team:
+            logger.info(
+                "Roster override for %s -> %s is redundant; the depth-chart feed already "
+                "agrees. Safe to delete the entry.",
+                player_id, team,
+            )
+            continue
+        confirmed_on = _parse_date(confirmed)
+        if observed_on is not None and confirmed_on is not None and confirmed_on <= observed_on:
+            logger.warning(
+                "RETIRING roster override %s -> %s (confirmed %s): the depth-chart feed "
+                "observed %s says %s and is newer, so the feed wins. Delete this entry.",
+                player_id, team, confirmed, observed_on.isoformat(), current,
+            )
+            continue
+        active[player_id] = team
+    return active
+
+
+def audit_roster_consistency() -> dict:
+    """Log active-roster disagreements between the profile and depth-chart feeds.
+
+    Practice-squad and cut players churn between feeds constantly and are noise;
+    a disagreement on an ACTIVE player means a real move we are getting wrong,
+    which is the signal actually worth surfacing.
+    """
+    profile = model_data.get("df_profile", pl.DataFrame())
+    depth = model_data.get("df_depth_charts", pl.DataFrame())
+    result = {"checked": 0, "active_mismatches": 0, "players": []}
+    if profile.is_empty() or depth.is_empty():
+        return result
+    if "player_id" not in profile.columns or "team_abbr" not in profile.columns:
+        return result
+    if "gsis_id" not in depth.columns or "team" not in depth.columns:
+        return result
+
+    frame = _latest_depth_rows(depth)
+    cols = [c for c in ("player_id", "player_name", "team_abbr", "status") if c in profile.columns]
+    joined = profile.select(cols).join(
+        frame.select(["gsis_id", "team"]).rename({"gsis_id": "player_id"}),
+        on="player_id", how="inner",
+    )
+    result["checked"] = len(joined)
+    mismatched = joined.filter(pl.col("team_abbr") != pl.col("team"))
+    if "status" in joined.columns:
+        mismatched = mismatched.filter(pl.col("status") == "ACT")
+    result["active_mismatches"] = len(mismatched)
+    if len(mismatched):
+        result["players"] = mismatched.head(25).to_dicts()
+        logger.warning(
+            "Roster audit: %d ACTIVE players disagree between profile and depth-chart feeds "
+            "(of %d compared). Sample: %s",
+            len(mismatched), len(joined),
+            ", ".join(
+                "%s profile=%s depth=%s" % (r.get("player_name"), r.get("team_abbr"), r.get("team"))
+                for r in result["players"][:10]
+            ),
+        )
+    else:
+        logger.info(
+            "Roster audit: no ACTIVE-player team disagreements across %d players.", len(joined)
+        )
+    return result
 
 
 def invalidate_derived_caches() -> None:
@@ -103,11 +241,20 @@ def load_data_source(query: str, csv_filename: str, retries: int = 3, retry_dela
 
 
 def apply_current_roster_overrides() -> None:
-    """Patch known offseason roster-feed lag in loaded profile/depth-chart frames."""
-    if not CURRENT_TEAM_OVERRIDES:
+    """Patch roster-feed lag, but only where an override still beats the live feed."""
+    if not CURRENT_TEAM_OVERRIDES_DATED:
+        audit_roster_consistency()
         return
 
     _warn_stale_overrides()
+
+    overrides = _active_overrides(model_data.get("df_depth_charts", pl.DataFrame()))
+    if not overrides:
+        logger.info(
+            "No roster overrides are newer than the feed; using upstream roster data as-is."
+        )
+        audit_roster_consistency()
+        return
 
     profile = model_data.get("df_profile", pl.DataFrame())
     if not profile.is_empty() and "player_id" in profile.columns:
@@ -116,7 +263,7 @@ def apply_current_roster_overrides() -> None:
             if col not in profile.columns:
                 continue
             expr = pl.col(col)
-            for player_id, team in CURRENT_TEAM_OVERRIDES.items():
+            for player_id, team in overrides.items():
                 expr = pl.when(pl.col("player_id") == player_id).then(pl.lit(team)).otherwise(expr)
             exprs.append(expr.alias(col))
         if exprs:
@@ -125,9 +272,11 @@ def apply_current_roster_overrides() -> None:
     depth = model_data.get("df_depth_charts", pl.DataFrame())
     if not depth.is_empty() and "gsis_id" in depth.columns and "team" in depth.columns:
         expr = pl.col("team")
-        for player_id, team in CURRENT_TEAM_OVERRIDES.items():
+        for player_id, team in overrides.items():
             expr = pl.when(pl.col("gsis_id") == player_id).then(pl.lit(team)).otherwise(expr)
         model_data["df_depth_charts"] = depth.with_columns(expr.alias("team"))
+
+    audit_roster_consistency()
 
 def _ensure_rookies_merged() -> None:
     """Guarantee `df_profile` contains the current-season rookies.
