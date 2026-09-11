@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff } from 'lucide-react';
 import {
   fetchSleeperUser,
   fetchSleeperLeague,
@@ -14,6 +14,8 @@ interface SleeperViewProps {
   week: number;
   season: number;
   onOpenHistory?: (playerId: string) => void;
+  /** Lets the host header's Back button walk back one step inside this view. */
+  onInnerNav?: (entry: { label: string; back: () => void } | null) => void;
 }
 
 type Stage = 'USER' | 'LEAGUE' | 'TEAM';
@@ -22,6 +24,61 @@ type Tab = 'LINEUP' | 'WAIVERS';
 const num = (v: unknown) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+};
+
+// Remembering the handle in the browser is enough: there is no account system,
+// and re-typing a username to get back to a roster you were just looking at is
+// the whole complaint. Kept for a week, cleared by "Start over".
+const STORE_KEY = 'spotai.sleeper.session.v1';
+const STORE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type PinnedLeague = {
+  league_id: string;
+  name: string;
+  season: string;
+  scoring_type: string;
+  total_rosters: number;
+  rosterId?: number | null;
+};
+
+type Saved = {
+  username: string;
+  season: number;
+  leagueId?: string | null;
+  rosterId?: number | null;
+  pinned?: PinnedLeague[];
+  savedAt: number;
+};
+
+const loadSaved = (): Saved | null => {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Saved;
+    if (!parsed?.username) return null;
+    if (Date.now() - (parsed.savedAt || 0) > STORE_TTL_MS) {
+      localStorage.removeItem(STORE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null; // private mode, blocked storage, or corrupt value
+  }
+};
+
+const saveSession = (patch: Partial<Saved>) => {
+  try {
+    const current = loadSaved() || ({} as Saved);
+    const next = { ...current, ...patch, savedAt: Date.now() };
+    if (!next.username) return;
+    localStorage.setItem(STORE_KEY, JSON.stringify(next));
+  } catch {
+    /* storage unavailable: the view still works, it just won't remember */
+  }
+};
+
+const clearSession = () => {
+  try { localStorage.removeItem(STORE_KEY); } catch { /* noop */ }
 };
 
 const PlayerRow: React.FC<{
@@ -76,11 +133,12 @@ const PlayerRow: React.FC<{
   </button>
 );
 
-const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }) => {
+const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, onInnerNav }) => {
   const [stage, setStage] = useState<Stage>('USER');
   const [username, setUsername] = useState('');
   const [seasonInput, setSeasonInput] = useState(season);
   const [loading, setLoading] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [user, setUser] = useState<any>(null);
@@ -90,6 +148,34 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
   const [analysis, setAnalysis] = useState<any>(null);
   const [waivers, setWaivers] = useState<any>(null);
   const [tab, setTab] = useState<Tab>('LINEUP');
+  // Leagues the user pinned, kept in the browser so they are one click away on
+  // every visit without re-entering a handle.
+  const [pinned, setPinned] = useState<PinnedLeague[]>(() => loadSaved()?.pinned || []);
+
+  const isPinned = useCallback(
+    (id: string) => pinned.some((p) => p.league_id === id),
+    [pinned],
+  );
+
+  const togglePin = useCallback((lg: SleeperLeague | PinnedLeague) => {
+    setPinned((prev) => {
+      const exists = prev.some((p) => p.league_id === lg.league_id);
+      const next = exists
+        ? prev.filter((p) => p.league_id !== lg.league_id)
+        : [...prev, {
+            league_id: lg.league_id,
+            name: lg.name,
+            season: String(lg.season),
+            scoring_type: lg.scoring_type,
+            total_rosters: lg.total_rosters,
+          }];
+      saveSession({ pinned: next });
+      return next;
+    });
+  }, []);
+
+  const weekRef = useRef(week);
+  weekRef.current = week;
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setLoading(true);
@@ -103,13 +189,52 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
     }
   }, []);
 
+  // ---- restore a previous session ----------------------------------------
+  const restoredOnce = useRef(false);
+  useEffect(() => {
+    if (restoredOnce.current) return;
+    restoredOnce.current = true;
+    const saved = loadSaved();
+    if (!saved?.username) return;
+
+    setUsername(saved.username);
+    setSeasonInput(saved.season ?? season);
+    setRestoring(true);
+    (async () => {
+      try {
+        const data = await fetchSleeperUser(saved.username, saved.season ?? season);
+        setUser(data.user);
+        setLeagues(data.leagues || []);
+        setStage('LEAGUE');
+        if (saved.leagueId) {
+          const lgData = await fetchSleeperLeague(saved.leagueId);
+          setLeague(lgData.league);
+          setTeams(lgData.teams || []);
+          setStage('TEAM');
+          if (saved.rosterId !== null && saved.rosterId !== undefined) {
+            setAnalysis(await fetchSleeperRosterAnalysis(
+              saved.leagueId, saved.rosterId, weekRef.current));
+          }
+        }
+      } catch {
+        // A stale league or renamed account just drops us back to the form.
+        clearSession();
+      } finally {
+        setRestoring(false);
+      }
+    })();
+  }, [season]);
+
+  // ---- actions ------------------------------------------------------------
   const lookupUser = useCallback(() => {
     if (!username.trim()) return;
     run(async () => {
       const data = await fetchSleeperUser(username.trim(), seasonInput);
       setUser(data.user);
       setLeagues(data.leagues || []);
+      setLeague(null); setTeams([]); setAnalysis(null); setWaivers(null);
       setStage('LEAGUE');
+      saveSession({ username: username.trim(), season: seasonInput, leagueId: null, rosterId: null });
     });
   }, [username, seasonInput, run]);
 
@@ -118,16 +243,25 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
       const data = await fetchSleeperLeague(lg.league_id);
       setLeague(data.league);
       setTeams(data.teams || []);
+      setAnalysis(null); setWaivers(null);
       setStage('TEAM');
+      saveSession({ leagueId: lg.league_id, rosterId: null });
     });
   }, [run]);
 
   const chooseTeam = useCallback((rosterId: number) => {
     if (!league) return;
     run(async () => {
-      const data = await fetchSleeperRosterAnalysis(league.league_id, rosterId, week);
-      setAnalysis(data);
+      setAnalysis(await fetchSleeperRosterAnalysis(league.league_id, rosterId, week));
+      setWaivers(null);
       setTab('LINEUP');
+      saveSession({ rosterId });
+      setPinned((prev) => {
+        const next = prev.map((p) =>
+          p.league_id === league.league_id ? { ...p, rosterId } : p);
+        saveSession({ pinned: next });
+        return next;
+      });
     });
   }, [league, week, run]);
 
@@ -140,10 +274,67 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
     });
   }, [league, week, waivers, run]);
 
-  const reset = () => {
+  const openPinned = useCallback((pin: PinnedLeague) => {
+    run(async () => {
+      const data = await fetchSleeperLeague(pin.league_id);
+      setLeague(data.league);
+      setTeams(data.teams || []);
+      setStage('TEAM');
+      saveSession({ leagueId: pin.league_id });
+      if (pin.rosterId !== null && pin.rosterId !== undefined) {
+        setAnalysis(await fetchSleeperRosterAnalysis(pin.league_id, pin.rosterId, week));
+        setWaivers(null);
+        setTab('LINEUP');
+        saveSession({ rosterId: pin.rosterId });
+      }
+    });
+  }, [run, week]);
+
+  const reset = useCallback(() => {
+    clearSession();
     setStage('USER'); setUser(null); setLeagues([]); setLeague(null);
     setTeams([]); setAnalysis(null); setWaivers(null); setError(null);
-  };
+    setUsername('');
+    setPinned([]);
+  }, []);
+
+  // ---- one granular step back --------------------------------------------
+  // Each of these is a place the user can actually be, so Back should land on
+  // the previous one rather than dumping them at the username form (or, worse,
+  // out of the view entirely) and making them type their handle again.
+  const backStep = useMemo(() => {
+    if (analysis && tab === 'WAIVERS') {
+      return { label: 'lineup', back: () => setTab('LINEUP') };
+    }
+    if (analysis) {
+      return { label: 'teams', back: () => { setAnalysis(null); setWaivers(null); saveSession({ rosterId: null }); } };
+    }
+    if (stage === 'TEAM') {
+      return { label: 'leagues', back: () => { setLeague(null); setTeams([]); setStage('LEAGUE'); saveSession({ leagueId: null, rosterId: null }); } };
+    }
+    if (stage === 'LEAGUE') {
+      return { label: 'search', back: () => { setUser(null); setLeagues([]); setStage('USER'); } };
+    }
+    return null;
+  }, [analysis, tab, stage]);
+
+  useEffect(() => {
+    if (!onInnerNav) return;
+    onInnerNav(backStep);
+    return () => onInnerNav(null);
+  }, [backStep, onInnerNav]);
+
+  const crumbs = useMemo(() => {
+    const out: { label: string; onClick?: () => void }[] = [{ label: 'Search', onClick: stage !== 'USER' ? () => { setUser(null); setLeagues([]); setStage('USER'); } : undefined }];
+    if (user) out.push({ label: user.display_name || user.username, onClick: stage !== 'LEAGUE' ? () => { setLeague(null); setTeams([]); setAnalysis(null); setStage('LEAGUE'); } : undefined });
+    if (league) out.push({ label: league.name, onClick: analysis ? () => { setAnalysis(null); setWaivers(null); } : undefined });
+    if (analysis) {
+      const t = teams.find((x) => x.roster_id === analysis.roster_id);
+      out.push({ label: t?.team_name || `Roster ${analysis.roster_id}`, onClick: tab !== 'LINEUP' ? () => setTab('LINEUP') : undefined });
+    }
+    if (analysis && tab === 'WAIVERS') out.push({ label: 'Waiver wire' });
+    return out;
+  }, [stage, user, league, analysis, teams, tab]);
 
   const recommendedIds = useMemo(
     () => new Set((analysis?.recommended_starters || []).map((c: any) => c.sleeper_id)),
@@ -161,12 +352,76 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
           My Team · Sleeper
         </div>
         <h1 className="text-2xl font-black text-slate-800 dark:text-slate-100">
-          Import your fantasy roster
+          {analysis ? 'Your roster, projected' : 'Import your fantasy roster'}
         </h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Sleeper's read API is public, so this needs your username only — never a password.
-        </p>
       </div>
+
+      {/* Breadcrumb — every level is clickable, so no step is a dead end. */}
+      <nav data-testid="sleeper-breadcrumb" className="flex items-center flex-wrap gap-1 text-xs">
+        {crumbs.map((c, i) => (
+          <span key={`${c.label}-${i}`} className="flex items-center gap-1">
+            {i > 0 && <ChevronRight size={12} className="text-slate-400" />}
+            {c.onClick ? (
+              <button
+                onClick={c.onClick}
+                data-testid="sleeper-crumb"
+                className="font-bold text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                {c.label}
+              </button>
+            ) : (
+              <span data-testid="sleeper-crumb" className="font-bold text-slate-500 dark:text-slate-400">{c.label}</span>
+            )}
+          </span>
+        ))}
+      </nav>
+
+      {/* Pinned leagues: always visible, one click to the roster, no handle needed. */}
+      {pinned.length > 0 && (
+        <div data-testid="sleeper-pinned">
+          <h2 className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+            <Pin size={12} /> Pinned leagues
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {pinned.map((pin) => (
+              <div
+                key={pin.league_id}
+                data-testid="sleeper-pin"
+                className={`flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full border text-xs transition-colors ${
+                  league?.league_id === pin.league_id
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900'
+                }`}
+              >
+                <button
+                  onClick={() => openPinned(pin)}
+                  data-testid="sleeper-pin-open"
+                  className="font-bold text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400"
+                >
+                  {pin.name}
+                  <span className="ml-1.5 font-normal text-slate-400">
+                    {pin.scoring_type} · {pin.season}
+                  </span>
+                </button>
+                <button
+                  onClick={() => togglePin(pin)}
+                  title="Unpin"
+                  aria-label={`Unpin ${pin.name}`}
+                  className="p-1 rounded-full text-slate-400 hover:text-red-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <PinOff size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {restoring && (
+        <div className="flex items-center gap-2 text-sm text-slate-500" data-testid="sleeper-restoring">
+          <Loader2 size={14} className="animate-spin" /> Restoring your last team…
+        </div>
+      )}
 
       {error && (
         <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
@@ -175,50 +430,53 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
         </div>
       )}
 
-      {/* Step 1 — username */}
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex-1 min-w-[220px]">
-          <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-            Sleeper username
-          </label>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && lookupUser()}
-            placeholder="e.g. yourhandle"
-            data-testid="sleeper-username"
-            className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="w-28">
-          <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-            Season
-          </label>
-          <input
-            type="number"
-            value={seasonInput}
-            onChange={(e) => setSeasonInput(Number(e.target.value))}
-            className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <button
-          onClick={lookupUser}
-          disabled={loading || !username.trim()}
-          data-testid="sleeper-lookup"
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-bold flex items-center gap-2"
-        >
-          {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-          Find leagues
-        </button>
-        {stage !== 'USER' && (
-          <button onClick={reset} className="px-3 py-2 rounded-lg text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-            Start over
+      {/* Step 1 — username. Collapses once a team is loaded so the analysis
+          gets the screen; the breadcrumb walks back to it. */}
+      {!analysis && (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="flex-1 min-w-[220px]">
+            <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+              Sleeper username
+            </label>
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && lookupUser()}
+              placeholder="e.g. yourhandle"
+              data-testid="sleeper-username"
+              className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="w-28">
+            <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+              Season
+            </label>
+            <input
+              type="number"
+              value={seasonInput}
+              onChange={(e) => setSeasonInput(Number(e.target.value))}
+              className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <button
+            onClick={lookupUser}
+            disabled={loading || !username.trim()}
+            data-testid="sleeper-lookup"
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-bold flex items-center gap-2"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            Find leagues
           </button>
-        )}
-      </div>
+          {stage !== 'USER' && (
+            <button onClick={reset} data-testid="sleeper-reset" className="px-3 py-2 rounded-lg text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+              Start over
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Step 2 — league */}
-      {stage !== 'USER' && (
+      {stage !== 'USER' && !analysis && (
         <div>
           <h2 className="text-sm font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-2">
             <Users size={14} /> {user?.display_name || user?.username}'s leagues ({leagues.length})
@@ -231,21 +489,39 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
           ) : (
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {leagues.map((lg) => (
-                <button
+                <div
                   key={lg.league_id}
-                  onClick={() => chooseLeague(lg)}
-                  data-testid="sleeper-league"
-                  className={`text-left p-3 rounded-lg border transition-colors ${
+                  className={`flex items-start gap-2 p-3 rounded-lg border transition-colors ${
                     league?.league_id === lg.league_id
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                       : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-blue-400'
                   }`}
                 >
-                  <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">{lg.name}</div>
-                  <div className="text-[11px] text-slate-500">
-                    {lg.total_rosters} teams · {lg.scoring_type} · {lg.season}
-                  </div>
-                </button>
+                  <button
+                    onClick={() => chooseLeague(lg)}
+                    data-testid="sleeper-league"
+                    className="text-left min-w-0 flex-1"
+                  >
+                    <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">{lg.name}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {lg.total_rosters} teams · {lg.scoring_type} · {lg.season}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => togglePin(lg)}
+                    data-testid="sleeper-pin-toggle"
+                    data-pinned={isPinned(lg.league_id)}
+                    title={isPinned(lg.league_id) ? 'Unpin this league' : 'Pin this league'}
+                    aria-label={isPinned(lg.league_id) ? `Unpin ${lg.name}` : `Pin ${lg.name}`}
+                    className={`p-1.5 rounded-lg shrink-0 transition-colors ${
+                      isPinned(lg.league_id)
+                        ? 'text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30'
+                        : 'text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <Pin size={13} />
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -253,7 +529,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
       )}
 
       {/* Step 3 — team */}
-      {stage === 'TEAM' && teams.length > 0 && (
+      {stage === 'TEAM' && teams.length > 0 && !analysis && (
         <div>
           <h2 className="text-sm font-black uppercase tracking-wider text-slate-500 mb-2">
             Pick your team in {league?.name}
@@ -264,11 +540,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
                 key={t.roster_id}
                 onClick={() => chooseTeam(t.roster_id)}
                 data-testid="sleeper-team"
-                className={`text-left p-3 rounded-lg border transition-colors ${
-                  analysis?.roster_id === t.roster_id
-                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-blue-400'
-                }`}
+                className="text-left p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-blue-400 transition-colors"
               >
                 <div className="font-bold text-sm text-slate-800 dark:text-slate-100 truncate">{t.team_name}</div>
                 <div className="text-[11px] text-slate-500">
@@ -280,7 +552,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
         </div>
       )}
 
-      {loading && (
+      {loading && !restoring && (
         <div className="flex items-center gap-2 text-sm text-slate-500">
           <Loader2 size={16} className="animate-spin" /> Working…
         </div>
@@ -293,6 +565,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
             <button
               onClick={() => setTab('LINEUP')}
               data-testid="sleeper-tab-lineup"
+              data-active={tab === 'LINEUP'}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold ${tab === 'LINEUP' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
             >
               Lineup
@@ -300,9 +573,13 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory }
             <button
               onClick={loadWaivers}
               data-testid="sleeper-tab-waivers"
+              data-active={tab === 'WAIVERS'}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold ${tab === 'WAIVERS' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
             >
               Waiver wire
+            </button>
+            <button onClick={reset} data-testid="sleeper-reset" className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+              Start over
             </button>
             <div className="ml-auto text-xs text-slate-500">
               Week {analysis.week} · projected{' '}

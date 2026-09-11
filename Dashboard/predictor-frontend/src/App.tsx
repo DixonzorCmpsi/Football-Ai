@@ -634,6 +634,7 @@ export default function App() {
                 week={safeWeek}
                 season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
                 onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+                onInnerNav={handleInnerNav}
               />
             </div>
           )}
