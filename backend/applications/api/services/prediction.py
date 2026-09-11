@@ -58,6 +58,38 @@ def get_injury_status_for_week(player_id: str, week: int, default="Active"):
 CARRYOVER_GAMES = 4
 
 
+def _prior_form_index() -> dict:
+    """Player id -> their prior-season rows, built once per history load.
+
+    The first version filtered the whole history frame per player. That frame is
+    ~95k rows, so a matchup (28 players) paid 28 full scans: 2.65s of a 3.6s
+    request, 73% of the total. Partitioning once is a single pass, after which
+    each lookup touches only that player's ~30 rows.
+    """
+    hist = model_data.get("df_player_stats_history")
+    if hist is None or hist.is_empty() or "player_id" not in hist.columns:
+        return {}
+
+    # Cheap identity for the frame, so a reload rebuilds the index but repeated
+    # calls do not. Height plus column count changes on any realistic refresh.
+    token = (hist.height, len(hist.columns))
+    cached = model_data.get("_prior_form_index")
+    if cached and cached[0] == token:
+        return cached[1]
+
+    sort_cols = [c for c in ("season", "week") if c in hist.columns]
+    frame = hist.sort(sort_cols, descending=[True] * len(sort_cols)) if sort_cols else hist
+    try:
+        index = frame.partition_by("player_id", as_dict=True)
+    except Exception:  # pragma: no cover - polars version differences
+        return {}
+    # polars returns tuple keys when partitioning by a single column.
+    index = {(k[0] if isinstance(k, tuple) else k): v for k, v in index.items()}
+    model_data["_prior_form_index"] = (token, index)
+    logger.info("Prior-season form index built for %d players", len(index))
+    return index
+
+
 def prior_season_form(player_id: str, max_games: int = CARRYOVER_GAMES) -> tuple[float, int]:
     """Per-game fantasy form from the player's most recent PRIOR seasons.
 
@@ -73,25 +105,9 @@ def prior_season_form(player_id: str, max_games: int = CARRYOVER_GAMES) -> tuple
     Returns (average, games_used); (0.0, 0) when there is no history at all,
     which is the honest answer for a rookie.
     """
-    hist = model_data.get("df_player_stats_history")
-    if hist is None or hist.is_empty():
+    rows = _prior_form_index().get(str(player_id))
+    if rows is None or rows.is_empty():
         return 0.0, 0
-    if "player_id" not in hist.columns:
-        return 0.0, 0
-
-    rows = hist.filter(pl.col("player_id") == str(player_id))
-    if rows.is_empty():
-        return 0.0, 0
-
-    sort_cols, descending = [], []
-    if "season" in rows.columns:
-        sort_cols.append("season")
-        descending.append(True)
-    if "week" in rows.columns:
-        sort_cols.append("week")
-        descending.append(True)
-    if sort_cols:
-        rows = rows.sort(sort_cols, descending=descending)
 
     points = []
     for row in rows.iter_rows(named=True):

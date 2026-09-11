@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 import httpx
@@ -39,21 +40,89 @@ from .formatting import (
     summarize_waivers,
 )
 
-API_BASE = os.getenv("FOOTBALL_AI_API", "http://localhost:8000").rstrip("/")
+def _normalize_base(url: str) -> str:
+    """Prefer 127.0.0.1 over the literal "localhost".
+
+    On Windows, resolving "localhost" tries ::1 first and falls back to IPv4,
+    which costs ~200ms on EVERY request. Measured against this backend:
+    localhost 216ms vs 127.0.0.1 16ms for the same /health call -- a 13x
+    difference that is entirely name resolution, not the server.
+    """
+    url = (url or "").rstrip("/")
+    return url.replace("//localhost:", "//127.0.0.1:").replace("//localhost/", "//127.0.0.1/")
+
+
+API_BASE = _normalize_base(os.getenv("FOOTBALL_AI_API", "http://127.0.0.1:8000"))
 TIMEOUT = float(os.getenv("FOOTBALL_AI_TIMEOUT", "30"))
+CACHE_ENABLED = os.getenv("FOOTBALL_AI_CACHE", "1") not in ("0", "false", "False")
+
+# How long a response stays reusable, by path prefix. An agent exploring a
+# question re-asks the same things (the current week, a player's id) many times
+# in a row; without this every tool call pays full latency again. Values are
+# deliberately short for anything that moves during a game week.
+_CACHE_TTL = (
+    ("/current_week", 600.0),
+    ("/players/search", 600.0),
+    ("/schedule/", 300.0),
+    ("/player/history/", 300.0),
+    ("/player/", 60.0),
+    ("/matchup/", 60.0),
+    ("/sleeper/", 60.0),
+    ("/parlays/", 120.0),
+    ("/health", 10.0),
+)
+_DEFAULT_TTL = 30.0
 
 mcp = FastMCP("football-ai")
+
+# One pooled client for the process. The first version built a new httpx.Client
+# per call, so every request paid a fresh TCP handshake on top of the name
+# resolution above.
+_client: httpx.Client | None = None
+_cache: dict[tuple, tuple[float, Any]] = {}
+
+
+def _http() -> httpx.Client:
+    global _client
+    if _client is None:
+        _client = httpx.Client(
+            timeout=TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
+            headers={"User-Agent": "football-ai-mcp"},
+        )
+    return _client
+
+
+def _ttl_for(path: str) -> float:
+    for prefix, ttl in _CACHE_TTL:
+        if path.startswith(prefix):
+            return ttl
+    return _DEFAULT_TTL
+
+
+def _cache_key(path: str, params: dict | None) -> tuple:
+    return (path, tuple(sorted((params or {}).items())))
+
+
+def clear_cache() -> None:
+    """Drop every cached response. Used by the refresh tool and by tests."""
+    _cache.clear()
 
 
 class BackendError(RuntimeError):
     pass
 
 
-def _get(path: str, params: dict | None = None) -> Any:
+def _get(path: str, params: dict | None = None, use_cache: bool = True) -> Any:
+    key = _cache_key(path, params)
+    if CACHE_ENABLED and use_cache:
+        hit = _cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < _ttl_for(path):
+            return hit[1]
+
     url = f"{API_BASE}{path}"
     try:
-        with httpx.Client(timeout=TIMEOUT) as client:
-            resp = client.get(url, params=params)
+        resp = _http().get(url, params=params)
     except httpx.HTTPError as exc:
         raise BackendError(
             f"Could not reach the Football-Ai backend at {API_BASE} ({exc}). "
@@ -68,14 +137,17 @@ def _get(path: str, params: dict | None = None) -> Any:
         except Exception:
             pass
         raise BackendError(f"Backend returned {resp.status_code}: {detail}")
-    return resp.json()
+
+    data = resp.json()
+    if CACHE_ENABLED and use_cache:
+        _cache[key] = (time.monotonic(), data)
+    return data
 
 
 def _post(path: str, payload: dict) -> Any:
     url = f"{API_BASE}{path}"
     try:
-        with httpx.Client(timeout=TIMEOUT) as client:
-            resp = client.post(url, json=payload)
+        resp = _http().post(url, json=payload)
     except httpx.HTTPError as exc:
         raise BackendError(f"Could not reach the backend at {API_BASE} ({exc}).") from exc
     if resp.status_code >= 400:
@@ -142,6 +214,19 @@ def get_status() -> str:
     if counts:
         lines.append("row counts: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
     return "\n".join(lines)
+
+
+@mcp.tool()
+def refresh() -> str:
+    """Drop cached responses so the next call re-reads the backend.
+
+    Responses are cached briefly (10s-10min depending on how fast the data
+    moves) because an agent re-asks the same things while working through a
+    question. Call this after an ETL run, or when a number looks stale.
+    """
+    n = len(_cache)
+    clear_cache()
+    return f"Cleared {n} cached response(s). The next call will hit the backend."
 
 
 @mcp.tool()

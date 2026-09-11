@@ -10,46 +10,51 @@ agent process never holds the models, the DB connection, or a 2 GB footprint.
 
 ## Running
 
-The backend must be up first (default `http://localhost:8000`).
+The backend must be up first (default `http://127.0.0.1:8000`).
 
 ```bash
-python backend/run_mcp_server.py                     # stdio transport, any cwd
+python backend/run_mcp_server.py
 FOOTBALL_AI_API=http://otherhost:8000 python backend/run_mcp_server.py
 ```
 
-`run_mcp_server.py` exists because MCP clients start a server with a bare command
-and whatever working directory they happen to be in. `python -m mcp_server.server`
-only resolves from inside `backend/`; the launcher puts its own directory on
-`sys.path`, so an absolute path works from anywhere.
+Any Python works. `run_mcp_server.py` finds the project virtualenv beside itself
+and hands off to it, and puts its own directory on `sys.path`, so neither the
+interpreter nor the working directory has to be right.
 
 | env var | default | meaning |
 |---|---|---|
-| `FOOTBALL_AI_API` | `http://localhost:8000` | backend base URL |
+| `FOOTBALL_AI_API` | `http://127.0.0.1:8000` | backend base URL |
 | `FOOTBALL_AI_TIMEOUT` | `30` | per-request timeout, seconds |
+| `FOOTBALL_AI_CACHE` | `1` | set `0` to disable response caching |
 
-## Registering with Claude Code
+## Registering with a client
 
-```bash
-claude mcp add football-ai --scope project -- /abs/path/backend/.venv/Scripts/python.exe /abs/path/backend/run_mcp_server.py
-```
-
-That writes `.mcp.json` at the repo root. Both paths are absolute and therefore
-machine-specific — adjust them if the checkout lives elsewhere.
-
-For Claude Desktop, the equivalent `mcpServers` entry in
-`claude_desktop_config.json`:
+The repo ships a portable `.mcp.json` at its root:
 
 ```json
 {
   "mcpServers": {
     "football-ai": {
-      "command": "C:/dev/Football-Ai/backend/.venv/Scripts/python.exe",
-      "args": ["C:/dev/Football-Ai/backend/run_mcp_server.py"],
-      "env": { "FOOTBALL_AI_API": "http://localhost:8000" }
+      "type": "stdio",
+      "command": "python",
+      "args": ["backend/run_mcp_server.py"],
+      "env": { "FOOTBALL_AI_API": "http://127.0.0.1:8000" }
     }
   }
 }
 ```
+
+No absolute paths, so it works on any checkout. Claude Code treats a project
+`.mcp.json` as a trust boundary and asks for approval the first time — approve it
+when prompted, or register it at local scope to skip that:
+
+```bash
+claude mcp add football-ai --scope local -- python backend/run_mcp_server.py
+claude mcp list        # expect: football-ai ... Connected
+```
+
+Claude Desktop uses the same shape in `claude_desktop_config.json`, but its
+working directory is not the repo, so give it absolute paths there.
 
 ## Tools
 
@@ -111,6 +116,32 @@ pick from rather than a silent wrong guess.
 unknown team abbreviation says to check the abbreviation and the week — the
 matchup endpoint answers `200` with empty rosters for teams that don't play each
 other, so an empty board is treated as "not found" rather than reported as a game.
+
+## Latency
+
+Every tool call originally cost ~2s. Three causes, each measured:
+
+| cause | fix |
+|---|---|
+| `localhost` resolves `::1` first on Windows, then falls back to IPv4 — 216ms vs 16ms for the same `/health` call | default to `127.0.0.1`, rewrite `localhost` if passed |
+| a fresh `httpx.Client` per call, so every request paid a new TCP handshake | one pooled client for the process |
+| an agent re-asks the current week and a player's id constantly | TTL cache, 10s–10min by how fast the data moves |
+
+Measured over a real MCP stdio session:
+
+```
+get_player_projection   0.505s cold   0.005s warm
+get_matchup             1.047s cold   0.006s warm
+compare_players (x2)    0.100s
+```
+
+`refresh` clears the cache when a number looks stale.
+
+Profiling the slow `get_matchup` also found a regression in the app itself:
+`prior_season_form` (added with the projection carryover) filtered the ~95k-row
+history frame **per player**, so a 28-player matchup paid 28 full scans — 2.65s
+of a 3.6s request. It now partitions once per history load, taking the endpoint
+from 3.7s to 1.6s. The UI gets that too.
 
 ## Two bugs this work surfaced
 

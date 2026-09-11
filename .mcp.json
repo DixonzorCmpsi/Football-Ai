@@ -2,11 +2,11 @@
   "mcpServers": {
     "football-ai": {
       "type": "stdio",
-      "command": "C:/dev/Football-Ai/backend/.venv/Scripts/python.exe",
-      "args": [
-        "C:/dev/Football-Ai/backend/run_mcp_server.py"
-      ],
-      "env": {}
+      "command": "python",
+      "args": ["backend/run_mcp_server.py"],
+      "env": {
+        "FOOTBALL_AI_API": "http://127.0.0.1:8000"
+      }
     }
   }
 }
