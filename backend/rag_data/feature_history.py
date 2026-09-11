@@ -258,3 +258,222 @@ def add_season_average(df: pd.DataFrame, value_col: str = "y_fantasy_points_ppr"
         .fillna(0.0)
     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Opponent context
+#
+# The 17 opponent-derived model features (opp_def_*, opp_off_*, rolling_avg_*)
+# were read from `weekly_defense_stats_<SEASON>` / `weekly_offense_stats_<SEASON>`,
+# which hold only the current season -- 4 rows each in week 1. So every one of
+# them was 0 early in a season, for the same reason the player lags were.
+#
+# Prior seasons have no such tables, but they are fully reconstructable: team
+# yardage is the sum of its players' box scores, and points come from the real
+# game scores in the schedule. Sacks and interceptions allowed by a defense are
+# the sacks suffered and interceptions thrown by the offense it faced.
+# ---------------------------------------------------------------------------
+
+OFFENSE_METRICS = ["passing_yards", "rushing_yards", "total_yards"]
+DEFENSE_METRICS = ["points_allowed", "passing_yards_allowed", "rushing_yards_allowed",
+                   "def_sacks", "def_interceptions"]
+
+# Step 13 renames two defensive rollups to what the models were trained on.
+DEFENSE_ROLLUP_RENAMES = {
+    "rolling_avg_def_sacks_4_weeks": "rolling_avg_sack_4_weeks",
+    "rolling_avg_def_interceptions_4_weeks": "rolling_avg_interception_4_weeks",
+}
+
+
+def team_offense_from_players(player_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-team, per-game offensive totals summed from player box scores."""
+    if player_df is None or player_df.empty:
+        return pd.DataFrame()
+    if not {"team", "week"}.issubset(player_df.columns):
+        return pd.DataFrame()
+
+    df = player_df.copy()
+    for col in ("passing_yards", "rushing_yards", "sacks_suffered", "interception"):
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    keys = ["team", "week"] + (["season"] if "season" in df.columns else [])
+    opp = None
+    if "opponent_team" in df.columns:
+        # Carry the opponent through so defense can be mirrored off this frame.
+        opp = df.groupby(keys)["opponent_team"].agg(
+            lambda s: s.dropna().iloc[0] if s.notna().any() else None)
+
+    agg = df.groupby(keys).agg(
+        passing_yards=("passing_yards", "sum"),
+        rushing_yards=("rushing_yards", "sum"),
+        sacks_suffered=("sacks_suffered", "sum"),
+        interceptions_thrown=("interception", "sum"),
+    ).reset_index()
+    agg["total_yards"] = agg["passing_yards"] + agg["rushing_yards"]
+    if opp is not None:
+        agg = agg.merge(opp.rename("opponent_team").reset_index(), on=keys, how="left")
+    return agg
+
+
+def attach_game_points(team_df: pd.DataFrame, schedules: pd.DataFrame) -> pd.DataFrame:
+    """Add points scored and allowed from real final scores.
+
+    Points cannot be recovered from player box scores (field goals, extra points
+    and defensive scores are not in them), so deriving them from touchdowns would
+    be fabricating a feature. Absent a real score the column stays 0.
+    """
+    out = team_df.copy()
+    if out.empty:
+        return out
+    out["total_off_points"] = 0.0
+    out["points_allowed"] = 0.0
+    if schedules is None or schedules.empty:
+        return out
+
+    s = schedules.copy()
+    required = {"home_team", "away_team", "home_score", "away_score", "week"}
+    if not required.issubset(s.columns):
+        return out
+    for c in ("home_score", "away_score"):
+        s[c] = pd.to_numeric(s[c], errors="coerce")
+    s = s.dropna(subset=["home_score", "away_score"])
+    if s.empty:
+        return out
+
+    use_season = "season" in out.columns and "season" in s.columns
+    keys = ["team", "week"] + (["season"] if use_season else [])
+
+    home = pd.DataFrame({"team": s["home_team"], "week": s["week"],
+                         "scored": s["home_score"], "allowed": s["away_score"]})
+    away = pd.DataFrame({"team": s["away_team"], "week": s["week"],
+                         "scored": s["away_score"], "allowed": s["home_score"]})
+    if use_season:
+        home["season"] = s["season"].values
+        away["season"] = s["season"].values
+    points = pd.concat([home, away], ignore_index=True).drop_duplicates(subset=keys)
+
+    out = out.drop(columns=["total_off_points", "points_allowed"], errors="ignore")
+    out = out.merge(points, on=keys, how="left")
+    out["total_off_points"] = pd.to_numeric(out.pop("scored"), errors="coerce").fillna(0.0)
+    out["points_allowed"] = pd.to_numeric(out.pop("allowed"), errors="coerce").fillna(0.0)
+    return out
+
+
+def mirror_to_defense(team_df: pd.DataFrame) -> pd.DataFrame:
+    """Turn each team's offensive line into its opponent's defensive line."""
+    if team_df is None or team_df.empty or "opponent_team" not in team_df.columns:
+        return pd.DataFrame()
+    src = team_df.dropna(subset=["opponent_team"]).copy()
+    if src.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "team": src["opponent_team"].values,
+        "week": src["week"].values,
+        "passing_yards_allowed": src["passing_yards"].values,
+        "rushing_yards_allowed": src["rushing_yards"].values,
+        # A defense's sacks are the sacks its opponent suffered.
+        "def_sacks": src["sacks_suffered"].values if "sacks_suffered" in src.columns else 0.0,
+        "def_interceptions": (src["interceptions_thrown"].values
+                              if "interceptions_thrown" in src.columns else 0.0),
+        "points_allowed": (src["total_off_points"].values
+                           if "total_off_points" in src.columns else 0.0),
+    })
+    keys = ["team", "week"]
+    if "season" in team_df.columns:
+        out["season"] = src["season"].values
+        keys.append("season")
+    return out.drop_duplicates(subset=keys)
+
+
+def _team_rollups(df: pd.DataFrame, metrics, lag_prefix: str,
+                  rolling_prefix: str, window: int = 4) -> pd.DataFrame:
+    """Lag and 4-game rolling mean per team, ordered across seasons."""
+    if df is None or df.empty or "team" not in df.columns:
+        return pd.DataFrame()
+    out = df.copy()
+    sort_cols = ["team"] + [c for c in ("season", "week") if c in out.columns]
+    out = out.sort_values(sort_cols).reset_index(drop=True)
+    for col in metrics:
+        if col not in out.columns:
+            out[col] = 0.0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        shifted = out.groupby("team")[col].shift(1)
+        out[f"{rolling_prefix}{col}_{window}_weeks"] = (
+            shifted.groupby(out["team"]).rolling(window, min_periods=1).mean()
+            .reset_index(level=0, drop=True).fillna(0.0)
+        )
+        for lag in (1, 2, 3):
+            out[f"{lag_prefix}{col}_lag_{lag}"] = out.groupby("team")[col].shift(lag).fillna(0.0)
+    return out
+
+
+def add_opponent_features(player_df: pd.DataFrame, offense: pd.DataFrame,
+                          defense: pd.DataFrame) -> pd.DataFrame:
+    """Merge opponent offensive and defensive rollups onto each player row."""
+    out = player_df.copy()
+    if "opponent_team" not in out.columns:
+        return out
+
+    def _merge(side_df, metrics, lag_prefix, rolling_prefix):
+        nonlocal out
+        if side_df is None or side_df.empty:
+            return
+        rolled = _team_rollups(side_df, metrics, lag_prefix, rolling_prefix)
+        if rolled.empty:
+            return
+        rolled = rolled.rename(columns=DEFENSE_ROLLUP_RENAMES)
+        keep = [c for c in rolled.columns
+                if c.startswith(lag_prefix) or c.startswith(rolling_prefix)
+                or c in DEFENSE_ROLLUP_RENAMES.values()]
+        id_cols = ["team"] + [c for c in ("season", "week") if c in rolled.columns]
+        rolled = rolled[id_cols + keep].rename(columns={"team": "opponent_team"})
+        join_keys = ["opponent_team"] + [c for c in ("season", "week")
+                                         if c in rolled.columns and c in out.columns]
+        out = out.drop(columns=[c for c in keep if c in out.columns], errors="ignore")
+        out = out.merge(rolled, on=join_keys, how="left")
+
+    _merge(defense, DEFENSE_METRICS, "opp_def_", "rolling_avg_")
+    _merge(offense, OFFENSE_METRICS + ["total_off_points"], "opp_off_", "opp_off_rolling_")
+
+    num_cols = out.select_dtypes(include=["number"]).columns
+    out[num_cols] = out[num_cols].fillna(0.0)
+    return out
+
+
+def add_defense_vs_position(player_df: pd.DataFrame, window: int = 4) -> pd.DataFrame:
+    """Rolling fantasy points each defense allows to each position.
+
+    Computed over every season present, so week 1 of a new season inherits the
+    previous season's tail instead of starting flat like the other rollups did.
+    """
+    out = player_df.copy()
+    needed = {"opponent_team", "week", "position", "y_fantasy_points_ppr"}
+    if not needed.issubset(out.columns):
+        return out
+
+    has_season = "season" in out.columns
+    group = ["opponent_team", "week", "position"] + (["season"] if has_season else [])
+    dvp = out.groupby(group)["y_fantasy_points_ppr"].sum().reset_index()
+    sort_cols = ["opponent_team", "position"] + [c for c in ("season", "week") if c in dvp.columns]
+    dvp = dvp.sort_values(sort_cols).reset_index(drop=True)
+    dvp["allowed"] = (
+        dvp.groupby(["opponent_team", "position"])["y_fantasy_points_ppr"]
+        .transform(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
+        .fillna(0.0)
+    )
+    index_cols = ["opponent_team", "week"] + (["season"] if has_season else [])
+    wide = dvp.pivot_table(index=index_cols, columns="position", values="allowed").reset_index()
+    wide.columns = [f"rolling_avg_points_allowed_to_{c}" if c in ("QB", "RB", "WR", "TE") else c
+                    for c in wide.columns]
+    drop = [c for c in wide.columns
+            if c.startswith("rolling_avg_points_allowed_to_") and c in out.columns]
+    out = out.drop(columns=drop, errors="ignore")
+    out = out.merge(wide, on=index_cols, how="left")
+    for pos in ("QB", "RB", "WR", "TE"):
+        col = f"rolling_avg_points_allowed_to_{pos}"
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    return out
