@@ -482,6 +482,8 @@ export default function App() {
                   {games.map((game, idx) => (
                     <div 
                       key={idx} 
+                      data-testid="schedule-game"
+                      data-game={`${game.away_team}@${game.home_team}`}
                       onClick={() => { setSelectedGame({ home: game.home_team, away: game.away_team }); setViewMode('GAME'); }} 
                       className="bg-white dark:bg-slate-800 rounded-xl shadow-sm cursor-pointer hover:shadow-md transition-shadow group border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 relative overflow-hidden"
                     >
@@ -588,6 +590,8 @@ export default function App() {
               compareList={compareList}
               onToggleCompare={toggleCompare}
               onOpenHistory={openHistoryFromRanks}
+              activeGame={selectedGame}
+              onSelectGame={setSelectedGame}
             />
           </div>
 

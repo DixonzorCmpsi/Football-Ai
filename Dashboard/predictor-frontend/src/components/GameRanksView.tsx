@@ -1036,18 +1036,49 @@ interface GameRanksViewProps {
   compareList: string[];
   onToggleCompare: (id: string) => void;
   onOpenHistory: (id: string) => void;
+  // The matchup the rest of the app is focused on. Shared with the GAME
+  // drill-through so arriving here from a game opens that game, and switching
+  // games here carries back when the user hits Back.
+  activeGame?: { home: string; away: string } | null;
+  onSelectGame?: (game: { home: string; away: string }) => void;
 }
 
-const GameRanksView: React.FC<GameRanksViewProps> = ({ games, loadingSchedule, week, compareList, onToggleCompare, onOpenHistory }) => {
+const GameRanksView: React.FC<GameRanksViewProps> = ({
+  games, loadingSchedule, week, compareList, onToggleCompare, onOpenHistory,
+  activeGame, onSelectGame,
+}) => {
   const [selectedGameKey, setSelectedGameKey] = useState<string>('');
 
   const firstKey = games.length > 0 ? gameKey(week || 0, games[0].away_team, games[0].home_team) : '';
 
+  // Prefer the app-wide selected matchup. Opening Ranks from a game used to
+  // land on games[0] regardless, so ranking "the game I was just looking at"
+  // meant hunting for it in the dropdown every time.
+  const activeKey = useMemo(() => {
+    if (!activeGame || games.length === 0) return '';
+    const match = games.find(
+      (g) => g.home_team === activeGame.home && g.away_team === activeGame.away,
+    );
+    return match ? gameKey(week || 0, match.away_team, match.home_team) : '';
+  }, [activeGame, games, week]);
+
   useEffect(() => {
-    setSelectedGameKey(firstKey);
-  }, [firstKey]);
+    setSelectedGameKey(activeKey || firstKey);
+  }, [activeKey, firstKey]);
 
   const selectedGame = games.find((game) => gameKey(week || 0, game.away_team, game.home_team) === selectedGameKey) || games[0];
+
+  // Keep the app-wide selection in step with the dropdown, so Back returns to
+  // the game the user was actually ranking rather than the one they first
+  // clicked on the schedule.
+  const chooseGame = useCallback(
+    (key: string) => {
+      setSelectedGameKey(key);
+      const next = games.find((g) => gameKey(week || 0, g.away_team, g.home_team) === key);
+      if (next && onSelectGame) onSelectGame({ home: next.home_team, away: next.away_team });
+    },
+    [games, week, onSelectGame],
+  );
 
   return (
     <div className="w-full space-y-3">
@@ -1068,7 +1099,7 @@ const GameRanksView: React.FC<GameRanksViewProps> = ({ games, loadingSchedule, w
             Game
             <select
               value={selectedGameKey}
-              onChange={(event) => setSelectedGameKey(event.target.value)}
+              onChange={(event) => chooseGame(event.target.value)}
               className="ml-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             >
               {games.map((game) => {

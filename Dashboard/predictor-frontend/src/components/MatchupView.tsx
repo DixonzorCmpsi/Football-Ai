@@ -86,16 +86,39 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
   // re-filtered rosters and injury reports that hadn't actually changed.
   // That churn is worse now that the injury filter fix below roughly
   // triples the O-line/defense rows in each team's injury list.
+  // Starters first (QB, RB, WR, TE), then everyone else in the same positional
+  // order, projection-descending inside each bucket.
+  //
+  // This used to sort on average_points descending, which threw away the
+  // starter-aware order the API returns AND is meaningless early in a season
+  // when every average_points is still 0 - the comparator returned 0 for every
+  // pair, so the list fell back to arrival order and backups floated to the
+  // top of their position group.
+  const POSITION_ORDER: Record<string, number> = { QB: 1, RB: 2, WR: 3, TE: 4 };
+  const rosterSortKey = (p: PlayerData) => [
+    p.is_starter ? 0 : 1,
+    POSITION_ORDER[p.position] ?? 99,
+    -(p.prediction || 0),
+  ];
+  const byRosterOrder = (a: PlayerData, b: PlayerData) => {
+    const ka = rosterSortKey(a);
+    const kb = rosterSortKey(b);
+    for (let i = 0; i < ka.length; i++) {
+      if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    }
+    return (a.player_name || '').localeCompare(b.player_name || '');
+  };
+
   const homeRoster = useMemo(() => {
     let processed = [...(data?.home_roster ?? [])];
     if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
-    return processed.sort((a, b) => (b.average_points || 0) - (a.average_points || 0));
+    return processed.sort(byRosterOrder);
   }, [data?.home_roster, filterPos]);
 
   const awayRoster = useMemo(() => {
     let processed = [...(data?.away_roster ?? [])];
     if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
-    return processed.sort((a, b) => (b.average_points || 0) - (a.average_points || 0));
+    return processed.sort(byRosterOrder);
   }, [data?.away_roster, filterPos]);
 
   const filterInjuries = (injuries: InjuryData[] | undefined) => {

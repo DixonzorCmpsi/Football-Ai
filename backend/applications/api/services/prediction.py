@@ -609,6 +609,14 @@ async def get_player_card(player_id: str, week: int):
         "debug_err": None 
     }
 
+def _num(value):
+    """Coerce a possibly-None/str projection to a float for sorting."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 async def get_team_roster_cards(team_abbr: str, week: int):
     composition = {"QB": 4, "RB": 8, "WR": 8, "TE": 5}
     roster_result = []
@@ -639,8 +647,34 @@ async def get_team_roster_cards(team_abbr: str, week: int):
     results = await asyncio.gather(*tasks)
     roster_result = [card for card in results if card is not None]
             
+    # Sorting by position alone left the within-position order to whatever
+    # weekly_rankings happened to return, so a backup could sit above the
+    # starter (a QB2 at the top of the QB list, RB3 above the lead back).
+    # Order starters as a block first - QB, RB, WR, TE - then everyone else in
+    # the same positional order, projection-descending inside each bucket.
+    starter_ids = model_data.get("starter_gsis_ids", set()) or set()
+
+    # Depth charts can miss a team's lead back; fall back to the highest
+    # projected RB so the position always has an obvious top card.
+    if starter_ids:
+        rbs = [c for c in roster_result if c.get("position") == "RB"]
+        if rbs and not any(c.get("player_id") in starter_ids for c in rbs):
+            top_rb = max(rbs, key=lambda c: _num(c.get("prediction")))
+            top_rb["is_starter"] = True
+
     order = {"QB": 1, "RB": 2, "WR": 3, "TE": 4}
-    roster_result.sort(key=lambda x: order.get(x["position"], 99))
+    for card in roster_result:
+        if "is_starter" not in card:
+            card["is_starter"] = card.get("player_id") in starter_ids
+
+    def _roster_sort_key(card):
+        return (
+            0 if card.get("is_starter") else 1,
+            order.get(card.get("position"), 99),
+            -_num(card.get("prediction")),
+        )
+
+    roster_result.sort(key=_roster_sort_key)
     return roster_result
 
 def find_usage_boost_reason(player_id: str, week: int):

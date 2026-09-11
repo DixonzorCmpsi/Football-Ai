@@ -11,6 +11,9 @@ export interface PlayerData {
   average_points: number;
   snap_percentage?: number;
   is_injury_boosted?: boolean; // <-- Add this line
+  // Depth-chart starter (pos_rank == 1). Drives roster ordering so the
+  // starting QB/RB/WR/TE lead their position groups.
+  is_starter?: boolean;
   // Game Context
   overunder: number | null;
   spread: number | null;
