@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   StickyNote,
   Plus,
@@ -58,9 +58,33 @@ const SKILL_POSITIONS: PlayerData['position'][] = ['QB', 'RB', 'WR', 'TE'];
 
 const STORAGE_KEY = 'gameRanks.state.v1';
 
+// The fields RankedPlayerCard actually reads. We snapshot these when a player
+// is placed into a tier so the week-wide board can still render a player whose
+// game is no longer the one loaded, without refetching every matchup.
+export type RankedPlayerMeta = Pick<
+  PlayerData,
+  | 'player_id' | 'player_name' | 'team' | 'position' | 'image' | 'opponent'
+  | 'prediction' | 'average_points' | 'floor_prediction' | 'snap_percentage'
+  | 'anytime_td_prob' | 'prop_line' | 'rec_line' | 'overunder' | 'spread'
+  | 'injury_status'
+>;
+
+const pickMeta = (p: PlayerData): RankedPlayerMeta => ({
+  player_id: p.player_id, player_name: p.player_name, team: p.team,
+  position: p.position, image: p.image, opponent: p.opponent,
+  prediction: p.prediction, average_points: p.average_points,
+  floor_prediction: p.floor_prediction, snap_percentage: p.snap_percentage,
+  anytime_td_prob: p.anytime_td_prob, prop_line: p.prop_line,
+  rec_line: p.rec_line, overunder: p.overunder, spread: p.spread,
+  injury_status: p.injury_status,
+});
+
 interface GameRankState {
   notes: string;
   assignments: Record<string, RankTier>;
+  // Snapshot of each ranked player's display fields, keyed by player_id. Lets
+  // the tier board show players carried over from other games in the week.
+  playerMeta?: Record<string, RankedPlayerMeta>;
   // Manually-set display order within each tier (player_ids). Only touched by
   // drag actions — never auto-resorted — so a card dropped between two others
   // stays exactly where the user put it.
@@ -102,6 +126,9 @@ const RankedPlayerCard = memo<{
   return (
     <div
       draggable
+      data-testid="ranked-card"
+      data-player-team={player.team}
+      data-player-name={player.player_name}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/plain', player.player_id);
         e.dataTransfer.effectAllowed = 'move';
@@ -313,6 +340,9 @@ const TierDrop: React.FC<TierDropProps> = memo(
           e.preventDefault();
           onDrop(tier);
         }}
+        data-testid="tier-row"
+        data-tier={tier}
+        data-count={players.length}
         className={`flex items-stretch gap-2 rounded-xl border-2 p-2 min-h-[9rem] shrink-0 transition-colors ${
           isHover ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 dark:border-blue-500 shadow-inner' : `bg-white dark:bg-slate-900 ${meta.ring}`
         }`}
@@ -454,16 +484,25 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
   const assignments = gState.assignments;
   const tierOrder = gState.tierOrder || {};
 
-  const commit = useCallback(
-    (updater: (prev: GameRankState) => GameRankState) => {
+  // Writes into a specific game's slice. Needed because the tier board now
+  // shows players carried over from other matchups in the week — unassigning
+  // one of those has to update the game that actually owns it, not the game
+  // currently on screen.
+  const commitTo = useCallback(
+    (key: string, updater: (prev: GameRankState) => GameRankState) => {
       setLocalAll((prevAll) => {
         const nextAll = { ...prevAll };
-        const prev = nextAll[stateKey] || { notes: '', assignments: {} };
-        nextAll[stateKey] = updater(prev);
+        const prev = nextAll[key] || { notes: '', assignments: {} };
+        nextAll[key] = updater(prev);
         return nextAll;
       });
     },
-    [stateKey],
+    [],
+  );
+
+  const commit = useCallback(
+    (updater: (prev: GameRankState) => GameRankState) => commitTo(stateKey, updater),
+    [commitTo, stateKey],
   );
 
   const setNotes = (text: string) => commit((prev) => ({ ...prev, notes: text }));
@@ -475,8 +514,17 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
     (tier: RankTier | null, playerId: string, beforeId: string | null) => {
       commit((prev) => {
         const nextAssignments = { ...prev.assignments };
-        if (tier === null) delete nextAssignments[playerId];
-        else nextAssignments[playerId] = tier;
+        const nextMeta = { ...(prev.playerMeta || {}) };
+        if (tier === null) {
+          delete nextAssignments[playerId];
+          delete nextMeta[playerId];
+        } else {
+          nextAssignments[playerId] = tier;
+          // Snapshot on assign so this player stays renderable once the user
+          // moves on to a different matchup.
+          const src = playersByIdRef.current.get(playerId);
+          if (src) nextMeta[playerId] = pickMeta(src);
+        }
 
         const prevOrder = prev.tierOrder || {};
         const nextOrder: Partial<Record<RankTier, string[]>> = {};
@@ -494,7 +542,7 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
           }
           nextOrder[tier] = arr;
         }
-        return { ...prev, assignments: nextAssignments, tierOrder: nextOrder };
+        return { ...prev, assignments: nextAssignments, tierOrder: nextOrder, playerMeta: nextMeta };
       });
     },
     [commit],
@@ -521,8 +569,25 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
   );
 
   const unassign = useCallback(
-    (id: string) => placePlayer(null, id, null),
-    [placePlayer],
+    (id: string) => {
+      const owner = weekRankedRef.current[id]?.fromKey;
+      if (owner && owner !== stateKey) {
+        // Player belongs to a different matchup in this week — clear them there.
+        commitTo(owner, (prev) => {
+          const nextAssignments = { ...prev.assignments };
+          delete nextAssignments[id];
+          const nextMeta = { ...(prev.playerMeta || {}) };
+          delete nextMeta[id];
+          const prevOrder = prev.tierOrder || {};
+          const nextOrder: Partial<Record<RankTier, string[]>> = {};
+          RANK_TIERS.forEach((t) => { nextOrder[t] = (prevOrder[t] || []).filter((x) => x !== id); });
+          return { ...prev, assignments: nextAssignments, tierOrder: nextOrder, playerMeta: nextMeta };
+        });
+        return;
+      }
+      placePlayer(null, id, null);
+    },
+    [placePlayer, commitTo, stateKey],
   );
 
   useEffect(() => {
@@ -601,8 +666,6 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
     return { away_roster: rankPlayersByPts(matchup.away_roster, allowed), home_roster: rankPlayersByPts(matchup.home_roster, allowed), players };
   }, [matchup, position, search]);
 
-  const unranked = filteredMatchup ? filteredMatchup.players.filter((p) => !assignments[p.player_id]) : [];
-
   // playersById spans the FULL roster (not the position/search-filtered list) so
   // a player stays visible in their tier even while the pool is filtered down.
   const playersById = useMemo(() => {
@@ -613,24 +676,76 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
     return map;
   }, [matchup]);
 
+  // placePlayer needs the live roster to snapshot a player on assign, but must
+  // not be re-created every time the roster changes (it is a drag handler on
+  // every card), so read it through a ref.
+  const playersByIdRef = useRef(playersById);
+  useEffect(() => { playersByIdRef.current = playersById; }, [playersById]);
+
+  // ── Week-wide view ──────────────────────────────────────────────────────
+  // Tier rows show every player ranked anywhere in this week, not just the
+  // matchup currently loaded, so rankings accumulate as the user works through
+  // the slate. The Unranked pool below stays scoped to the selected game.
+  const weekPrefix = `${week}__`;
+  const weekRanked = useMemo(() => {
+    const out: Record<string, { tier: RankTier; player: PlayerData; fromKey: string }> = {};
+    Object.entries(localAll).forEach(([key, st]) => {
+      if (!key.startsWith(weekPrefix) || !st) return;
+      const meta = st.playerMeta || {};
+      Object.entries(st.assignments || {}).forEach(([pid, tier]) => {
+        // Prefer the live roster object for the game on screen (fresher
+        // projections/injury status); fall back to the stored snapshot.
+        const live = key === stateKey ? playersById.get(pid) : undefined;
+        const snap = meta[pid];
+        const player = (live || snap) as PlayerData | undefined;
+        if (player) out[pid] = { tier, player, fromKey: key };
+      });
+    });
+    return out;
+  }, [localAll, weekPrefix, stateKey, playersById]);
+
+  const weekRankedRef = useRef(weekRanked);
+  useEffect(() => { weekRankedRef.current = weekRanked; }, [weekRanked]);
+
+  const weekAssignments = useMemo(() => {
+    const a: Record<string, RankTier> = {};
+    Object.entries(weekRanked).forEach(([pid, v]) => { a[pid] = v.tier; });
+    return a;
+  }, [weekRanked]);
+
+  // Pool stays scoped to the selected matchup, but a player ranked in an
+  // earlier game must not reappear here as unranked.
+  const unranked = filteredMatchup ? filteredMatchup.players.filter((p) => !weekAssignments[p.player_id]) : [];
+
   const buckets = useMemo(() => {
     const b: Record<RankTier, PlayerData[]> = { MUST_START: [], FEELS_GOOD: [], W_FLEX: [], SHAKY_FLEX: [], RATHER_NOT: [] };
+    // Manual drag order is stored per game, so walk this game's order first to
+    // keep the user's exact placement, then append everyone else ranked this
+    // week (other games) after it.
     RANK_TIERS.forEach((tier) => {
       const seen = new Set<string>();
       const ordered: PlayerData[] = [];
       (tierOrder[tier] || []).forEach((id) => {
-        if (assignments[id] === tier && playersById.has(id) && !seen.has(id)) {
+        const entry = weekRanked[id];
+        if (entry && entry.tier === tier && !seen.has(id)) {
           seen.add(id);
-          ordered.push(playersById.get(id)!);
+          ordered.push(entry.player);
         }
       });
-      // Legacy/leftover members not yet in tierOrder — append, priority-sorted.
-      const leftover = (filteredMatchup?.players || [])
-        .filter((p) => assignments[p.player_id] === tier && !seen.has(p.player_id));
-      b[tier] = [...ordered, ...leftover];
+      const rest = Object.values(weekRanked)
+        .filter((e) => e.tier === tier && !seen.has(e.player.player_id))
+        // Current game first so the matchup you are working on stays on top.
+        .sort((x, y) => {
+          const cx = x.fromKey === stateKey ? 0 : 1;
+          const cy = y.fromKey === stateKey ? 0 : 1;
+          if (cx !== cy) return cx - cy;
+          return (y.player.prediction || 0) - (x.player.prediction || 0);
+        })
+        .map((e) => e.player);
+      b[tier] = [...ordered, ...rest];
     });
     return b;
-  }, [assignments, tierOrder, playersById, filteredMatchup]);
+  }, [tierOrder, weekRanked, stateKey]);
 
   const handleAutoTier = () => {
     if (!filteredMatchup) return;
@@ -654,16 +769,57 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
       next[p.player_id] = tier;
       nextOrder[tier]!.push(p.player_id);
     });
+    // Snapshot display data for every auto-tiered player too, not just ones
+    // placed by drag — otherwise they vanish from the week board the moment the
+    // user switches to another matchup.
+    const nextMeta: Record<string, RankedPlayerMeta> = {};
+    ranked.forEach((p) => { nextMeta[p.player_id] = pickMeta(p); });
     commit((prev) => ({
       ...prev,
       assignments: { ...prev.assignments, ...next },
       tierOrder: nextOrder,
+      playerMeta: { ...(prev.playerMeta || {}), ...nextMeta },
     }));
   };
 
   const compareSet = useMemo(() => new Set(compareList), [compareList]);
   const totalPlayers = filteredMatchup ? filteredMatchup.players.length : 0;
   const rankedCount = Object.keys(assignments).length;
+  const weekRankedCount = Object.keys(weekRanked).length;
+
+  // Full-week export: every player ranked across every matchup, in tier order.
+  const exportWeekCsv = useCallback(() => {
+    const esc = (v: unknown) => {
+      const str = v == null ? '' : String(v);
+      return /[",\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+    };
+    const rows: string[][] = [[
+      'week', 'tier', 'tier_rank', 'player', 'position', 'team', 'opponent',
+      'matchup', 'projection', 'avg_points', 'injury_status',
+    ]];
+    RANK_TIERS.forEach((tier) => {
+      buckets[tier].forEach((pl, i) => {
+        const entry = weekRanked[pl.player_id];
+        const g = (entry ? entry.fromKey : '').slice(String(week).length + 2).replace('_@_', ' @ ');
+        rows.push([
+          String(week), TIER_META[tier].label, String(i + 1), pl.player_name,
+          pl.position || '', pl.team || '', pl.opponent || '', g,
+          String(pl.prediction != null ? pl.prediction : ''),
+          String(pl.average_points != null ? pl.average_points : ''),
+          pl.injury_status || '',
+        ]);
+      });
+    });
+    const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'week-' + week + '-ranks.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [buckets, weekRanked, week]);
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
@@ -722,10 +878,19 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
               Auto-tier
             </button>
             <button
-              onClick={() => commit((prev) => ({ ...prev, assignments: {}, tierOrder: {} }))}
+              onClick={() => commit((prev) => ({ ...prev, assignments: {}, tierOrder: {}, playerMeta: {} }))}
               className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+              title="Clears only this matchup's rankings - other games in the week are untouched"
             >
-              Clear tiers
+              Clear this game
+            </button>
+            <button
+              onClick={exportWeekCsv}
+              disabled={weekRankedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-emerald-900/30 dark:text-emerald-300"
+              title="Download every player you have ranked this week as a CSV"
+            >
+              Export week CSV
             </button>
             <button
               onClick={() => {
@@ -739,7 +904,9 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
             <div className="ml-auto flex items-center gap-2 text-[10px] text-slate-400">
               <Activity size={11} />
               <span>
-                {loadingMatchup ? 'Loading rosters…' : `${totalPlayers} players · ${rankedCount} ranked`}
+                {loadingMatchup
+                  ? 'Loading rosters…'
+                  : `${totalPlayers} in game · ${rankedCount} here · ${weekRankedCount} ranked in week ${week}`}
               </span>
             </div>
           </div>
