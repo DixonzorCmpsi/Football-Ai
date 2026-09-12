@@ -37,3 +37,7 @@ undetected-chromedriver
 selenium
 slowapi
 mcp>=1.9,<2
+
+# Secret Manager, read directly when GCP_PROJECT_ID is set (applications/api/secret_store.py).
+# Imported lazily, so local runs without GCP never load it.
+google-cloud-secret-manager>=2.20,<3

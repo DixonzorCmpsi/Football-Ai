@@ -12,6 +12,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE_URL } from '../lib/api';
 import type { ScreenDescriptor } from '../contexts/AgentScreenContext';
+import { agentHeaders, byokPayload } from '../lib/agentIdentity';
+import type { AgentSettings } from '../lib/agentIdentity';
+
+export type AgentQuota = {
+  allowed: boolean;
+  used: number;
+  limit: number;
+  remaining: number;
+  resets_at: string;
+  owner: boolean;
+  blocked_by: string | null;
+};
 
 export type AgentTurn = {
   role: 'user' | 'agent';
@@ -52,6 +64,25 @@ export function useAgentChat() {
   const [turns, setTurns] = useState<AgentTurn[]>(initial.current.turns);
   const [streaming, setStreaming] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
+  // Free-tier allowance, refreshed by every answer and by refreshQuota().
+  const [quota, setQuota] = useState<AgentQuota | null>(null);
+  const [houseConfigured, setHouseConfigured] = useState<boolean | null>(null);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/agent/quota`, { headers: agentHeaders() });
+      if (!response.ok) return;
+      const data = (await response.json()) as { quota: AgentQuota; house_configured: boolean };
+      setQuota(data.quota);
+      setHouseConfigured(data.house_configured);
+    } catch {
+      /* offline: keep the last known numbers */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshQuota();
+  }, [refreshQuota]);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -73,7 +104,7 @@ export function useAgentChat() {
   }, []);
 
   const send = useCallback(
-    async (message: string, screen: ScreenDescriptor | null) => {
+    async (message: string, screen: ScreenDescriptor | null, settings: AgentSettings) => {
       const text = message.trim();
       if (!text || streaming) return;
 
@@ -87,14 +118,29 @@ export function useAgentChat() {
       try {
         const response = await fetch(`${API_BASE_URL}/agent/chat`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ conversation_id: conversationId, message: text, screen }),
+          headers: { 'content-type': 'application/json', ...agentHeaders() },
+          body: JSON.stringify({
+            conversation_id: conversationId,
+            message: text,
+            screen,
+            byok: byokPayload(settings),
+          }),
           signal: controller.signal,
         });
 
         if (!response.ok || !response.body) {
-          const detail = response.ok ? 'no response body' : `HTTP ${response.status}`;
-          patchLast((t) => ({ ...t, text: `Could not reach the agent (${detail}).`, error: true }));
+          // Refusals (quota spent, free tier not set up, a bad key) come back as JSON
+          // with a sentence meant for the user. Show that, not a status code.
+          let detail = response.ok ? 'The assistant sent an empty response.' : `The assistant is unavailable (HTTP ${response.status}).`;
+          try {
+            const body = (await response.json()) as { detail?: unknown; quota?: AgentQuota; code?: string };
+            if (typeof body.detail === 'string') detail = body.detail;
+            if (body.quota) setQuota(body.quota);
+            if (body.code === 'house_unconfigured') setHouseConfigured(false);
+          } catch {
+            /* not JSON */
+          }
+          patchLast((t) => ({ ...t, text: detail, error: true }));
           return;
         }
 
@@ -116,14 +162,16 @@ export function useAgentChat() {
             const line = frame.split('\n').find((l) => l.startsWith('data:'));
             if (!line) continue;
 
-            let event: { type: string; text?: string; name?: string; state?: string; message?: string };
+            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota };
             try {
               event = JSON.parse(line.slice(5).trim());
             } catch {
               continue;
             }
 
-            if (event.type === 'delta' && event.text) {
+            if (event.type === 'quota' && event.quota) {
+              setQuota(event.quota);
+            } else if (event.type === 'delta' && event.text) {
               patchLast((t) => ({ ...t, text: t.text + event.text }));
             } else if (event.type === 'tool' && event.state === 'start' && event.name) {
               setActiveTool(event.name);
@@ -151,9 +199,11 @@ export function useAgentChat() {
         abortRef.current = null;
         // An aborted or empty run must not leave a blank bubble behind.
         patchLast((t) => (t.role === 'agent' && !t.text ? { ...t, text: 'Stopped.', error: true } : t));
+        // The server refunds a question that failed before answering; pick that up.
+        if (settings.mode === 'free') void refreshQuota();
       }
     },
-    [conversationId, streaming, patchLast],
+    [conversationId, streaming, patchLast, refreshQuota],
   );
 
   const stop = useCallback(() => {
@@ -181,5 +231,5 @@ export function useAgentChat() {
 
   const lastAnswer = [...turns].reverse().find((t) => t.role === 'agent') || null;
 
-  return { turns, send, stop, reset, streaming, activeTool, lastAnswer };
+  return { turns, send, stop, reset, streaming, activeTool, lastAnswer, quota, houseConfigured, refreshQuota };
 }
