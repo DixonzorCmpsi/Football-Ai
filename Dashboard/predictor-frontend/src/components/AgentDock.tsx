@@ -8,9 +8,11 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, ChevronsRight, Loader2, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowUp, ChevronsRight, KeyRound, Loader2, Settings2, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { useAgentChatContext } from '../contexts/AgentChatContext';
+import { byokReady } from '../lib/agentIdentity';
 import { toolLabel } from '../utils/agentLabels';
+import AgentSettings from './AgentSettings';
 
 /** Answers taller than this get clipped with a "See more" affordance. */
 const PEEK_MAX_HEIGHT = 168;
@@ -22,9 +24,12 @@ const SUGGESTIONS = [
 ];
 
 export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }) {
-  const { ask, stop, reset, streaming, activeTool, lastAnswer, turns, panelOpen, openPanel } =
-    useAgentChatContext();
+  const {
+    ask, stop, reset, streaming, activeTool, lastAnswer, turns, panelOpen, openPanel,
+    settings, updateSettings, quota, houseConfigured,
+  } = useAgentChatContext();
   const [open, setOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [clipped, setClipped] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -54,12 +59,32 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
     return () => observer.disconnect();
   }, [open, showPeek]);
 
+  // What stands between the user and asking, if anything. Shown in place of a
+  // mystery failure after they hit send.
+  const blocker =
+    settings.mode === 'byok'
+      ? byokReady(settings) ? null : 'Finish setting up your key'
+      : houseConfigured === false
+        ? 'Free assistant not set up here. Add your own key'
+        : quota && !quota.owner && quota.remaining <= 0
+          ? 'No free questions left today. Add your own key'
+          : null;
+
   const submit = () => {
     const text = draft.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || blocker) return;
     ask(text);
     setDraft('');
   };
+
+  const status =
+    settings.mode === 'byok'
+      ? `Your key · ${settings.model || 'no model'}`
+      : quota?.owner
+        ? 'Free · owner, unlimited'
+        : quota
+          ? `Free · ${quota.remaining} of ${quota.limit} left today`
+          : 'Free';
 
   if (!open) {
     return (
@@ -86,6 +111,15 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
           <span className="text-[10px] font-black uppercase tracking-widest">Ask the spot</span>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((v) => !v)}
+            data-testid="agent-open-settings"
+            title="Assistant settings: free tier or your own API key"
+            className={`p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 ${settingsOpen ? 'text-blue-600' : 'text-slate-400 hover:text-blue-600'}`}
+          >
+            <Settings2 size={13} />
+          </button>
           {turns.length > 0 && (
             <>
               <button
@@ -118,6 +152,19 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
         </div>
       </div>
 
+      {settingsOpen ? (
+        <AgentSettings
+          settings={settings}
+          quota={quota}
+          houseConfigured={houseConfigured}
+          onSave={(next) => {
+            updateSettings(next);
+            setSettingsOpen(false);
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : (
+      <>
       {showPeek && (
         <div className="px-3 pt-3">
           <div className="relative rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 p-3">
@@ -216,7 +263,7 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
             <button
               type="button"
               onClick={submit}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || !!blocker}
               aria-label="Send"
               data-testid="agent-send"
               className="h-9 w-9 shrink-0 rounded-lg bg-blue-600 text-white flex items-center justify-center disabled:opacity-40 hover:bg-blue-700"
@@ -225,7 +272,20 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
             </button>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          data-testid="agent-status"
+          className={`mt-1.5 w-full text-left text-[10px] font-bold inline-flex items-center gap-1 ${
+            blocker ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 hover:text-blue-600'
+          }`}
+        >
+          <KeyRound size={10} />
+          {blocker ?? status}
+        </button>
       </div>
+      </>
+      )}
     </div>
   );
 }
