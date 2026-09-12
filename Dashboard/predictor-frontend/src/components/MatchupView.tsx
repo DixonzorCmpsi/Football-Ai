@@ -11,6 +11,7 @@ import { getTeamColor } from '../utils/nflColors';
 import { sizedPlayerImage } from '../utils/playerImage';
 import type { MatchupData, InjuryData, ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
+import { useAgentScreen } from '../contexts/AgentScreenContext';
 
 interface MatchupViewProps {
   week: number;
@@ -160,6 +161,28 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
     if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
     return processed.sort(byRosterOrder);
   }, [data?.away_roster, filterPos]);
+
+  // Refine what the agent thinks is on screen. App already knows this is the
+  // game page for these two teams; this adds the tab, the position filter and
+  // the starters actually rendered, so "who should I start here" and "is he
+  // playing" resolve without the model guessing.
+  const agentEntities = useMemo(() => {
+    const starters = [...awayRoster, ...homeRoster].filter(p => p.is_starter).slice(0, 10);
+    return starters.map(p => ({
+      type: 'player' as const,
+      name: p.player_name,
+      id: p.player_id,
+      detail: [p.position, p.team, p.injury_status].filter(Boolean).join(', '),
+    }));
+  }, [homeRoster, awayRoster]);
+
+  useAgentScreen({
+    view: 'GAME',
+    title: `the ${away} at ${home} game page, ${activeTab.toLowerCase()} tab`,
+    week,
+    facts: filterPos === 'ALL' ? [] : [`filtered to ${filterPos}`],
+    entities: agentEntities,
+  });
 
   // Mirrors the backend ordering (see _injury_sort_key in prediction.py) so the
   // list reads like a depth chart: starters first, skill offense then the line
