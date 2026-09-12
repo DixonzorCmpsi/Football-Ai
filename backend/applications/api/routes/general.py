@@ -9,6 +9,7 @@ from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE, RAG_
 from ..rate_limit import limiter
 from ..services.data_loader import refresh_app_state, refresh_db_data
 from ..services.prediction import get_player_card
+from ..db import read_db, driver_status
 
 router = APIRouter()
 
@@ -52,13 +53,16 @@ async def health_check():
     if DB_CONNECTION_STRING:
         try:
             # Run a minimal probe query; some DB drivers may require a small table
-            _ = pl.read_database_uri("SELECT 1", DB_CONNECTION_STRING)
+            _ = read_db("SELECT 1")
             status["db_responding"] = True
         except Exception as e:
             status["db_responding"] = False
             status["db_error"] = str(e)
     else:
         status["db_responding"] = False
+    # "arrow" normally; "sqlalchemy-fallback" means pyarrow could not load. Data is
+    # still live either way -- this exists so the state is visible, not discovered.
+    status.update(driver_status())
 
     if not status["ready"]:
         status["status"] = "starting"

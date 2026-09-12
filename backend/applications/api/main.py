@@ -20,11 +20,14 @@ from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refre
 from .services.storylines import storylines_wrapper
 from .routes import players, games, general, debug, tier_list, sleeper, agent
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
+from .db import read_db, probe_arrow
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
     logger.info("Server startup sequence initiated")
+    # Report a blocked/broken pyarrow now, before any read quietly takes the slower path.
+    probe_arrow()
     try:
         # 0. Schema migration (idempotent). `ADD COLUMN IF NOT EXISTS` is a no-op
         # after the first run; the backfill only touches NULL rows. Runs before
@@ -158,7 +161,7 @@ async def lifespan(app: FastAPI):
                     if DB_CONNECTION_STRING:
                         # quick probe for target table
                         probe_q = f"SELECT count(1) as cnt FROM weekly_player_stats_{CURRENT_SEASON}"
-                        probe_df = pl.read_database_uri(probe_q, DB_CONNECTION_STRING)
+                        probe_df = read_db(probe_q)
                         need_sync = (probe_df.row(0)[0] == 0)
                 except Exception:
                     need_sync = True
