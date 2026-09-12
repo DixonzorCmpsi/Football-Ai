@@ -26,7 +26,16 @@ import time
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:  # pragma: no cover - depends on the interpreter
+    # The tool functions below are also imported by the API process (see
+    # backend/agent/tools.py), which serves them to the in-app agent over HTTP
+    # and has no business requiring the MCP SDK. @mcp.tool() returns the
+    # undecorated function either way, so a no-op registrar changes nothing
+    # except that `main()` refuses to start a server it cannot build.
+    FastMCP = None  # type: ignore[assignment]
 
 from .formatting import (
     player_line,
@@ -73,7 +82,20 @@ _CACHE_TTL = (
 )
 _DEFAULT_TTL = 30.0
 
-mcp = FastMCP("football-ai")
+class _NoRegistrar:
+    """Stands in for FastMCP when the SDK is absent. Registers nothing."""
+
+    def tool(self, *args, **kwargs):
+        return lambda fn: fn
+
+    def run(self, *args, **kwargs):
+        raise RuntimeError(
+            "The MCP SDK is not installed in this interpreter. "
+            "Install it with `pip install 'mcp>=1.9,<2'` to run the MCP server."
+        )
+
+
+mcp = FastMCP("football-ai") if FastMCP is not None else _NoRegistrar()
 
 # One pooled client for the process. The first version built a new httpx.Client
 # per call, so every request paid a fresh TCP handshake on top of the name
