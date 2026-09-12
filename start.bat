@@ -180,7 +180,8 @@ echo Launching backend and frontend in separate windows.
 start "Football AI Backend" cmd /k ""%~f0" backend"
 call :wait_backend || exit /b 1
 start "Football AI Frontend" cmd /k ""%~f0" frontend"
-echo -^> Frontend:  http://localhost:%FRONTEND_PORT%
+echo -^> Frontend:  see the "Football AI Frontend" window for its URL. It moves off
+echo              %FRONTEND_PORT% if Windows has reserved that port.
 echo -^> Backend:   http://localhost:%BACKEND_PORT%
 echo -^> Postgres:  localhost:5432 (admin/password)
 exit /b 0
@@ -195,8 +196,11 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
   )
 )
-rem Always the venv's interpreter, by full path. Relying on activate.bat + PATH let a
-rem system Python (missing apscheduler) end up running the server.
+rem Always the venv's interpreter, by full path, so a failed or skipped activate.bat
+rem can never leave PATH pointing at the system Python, which lacks the backend deps
+rem (apscheduler, mcp). Note: on Windows the venv's python.exe is a launcher that runs
+rem the base interpreter as a child, so "Python312\python.exe -m uvicorn" in a process
+rem list is still this venv.
 set "PY=%CD%\.venv\Scripts\python.exe"
 "%PY%" -m pip install --quiet --upgrade pip
 "%PY%" -m pip install --quiet -r requirements.txt
@@ -209,6 +213,16 @@ if errorlevel 1 (
   )
 )
 call :repair_pyarrow
+set "PICKED_PORT="
+for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\find_free_port.ps1" -Preferred %BACKEND_PORT% -Fallbacks %BACKEND_PORT%') do set "PICKED_PORT=%%P"
+if not "!PICKED_PORT!"=="%BACKEND_PORT%" (
+  echo Backend port %BACKEND_PORT% is not available: another process holds it, or Windows
+  echo has reserved it. Check: netsh interface ipv4 show excludedportrange protocol=tcp
+  echo The backend is not moved automatically, because the frontend proxy, .mcp.json and
+  echo the agent extension all expect it on %BACKEND_PORT%. Set BACKEND_PORT to override.
+  popd >nul
+  exit /b 1
+)
 if "%RUN_ETL_ON_STARTUP%"=="" set "RUN_ETL_ON_STARTUP=true"
 set "DB_CONNECTION_STRING=%DB_CONNECTION_STRING%"
 "%PY%" -m uvicorn applications.server:app --reload --host 0.0.0.0 --port %BACKEND_PORT%
@@ -271,7 +285,22 @@ exit /b 1
 :frontend
 call :ensure_backend || exit /b 1
 pushd "%ROOT%Dashboard\predictor-frontend" >nul
-echo Starting frontend on :%FRONTEND_PORT%
+rem Windows reserves port ranges at boot for Hyper-V/WinNAT, and they move between
+rem boots. 5273 fell inside 5249-5348 on 2026-09-12 and Vite died with "listen EACCES".
+rem Vite only retries on "in use", not on EACCES, so choose a free port up front.
+rem Moving the frontend is safe: it reaches the backend through its own /api proxy.
+set "PICKED_PORT="
+for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\find_free_port.ps1" -Preferred %FRONTEND_PORT%') do set "PICKED_PORT=%%P"
+if "!PICKED_PORT!"=="" (
+  echo No free port found for the frontend. Check: netsh interface ipv4 show excludedportrange protocol=tcp
+  popd >nul
+  exit /b 1
+)
+if not "!PICKED_PORT!"=="%FRONTEND_PORT%" (
+  echo Port %FRONTEND_PORT% is reserved by Windows or in use; using !PICKED_PORT! instead.
+  set "FRONTEND_PORT=!PICKED_PORT!"
+)
+echo Starting frontend on :!FRONTEND_PORT!
 if not exist "node_modules" (
   echo Installing frontend dependencies...
   call npm install
@@ -281,7 +310,10 @@ if not exist "node_modules" (
   )
 )
 set "VITE_API_BASE_URL=http://localhost:%BACKEND_PORT%/api"
-call npm run dev -- --port %FRONTEND_PORT% --host
+rem --strictPort: the port was just verified free. If it is taken in the gap, fail
+rem visibly instead of letting Vite drift to a port nobody was told about.
+echo -^> Frontend:  http://localhost:!FRONTEND_PORT!
+call npm run dev -- --port !FRONTEND_PORT! --strictPort --host
 set "FRONTEND_ERROR=%ERRORLEVEL%"
 popd >nul
 exit /b %FRONTEND_ERROR%
