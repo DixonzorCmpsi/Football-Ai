@@ -386,12 +386,13 @@ async def get_player_season_stats(player_id: str, seasons: int = 5):
 
 
 @router.get("/player/{player_id}/storylines")
-async def get_storylines(player_id: str, limit: int = 5):
-    """Recent news storylines for one player, newest first.
+def get_storylines(player_id: str, limit: int = 5):
+    """A player's most recent storylines, newest first, going back as far as needed.
 
-    Fed by a scheduled poll of ESPN's league news feed (see
-    services/storylines.py) - per-player queries are not possible against that
-    API, so the feed is accumulated locally and indexed by player.
+    Combines the polled league feed with the player's own ESPN news feed, fetched
+    here at most once per few hours per player (see services/storylines.py).
+    Declared `def`, not `async def`: that fetch is blocking network I/O and must
+    run in the threadpool, not stall the event loop for every other request.
     """
     from ..services.storylines import get_player_storylines, storylines_updated_at
 
