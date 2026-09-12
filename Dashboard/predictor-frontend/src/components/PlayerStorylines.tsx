@@ -13,7 +13,11 @@ export interface Storyline {
   fetched_at: string;
 }
 
-/** "3h ago" / "2d ago" - storylines are only useful with their age attached. */
+/**
+ * "3h ago" / "2d ago" - storylines are only useful with their age attached.
+ * Past two weeks a date reads better: a player with little recent coverage now
+ * shows older items (from their own ESPN feed), and "143d ago" makes you do math.
+ */
 function timeAgo(iso: string): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return '';
@@ -21,7 +25,11 @@ function timeAgo(iso: string): string {
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
+  const days = Math.round(hrs / 24);
+  if (days <= 14) return `${days}d ago`;
+  const date = new Date(then);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
 }
 
 const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamColor?: string }> = ({
@@ -85,8 +93,8 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
           No storylines yet{playerName ? ` for ${playerName}` : ''}
         </p>
         <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 max-w-md mx-auto">
-          The news feed is polled a few times a day and only carries the last several hours of
-          league coverage, so players build up storylines as they get written about.
+          ESPN has no news on file for this player yet. Deep reserves and recent signings often
+          have none until they see the field.
         </p>
       </div>
     );
