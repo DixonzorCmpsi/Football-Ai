@@ -19,6 +19,7 @@ from ..rate_limit import limiter
 from ..services.utils import calculate_fantasy_points, get_headshot_url, get_team_abbr, normalize_name
 from ..services.adp import get_adp_map, lookup_adp
 from ..state import model_data
+from ..db import read_db
 
 # Cache the encoder + candidate embeddings across requests; they're expensive to build.
 _ROOKIE_MATCHER_CACHE: dict = {}
@@ -287,9 +288,7 @@ def _load_prior_season_stats(season: int) -> pl.DataFrame:
     if not DB_CONNECTION_STRING:
         return pl.DataFrame()
     try:
-        return pl.read_database_uri(
-            f"SELECT * FROM weekly_player_stats_{season}", DB_CONNECTION_STRING
-        )
+        return read_db(f"SELECT * FROM weekly_player_stats_{season}")
     except Exception as e:
         logger.debug(f"Prior season stats load failed for {season}: {e}")
         return pl.DataFrame()
@@ -299,9 +298,7 @@ def _load_prior_season_snaps(season: int) -> pl.DataFrame:
     if not DB_CONNECTION_STRING:
         return pl.DataFrame()
     try:
-        return pl.read_database_uri(
-            f"SELECT * FROM weekly_snap_counts_{season}", DB_CONNECTION_STRING
-        )
+        return read_db(f"SELECT * FROM weekly_snap_counts_{season}")
     except Exception as e:
         logger.debug(f"Prior season snaps load failed for {season}: {e}")
         return pl.DataFrame()
@@ -813,7 +810,7 @@ def _load_team_weekly_table(season: int, side: str) -> pl.DataFrame:
     table = f"weekly_{side}_stats_{season}"
     if DB_CONNECTION_STRING:
         try:
-            df = pl.read_database_uri(f"SELECT * FROM {table}", DB_CONNECTION_STRING)
+            df = read_db(f"SELECT * FROM {table}")
             if not df.is_empty():
                 return df
         except Exception as e:
