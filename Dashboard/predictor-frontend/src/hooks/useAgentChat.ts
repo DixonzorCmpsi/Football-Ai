@@ -30,6 +30,8 @@ export type AgentTurn = {
   text: string;
   /** Tools the agent called for this answer, in order, deduped. */
   tools?: string[];
+  /** Screen actions the agent emitted (open player, open game, etc.). */
+  actions?: { url: string; label: string; tool: string }[];
   error?: boolean;
 };
 
@@ -162,7 +164,7 @@ export function useAgentChat() {
             const line = frame.split('\n').find((l) => l.startsWith('data:'));
             if (!line) continue;
 
-            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota };
+            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota; url?: string; label?: string; tool?: string };
             try {
               event = JSON.parse(line.slice(5).trim());
             } catch {
@@ -181,6 +183,11 @@ export function useAgentChat() {
               }));
             } else if (event.type === 'tool' && event.state === 'end') {
               setActiveTool(null);
+            } else if (event.type === 'screen_action' && event.url) {
+              patchLast((t) => ({
+                ...t,
+                actions: [...(t.actions || []), { url: event.url!, label: event.label || '', tool: event.tool || '' }],
+              }));
             } else if (event.type === 'done') {
               // Authoritative: deltas can be dropped, this is the whole answer.
               if (event.text) patchLast((t) => ({ ...t, text: event.text! }));

@@ -43,6 +43,8 @@ type AgentChatValue = {
   openDock: (view: 'chat' | 'settings') => void;
   /** The latest openDock() call, which the dock reacts to. */
   dockRequest: { view: 'chat' | 'settings'; nonce: number } | null;
+  /** Screen actions the agent emitted in the last answer, for the host to apply. */
+  pendingActions: { url: string; label: string; tool: string }[];
 };
 
 const AgentChatContext = createContext<AgentChatValue | null>(null);
@@ -93,6 +95,7 @@ export function AgentChatProvider({ children }: { children: ReactNode }) {
       refreshQuota: () => void chat.refreshQuota(),
       openDock,
       dockRequest,
+      pendingActions: chat.lastAnswer?.actions || [],
     }),
     [
       chat.turns, chat.streaming, chat.activeTool, chat.lastAnswer, chat.stop, chat.reset,

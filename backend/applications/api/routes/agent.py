@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, SecretStr
 # Absolute: uvicorn runs from backend/ (`applications.server:app`), so `agent`
 # and `mcp_server` are top-level packages there, the same way mcp_server imports.
 from agent import tools as agent_tools
+from agent import screen_actions
 from agent.pi_runtime import RUNTIME_DIR, AgentBusy, AgentForbidden, AgentUnavailable, runtime
 
 from ..config import logger
@@ -358,6 +359,10 @@ async def agent_chat(request: Request, body: ChatRequest):
 
     prompt = build_prompt(body.message.strip(), body.screen)
     proxy.begin_question(body.conversation_id)
+    # Set up the action queue so screen-action tools can enqueue movements
+    # that this stream ships to the browser alongside text deltas.
+    screen_actions.install(body.conversation_id)
+    screen_actions.set_conversation(body.conversation_id)
     bridge: queue.Queue = queue.Queue()
     _DONE = object()
 
@@ -403,6 +408,11 @@ async def agent_chat(request: Request, body: ChatRequest):
                     settled = True
                     failed = out["type"] == "error"
                 yield _sse(out)
+                # After each event, drain any screen actions the tools enqueued.
+                # Done in-line so a tool's action reaches the browser before the
+                # next text delta, preserving the causal order the user expects.
+                for action in screen_actions.drain(body.conversation_id):
+                    yield _sse(action.to_event())
             # A pipe that closes mid-answer still owes the UI a terminal event,
             # otherwise the dock spins forever.
             if not settled:
@@ -413,7 +423,12 @@ async def agent_chat(request: Request, body: ChatRequest):
                     if text
                     else {"type": "error", "message": model_error or "The agent returned nothing."}
                 )
+            # Final drain: actions enqueued by the last tool call.
+            for action in screen_actions.drain(body.conversation_id):
+                yield _sse(action.to_event())
         finally:
+            screen_actions.set_conversation(None)
+            screen_actions.teardown(body.conversation_id)
             # A question that produced no answer shouldn't cost the user one.
             if quota is not None and failed and not answer and not owner:
                 await run_in_threadpool(usage().refund_question, client_id, ip)

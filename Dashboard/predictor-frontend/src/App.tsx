@@ -193,7 +193,7 @@ export default function App() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   // The agent's conversation and panel visibility are app-wide: the dock floats
   // over every view and the panel takes the right rail's place.
-  const { panelOpen, openDock, settings: agentSettings } = useAgentChatContext();
+  const { panelOpen, openDock, settings: agentSettings, pendingActions } = useAgentChatContext();
   const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
@@ -360,6 +360,30 @@ export default function App() {
     const url = formatAppUrl(currentLocation);
     window.history.pushState({ loc: currentLocation }, '', url);
   }, [currentLocation]);
+
+  // --- Agent screen actions -----------------------------------------------
+  // When the agent emits a screen_action (open_player, open_game, etc.), apply
+  // it to the app's state. Each action is applied once; we track the count so
+  // a re-render doesn't double-navigate. The "allowNavigation" setting gates
+  // whether the screen actually moves — when off, the action button still
+  // appears in the chat for the user to click manually.
+  const appliedActionCount = useRef(0);
+  useEffect(() => {
+    if (!pendingActions.length) return;
+    // Only apply actions we haven't seen yet.
+    const newActions = pendingActions.slice(appliedActionCount.current);
+    appliedActionCount.current = pendingActions.length;
+    for (const action of newActions) {
+      if (action.url === 'app://back') {
+        window.history.back();
+        continue;
+      }
+      const loc = parseAppUrl(action.url);
+      if (loc) {
+        applyLocation(loc, true);
+      }
+    }
+  }, [pendingActions, applyLocation]);
 
   // GameRanksView and TierListView stay mounted for the whole session (hidden via
   // display:none) so their local state survives navigation. That means an unstable

@@ -223,6 +223,31 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
                 ))}
             </div>
           )}
+
+          {/* Screen-action buttons: reopen the page the agent moved the user to. */}
+          {!streaming && (lastAnswer.actions?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {lastAnswer.actions!.map((action, i) => (
+                <button
+                  key={`${action.url}-${i}`}
+                  type="button"
+                  onClick={() => {
+                    if (action.url === 'app://back') {
+                      window.history.back();
+                    } else {
+                      window.location.hash = '';
+                      window.history.pushState({}, '', action.url);
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                    }
+                  }}
+                  data-testid="agent-action-button"
+                  className="text-[10px] font-bold px-2 py-1 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
+                >
+                  {action.label} ↗
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

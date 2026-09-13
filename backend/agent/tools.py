@@ -12,6 +12,10 @@ two agents.
 
 Tool specs are derived from the functions themselves (signature + docstring),
 so adding a tool to the MCP server and listing its name here is the whole job.
+
+Screen-action tools (open_player, open_game, etc.) live in
+``agent.screen_actions`` and are merged into the same registry so the model
+sees one flat tool list.
 """
 
 from __future__ import annotations
@@ -46,6 +50,17 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "get_status",
 )
 
+# Screen-action tools: move the user's screen, resolve names to ids. See
+# agent/screen_actions.py. Listed after the football tools so the model sees
+# data tools first, but they are equal citizens in the registry.
+from agent import screen_actions as _screen_actions
+
+SCREEN_ACTION_TOOL_NAMES: tuple[str, ...] = tuple(
+    name for name, _fn in _screen_actions.SCREEN_ACTION_TOOLS
+)
+
+EXPOSED_TOOLS += SCREEN_ACTION_TOOL_NAMES
+
 # Python annotation -> JSON Schema. The tool signatures only use these four;
 # anything else should fail loudly at import rather than reach the model as an
 # untyped parameter it will guess at.
@@ -70,6 +85,9 @@ def _load() -> dict[str, Callable[..., str]]:
 
     FastMCP's @mcp.tool() returns the undecorated function, so these are plain
     callables -- no MCP session, no transport, just a function call.
+
+    Screen-action tools from agent.screen_actions are merged in alongside the
+    MCP tools so the model sees one flat list.
     """
     global _registry
     if _registry is not None:
@@ -81,6 +99,11 @@ def _load() -> dict[str, Callable[..., str]]:
 
     found: dict[str, Callable[..., str]] = {}
     for name in EXPOSED_TOOLS:
+        # Screen-action tools come from screen_actions, not mcp_server.
+        screen_fn = dict(_screen_actions.SCREEN_ACTION_TOOLS).get(name)
+        if screen_fn is not None:
+            found[name] = screen_fn
+            continue
         fn = getattr(mcp_server, name, None)
         if not callable(fn):
             logger.warning("agent tool %r is listed but missing from mcp_server", name)
