@@ -26,10 +26,20 @@ const SUGGESTIONS = [
 export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }) {
   const {
     ask, stop, reset, streaming, activeTool, lastAnswer, turns, panelOpen, openPanel,
-    settings, updateSettings, quota, houseConfigured,
+    settings, updateSettings, quota, houseConfigured, dockRequest,
   } = useAgentChatContext();
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Opened from elsewhere: the header's "AI keys" button, or a page handing over a
+  // question. Applied during render (React's "adjust state on a prop change"), not
+  // in an effect, so the dock opens in the same paint.
+  const [handledRequest, setHandledRequest] = useState<number | null>(null);
+  if (dockRequest && dockRequest.nonce !== handledRequest) {
+    setHandledRequest(dockRequest.nonce);
+    setOpen(true);
+    setSettingsOpen(dockRequest.view === 'settings');
+  }
   const [draft, setDraft] = useState('');
   const [clipped, setClipped] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
