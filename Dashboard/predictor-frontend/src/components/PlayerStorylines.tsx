@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Newspaper, ExternalLink, RefreshCw } from 'lucide-react';
+import { Newspaper, RefreshCw, Sparkles } from 'lucide-react';
 import { API_BASE_URL } from '../lib/api';
+import StorylineModal from './StorylineModal';
 
 export interface Storyline {
   article_id: string;
@@ -41,6 +42,7 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [openStory, setOpenStory] = useState<Storyline | null>(null);
 
   useEffect(() => {
     if (!playerId) return;
@@ -136,12 +138,11 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
                 <h4 className="text-sm font-black text-slate-800 dark:text-slate-100 leading-snug">
                   {s.headline}
                 </h4>
-                {s.url && (
-                  <ExternalLink
-                    size={12}
-                    className="shrink-0 mt-1 text-slate-300 dark:text-slate-600 group-hover:text-blue-500"
-                  />
-                )}
+                <Sparkles
+                  size={12}
+                  aria-label="Open summary"
+                  className="shrink-0 mt-1 text-slate-300 dark:text-slate-600 group-hover:text-blue-500"
+                />
               </div>
               {s.description && (
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2">
@@ -161,22 +162,29 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
           </>
         );
 
-        return s.url ? (
-          <a
+        // Opens in the app with a summary; the ESPN link lives inside the popup.
+        return (
+          <button
             key={s.article_id}
-            href={s.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group flex gap-3 p-4 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/40"
+            type="button"
+            onClick={() => setOpenStory(s)}
+            data-testid="storyline-item"
+            className="group w-full text-left flex gap-3 p-4 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/40"
           >
             {body}
-          </a>
-        ) : (
-          <div key={s.article_id} className="flex gap-3 p-4">
-            {body}
-          </div>
+          </button>
         );
       })}
+
+      {openStory && (
+        <StorylineModal
+          playerId={playerId}
+          playerName={playerName}
+          story={openStory}
+          teamColor={teamColor}
+          onClose={() => setOpenStory(null)}
+        />
+      )}
     </div>
   );
 };

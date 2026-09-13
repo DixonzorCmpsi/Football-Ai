@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff } from 'lucide-react';
+import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff, Scale, Check, X } from 'lucide-react';
+import PlayerCompareModal from './PlayerCompareModal';
 import {
   fetchSleeperUser,
   fetchSleeperLeague,
@@ -85,13 +86,20 @@ const PlayerRow: React.FC<{
   player: any;
   badge?: React.ReactNode;
   onOpenHistory?: (id: string) => void;
-}> = ({ player, badge, onOpenHistory }) => (
+  /** Present for players we project: toggles them into the comparison. */
+  compare?: { selected: boolean; disabled: boolean; toggle: () => void };
+  /** Where the number comes from, when it isn't our model. */
+  sourceLabel?: string;
+}> = ({ player, badge, onOpenHistory, compare, sourceLabel }) => (
+  <div className={`flex items-stretch rounded-lg bg-white dark:bg-slate-900 border transition-colors ${
+    compare?.selected ? 'border-blue-500 ring-1 ring-blue-500/30' : 'border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500'
+  }`}>
   <button
     type="button"
-    onClick={() => onOpenHistory && onOpenHistory(player.player_id)}
+    onClick={() => onOpenHistory && player.player_id && onOpenHistory(player.player_id)}
     data-testid="sleeper-player-row"
     data-position={player.position}
-    className="w-full text-left flex items-center gap-3 p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+    className="flex-1 min-w-0 text-left flex items-center gap-3 p-2.5"
   >
     <div className="w-9 h-9 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 flex items-center justify-center">
       {player.image ? (
@@ -125,12 +133,31 @@ const PlayerRow: React.FC<{
     </div>
     {badge}
     <div className="text-right shrink-0">
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Proj</div>
+      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">{sourceLabel ?? 'Proj'}</div>
       <div className="font-black text-slate-800 dark:text-slate-100 tabular-nums">
-        {num(player.prediction).toFixed(1)}
+        {player.prediction === null || player.prediction === undefined ? '–' : num(player.prediction).toFixed(1)}
       </div>
     </div>
   </button>
+  {compare && (
+    <button
+      type="button"
+      onClick={compare.toggle}
+      disabled={compare.disabled && !compare.selected}
+      data-testid="sleeper-compare-toggle"
+      data-selected={compare.selected}
+      title={compare.selected ? 'Remove from comparison' : compare.disabled ? 'Compare up to 4 players' : 'Add to comparison'}
+      aria-label={compare.selected ? `Remove ${player.player_name} from comparison` : `Compare ${player.player_name}`}
+      className={`shrink-0 w-10 flex items-center justify-center border-l rounded-r-lg transition-colors disabled:opacity-30 ${
+        compare.selected
+          ? 'border-blue-500 bg-blue-600 text-white'
+          : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:text-blue-600 hover:bg-slate-50 dark:hover:bg-slate-800'
+      }`}
+    >
+      {compare.selected ? <Check size={14} strokeWidth={3} /> : <Scale size={14} />}
+    </button>
+  )}
+  </div>
 );
 
 const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, onInnerNav }) => {
@@ -344,6 +371,21 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     () => (analysis?.players || []).filter((p: any) => !recommendedIds.has(p.sleeper_id)),
     [analysis, recommendedIds],
   );
+
+  // Players picked for the comparison popup: anyone we project, roster or waiver wire.
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const compareFor = (player: any) => player.player_id ? {
+    selected: compareIds.includes(player.player_id),
+    disabled: compareIds.length >= 4,
+    toggle: () => setCompareIds((prev) => prev.includes(player.player_id)
+      ? prev.filter((id) => id !== player.player_id)
+      : [...prev, player.player_id].slice(0, 4)),
+  } : undefined;
+  const compareNames = useMemo(() => {
+    const all = [...(analysis?.players || []), ...(waivers?.players || [])];
+    return compareIds.map((id) => all.find((p: any) => p.player_id === id)?.player_name || 'Player');
+  }, [compareIds, analysis, waivers]);
 
   return (
     <div className="space-y-5" data-testid="sleeper-view">
@@ -587,6 +629,11 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
                 {num(analysis.projected_total).toFixed(1)}
               </span>{' '}
               pts
+              {num(analysis.special_teams_projected_total) > 0 && (
+                <span className="text-slate-400" title="Your saved kicker and defense, projected by Sleeper">
+                  {' '}+ {num(analysis.special_teams_projected_total).toFixed(1)} K/DEF (Sleeper)
+                </span>
+              )}
             </div>
           </div>
 
@@ -602,6 +649,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
                       key={p.sleeper_id}
                       player={p}
                       onOpenHistory={onOpenHistory}
+                      compare={compareFor(p)}
                       badge={!p.in_saved_lineup ? (
                         <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
                           Bench → Start
@@ -621,6 +669,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
                       key={p.sleeper_id}
                       player={p}
                       onOpenHistory={onOpenHistory}
+                      compare={compareFor(p)}
                       badge={p.in_saved_lineup ? (
                         <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
                           Start → Sit
@@ -649,11 +698,36 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
                 </div>
               )}
 
+              {analysis.special_teams?.length > 0 && (
+                <div className="lg:col-span-2" data-testid="sleeper-special-teams">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-1">
+                    Kicker &amp; defense
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mb-2">
+                    We don't model these, so they carry Sleeper's projection and get no start/sit call from us.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {analysis.special_teams.map((p: any) => (
+                      <PlayerRow
+                        key={p.sleeper_id}
+                        player={p}
+                        sourceLabel="Sleeper"
+                        onOpenHistory={p.position === 'K' ? onOpenHistory : undefined}
+                        badge={p.in_saved_lineup ? (
+                          <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            In lineup
+                          </span>
+                        ) : undefined}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {analysis.unmatched_sleeper_ids?.length > 0 && (
                 <div className="lg:col-span-2 text-[11px] text-slate-400">
                   {analysis.unmatched_sleeper_ids.length} rostered player(s) could not be matched to
-                  our player database (usually kickers or team defenses, which this model does not
-                  project).
+                  our player database.
                 </div>
               )}
             </div>
@@ -669,6 +743,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
                     key={p.sleeper_id}
                     player={p}
                     onOpenHistory={onOpenHistory}
+                    compare={compareFor(p)}
                     badge={p.trending_adds ? (
                       <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
                         +{p.trending_adds > 999 ? `${Math.round(p.trending_adds / 1000)}K` : p.trending_adds}
@@ -683,6 +758,37 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
             </div>
           )}
         </div>
+      )}
+
+      {/* Compare bar: bottom-left, clear of the assistant button on the right. */}
+      {analysis && compareIds.length > 0 && (
+        <div className="fixed z-40 bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 xl:left-[22rem] xl:translate-x-0 flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full bg-slate-900 text-white shadow-xl max-w-[calc(100vw-2rem)]" data-testid="sleeper-compare-bar">
+          <Scale size={14} className="shrink-0" />
+          <span className="text-[12px] font-bold truncate">
+            {compareIds.length === 1 ? `${compareNames[0]}: pick one more` : compareNames.join(' vs ')}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCompareOpen(true)}
+            disabled={compareIds.length < 1}
+            data-testid="sleeper-compare-open"
+            className="text-[12px] font-black px-3 py-1 rounded-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 shrink-0"
+          >
+            Compare
+          </button>
+          <button type="button" onClick={() => setCompareIds([])} aria-label="Clear comparison" className="p-1 rounded-full text-slate-400 hover:text-white shrink-0">
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {compareOpen && (
+        <PlayerCompareModal
+          week={week}
+          initialIds={compareIds}
+          onClose={() => setCompareOpen(false)}
+          onOpenHistory={(id) => { setCompareOpen(false); onOpenHistory?.(id); }}
+        />
       )}
     </div>
   );
