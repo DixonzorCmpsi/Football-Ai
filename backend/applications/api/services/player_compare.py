@@ -56,7 +56,8 @@ def _metrics(card: dict) -> dict:
         "prop_line": _num(card.get("prop_line")),
         "prop_label": MAIN_PROP.get(pos),
         "anytime_td_prob": _num(card.get("anytime_td_prob")),
-        "snap_pct": _num(card.get("snap_percentage")),
+        # 0 means "no snaps on record yet" (every player in week 1), not "never plays".
+        "snap_pct": _num(card.get("snap_percentage")) or None,
     }
 
 

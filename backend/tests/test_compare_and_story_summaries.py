@@ -6,10 +6,16 @@ article's own sentences.
 """
 
 import asyncio
-import json
 
 import pytest
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+
+from applications.api import secret_store
+from applications.api.rate_limit import limiter as ip_limiter
+from applications.api.routes import storyline_summary as summary_routes
+from applications.api.services import usage_limits
 
 from applications.api.services import llm_proxy as proxy
 from applications.api.services import player_compare as pc
@@ -95,6 +101,18 @@ def test_extractive_summary_prefers_sentences_about_the_player():
     assert ss.extract_summary(text, "Brock Purdy") == "MELBOURNE -- Brock Purdy threw three touchdowns. Purdy said he felt sharp."
 
 
+def test_subheadings_do_not_fuse_into_the_summary():
+    """Seen live on an ESPN recap: 'both teams: San Francisco 49ers (1-0) What to make of...'"""
+    text = ("Here are the most important things to know for both teams:\n\nSan Francisco 49ers (1-0)\n\n"
+            "What to make of the QB performance: Brock Purdy threw three touchdowns.")
+    assert ss.extract_summary(text, "Brock Purdy") == "What to make of the QB performance: Brock Purdy threw three touchdowns."
+
+
+def test_no_snaps_on_record_is_unknown_not_zero():
+    assert pc._metrics(_card("a", "Rookie Guy", "WR", 5.0, snaps=0.0))["snap_pct"] is None
+    assert pc._metrics(_card("a", "Vet Guy", "WR", 5.0, snaps=81.0))["snap_pct"] == 81.0
+
+
 def test_rotowire_items_use_their_own_blurb_without_fetching(monkeypatch):
     monkeypatch.setattr(ss, "_fetch_story", lambda aid: pytest.fail("should not fetch"))
     item = {"article_id": "63680928", "story_type": "Rotowire", "headline": "Purdy completed 25 of 34 passes.", "description": ""}
@@ -140,3 +158,72 @@ def test_house_summaries_are_cached_and_byok_ones_are_not(monkeypatch):
     result = asyncio.run(ss.model_summary("P", item, "text", house))
     assert result["source"] == "ai" and ss.cached_summary("555")["text"] == "It happened."
     assert calls == ["byok", "house"]
+
+
+# --- the summary endpoint: who pays --------------------------------------------------
+
+@pytest.fixture
+def summary_api(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-house")
+    monkeypatch.setenv("INFERENCE_HOUSE_PROVIDER", "openrouter")
+    monkeypatch.setenv("AGENT_DAILY_QUESTIONS", "5")
+    monkeypatch.delenv("INFERENCE_HOUSE_API_KEY", raising=False)
+    monkeypatch.delenv("INFERENCE_HOUSE_BASE_URL", raising=False)
+    secret_store.clear_cache()
+    monkeypatch.setattr(usage_limits, "_limiter", usage_limits.UsageLimiter(uri=None))
+    item = {"article_id": "777", "headline": "Purdy throws three TDs", "story_type": "Rotowire",
+            "description": "", "url": "", "image": "", "published": "2026-09-11T00:00:00Z"}
+    monkeypatch.setattr(summary_routes, "_find_item", lambda pid, aid: item if aid == "777" else None)
+    monkeypatch.setattr(summary_routes, "_player_name", lambda pid: "Brock Purdy")
+    ss._summaries.clear()
+    replies = {"status": 200}
+
+    async def fake_forward(body, upstream):
+        if replies["status"] != 200:
+            return JSONResponse({"error": {"message": "upstream down"}}, status_code=replies["status"])
+        return JSONResponse({"model": "free/m", "choices": [{"message": {"content": "SUMMARY: Purdy threw three.\nFANTASY: Start him."}}]})
+
+    monkeypatch.setattr(proxy, "forward", fake_forward)
+    app = FastAPI()
+    app.state.limiter = ip_limiter
+    app.include_router(summary_routes.router)
+    yield TestClient(app), replies
+    secret_store.clear_cache()
+
+
+def _used(client, cid="browser-aaaaaaaa"):
+    return usage_limits.limiter().quota(cid, False).used
+
+
+def test_a_house_summary_costs_one_question_and_the_next_opener_nothing(summary_api):
+    client, _ = summary_api
+    headers = {"x-client-id": "browser-aaaaaaaa"}
+    first = client.post("/player/p1/storylines/777/summary", json={}, headers=headers).json()
+    assert first["summary"]["source"] == "ai" and first["summary"]["fantasy_impact"] == "Start him."
+    assert _used(client) == 1
+    again = client.post("/player/p1/storylines/777/summary", json={}, headers={"x-client-id": "browser-bbbbbbbb"}).json()
+    assert again["summary"]["text"] == "Purdy threw three."
+    assert _used(client, "browser-bbbbbbbb") == 0, "cached summaries are free for everyone"
+
+
+def test_a_failed_summary_is_refunded_and_falls_back_to_the_article(summary_api):
+    client, replies = summary_api
+    replies["status"] = 502
+    body = client.post("/player/p1/storylines/777/summary", json={}, headers={"x-client-id": "browser-aaaaaaaa"}).json()
+    assert body["summary"]["source"] == "extract"
+    assert body["summary"]["text"] == "Purdy throws three TDs"
+    assert "AI summary failed" in body["summary"]["note"]
+    assert _used(client) == 0
+
+
+def test_without_a_model_the_popup_still_opens(summary_api, monkeypatch):
+    client, _ = summary_api
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    secret_store.clear_cache()
+    body = client.post("/player/p1/storylines/777/summary", json={}, headers={"x-client-id": "browser-aaaaaaaa"}).json()
+    assert body["summary"]["source"] == "extract" and "need the free assistant" in body["summary"]["note"]
+
+
+def test_an_unknown_storyline_is_404(summary_api):
+    client, _ = summary_api
+    assert client.post("/player/p1/storylines/999/summary", json={}).status_code == 404

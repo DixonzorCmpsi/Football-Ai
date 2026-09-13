@@ -130,8 +130,20 @@ def article_text(item: dict) -> str:
 # --- summaries --------------------------------------------------------------------
 
 def _sentences(text: str) -> list[str]:
-    flat = re.sub(r"\s+", " ", text).strip()
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'])", flat) if s.strip()]
+    """Sentences, split within paragraphs so a subheading never fuses onto the next line.
+
+    ESPN recaps use unpunctuated subheads ("San Francisco 49ers (1-0)"); flattening
+    the text first glued them into the following sentence.
+    """
+    paragraphs = [re.sub(r"\s+", " ", p).strip() for p in re.split(r"\n\s*\n", text or "")]
+    paragraphs = [p for p in paragraphs if p]
+    prose = [p for p in paragraphs if re.search(r"[.!?][\"')\]]*$", p)]
+    # Skip headings only when there is prose to skip them for: a bare headline
+    # ("Purdy throws three TDs") is still the whole story.
+    out: list[str] = []
+    for paragraph in prose or paragraphs:
+        out.extend(s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\"'])", paragraph) if s.strip())
+    return out
 
 
 def extract_summary(text: str, player_name: str, limit: int = 3) -> str:
