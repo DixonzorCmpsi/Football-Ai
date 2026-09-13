@@ -46,6 +46,21 @@ async def sleeper_roster_analysis(league_id: str, roster_id: int,
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/league/{league_id}/insights")
+async def sleeper_league_insights(league_id: str,
+                                  week: int = Query(default=1, ge=1, le=22),
+                                  roster_id: int | None = Query(default=None)):
+    """Standings, all-play luck, power and position rankings, and this week's matchups."""
+    from ..services.league_insights import league_insights
+    try:
+        return await league_insights(league_id, week, roster_id)
+    except sl.SleeperError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("League insights failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/league/{league_id}/waivers")
 async def sleeper_waivers(league_id: str,
                           week: int = Query(default=1, ge=1, le=22),
