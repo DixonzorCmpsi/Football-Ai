@@ -16,7 +16,7 @@ from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, 
 from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
-from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper
+from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, terminate_running_scripts, etl_ran_recently
 from .services.storylines import storylines_wrapper
 from .routes import players, games, general, debug, tier_list, sleeper
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
@@ -175,6 +175,10 @@ async def lifespan(app: FastAPI):
                         asyncio.create_task(run_daily_etl_async(restart_after=False))
                     except Exception as e:
                         logger.exception(f"Startup ETL failed (sync path): {e}")
+                elif etl_ran_recently():
+                    # A dev server reloads on every save; rerunning a multi-minute
+                    # scrape each time buys nothing when the data is hours old.
+                    logger.info("Startup ETL skipped: a full ETL succeeded recently (STARTUP_ETL_MIN_AGE_HOURS).")
                 else:
                     # Non-blocking trigger when DB already has data (no restart needed)
                     asyncio.create_task(run_daily_etl_async(restart_after=False))
@@ -192,7 +196,10 @@ async def lifespan(app: FastAPI):
     # --- SHUTDOWN ---
     logger.info("Server shutdown sequence initiated")
     if hasattr(app.state, "scheduler"):
-        app.state.scheduler.shutdown()
+        app.state.scheduler.shutdown(wait=False)
+    stopped = terminate_running_scripts()
+    if stopped:
+        logger.info("Stopped %d running pipeline script(s)", stopped)
     model_data.clear()
 
 # --- INITIALIZE APP ---
