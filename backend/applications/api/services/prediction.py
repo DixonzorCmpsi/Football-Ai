@@ -126,6 +126,78 @@ def prior_season_form(player_id: str, max_games: int = CARRYOVER_GAMES) -> tuple
     return sum(points) / len(points), len(points)
 
 
+def prior_season_average(player_id: str) -> tuple[float, int]:
+    """Per-game fantasy average over the player's most recent prior season.
+
+    Unlike `prior_season_form`, zero-point games count: a receiver who caught
+    nothing in three games did average less than his good weeks suggest, and
+    leaving those games out is what made projections run high.
+
+    Returns (average, games); (0.0, 0) when there is no prior season.
+    """
+    rows = _prior_form_index().get(str(player_id))
+    if rows is None or rows.is_empty():
+        return 0.0, 0
+    if "season" in rows.columns:
+        latest = rows.select(pl.col("season").max()).item()
+        rows = rows.filter(pl.col("season") == latest)
+    points = []
+    for row in rows.iter_rows(named=True):
+        try:
+            points.append(float(calculate_fantasy_points(row) or 0.0))
+        except Exception:
+            continue
+    if not points:
+        return 0.0, 0
+    return sum(points) / len(points), len(points)
+
+
+def season_average_with_prior(current_points: list[float], player_id: str) -> float:
+    """This season's per-game average, crossfaded with last season's early on."""
+    games = len(current_points)
+    current = sum(current_points) / games if games else 0.0
+    if games >= CARRYOVER_GAMES:
+        return current
+    prior, prior_games = prior_season_average(player_id)
+    if prior_games == 0:
+        return current
+    weight = games / float(CARRYOVER_GAMES)
+    return weight * current + (1.0 - weight) * prior
+
+
+# How a projection is assembled from its parts. Chosen by backtest, not by feel:
+# model_training/backtest_projection_formula.py rebuilds features for past seasons
+# with the production feature code, runs the shipped models, and scores candidate
+# formulas. These values were picked on 2024 and then confirmed on 2025.
+#
+# The formula they replaced -- last 4 non-zero games + 5*ln(1+deviation) -- ran
+# +3.8 points high on fantasy-relevant players in 2025 (average miss 7.5 points).
+# Both halves pushed upward: dropping zero games inflates the baseline, and the
+# log "boost" multiplied a deviation that already leaned positive. The
+# replacement misses by 6.3 with +0.7 bias, and orders same-week, same-position
+# pairs correctly 60.9% of the time instead of 59.2%.
+RECENT_FORM_WEIGHT = 0.25
+# The position models' mean deviation over 2024. The models were trained against
+# a different baseline, so their raw output carries this offset into every
+# projection; subtracting it keeps the adjustment about the player.
+DEVIATION_CENTER = {"QB": 1.86, "RB": 1.17, "WR": 0.92, "TE": 0.81}
+
+
+def combine_projection(season_avg: float, recent_form: float, deviation: float, pos: str,
+                       has_history: bool) -> tuple[float, float]:
+    """(baseline, model adjustment). See RECENT_FORM_WEIGHT for where these come from.
+
+    A player with no NFL history at all (a rookie in week 1) has nothing for the
+    backtest to have measured, and centering would take his only signal away, so
+    he keeps the old treatment of the model output.
+    """
+    if not has_history:
+        adjustment = math.copysign(5.0 * math.log1p(abs(deviation)), deviation) if deviation else 0.0
+        return 0.0, adjustment
+    baseline = (1.0 - RECENT_FORM_WEIGHT) * season_avg + RECENT_FORM_WEIGHT * recent_form
+    return baseline, deviation - DEVIATION_CENTER.get(pos, 0.0)
+
+
 def blend_with_prior(current_avg: float, current_games: int, player_id: str) -> float:
     """Ease from last season's form into this season's as games accumulate.
 
@@ -145,13 +217,16 @@ def blend_with_prior(current_avg: float, current_games: int, player_id: str) -> 
     return (weight * float(current_avg or 0.0)) + ((1.0 - weight) * prior_avg)
 
 
-def run_base_prediction(pid, pos, week):
+def run_base_prediction(pid, pos, week, breakdown: dict | None = None):
     """
-    Looks up features from DB. 
-    1. RECENT FORM: Calculates average of the LAST 4 NON-ZERO GAMES.
-    2. BASELINE CORRECTION: Uses that 4-game average as the starting point.
-    3. LOGARITHMIC BOOST: 5.0 * ln(1 + deviation).
-    4. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
+    Looks up features from DB.
+    1. SEASON AVERAGE: every game this season, zeros included, carried from last season early on.
+    2. RECENT FORM: average of the last 4 non-zero games.
+    3. BASELINE: a blend of the two (see RECENT_FORM_WEIGHT).
+    4. MODEL ADJUSTMENT: the position model's deviation, centered.
+    5. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
+
+    Pass `breakdown` to receive each of those parts, so a projection can be explained.
     """
     # Initialize defaults
     features_dict = {}
@@ -208,6 +283,7 @@ def run_base_prediction(pid, pos, week):
                 history_df = pl.DataFrame()
         
         avg_recent_form = 0.0
+        season_points: list[float] = []
         # If history_df is empty, as a last resort try a targeted DB load again
         if history_df.is_empty():
             try:
@@ -222,10 +298,9 @@ def run_base_prediction(pid, pos, week):
             valid_pts = []
             for row in sorted_history.iter_rows(named=True):
                 pts = calculate_fantasy_points(row)
-                if pts > 0.0:
+                season_points.append(float(pts or 0.0))
+                if pts > 0.0 and len(valid_pts) < 4:
                     valid_pts.append(pts)
-                if len(valid_pts) >= 4:
-                    break
             
             if len(valid_pts) > 0:
                 avg_recent_form = sum(valid_pts) / len(valid_pts)
@@ -250,16 +325,19 @@ def run_base_prediction(pid, pos, week):
                 pred_dev = m_info["model"].predict(pl.DataFrame(feats_input).to_numpy())[0]
             except: pred_dev = 0.0
         
-        # --- 3. LOGARITHMIC BOOST (symmetric, sign-preserving) ---
-        # Use log1p on absolute deviation to produce sharp increases for
-        # small deviations and a tapering curve for large deviations.
-        if pred_dev != 0:
-            amplified_dev = math.copysign(5.0 * math.log1p(abs(pred_dev)), pred_dev)
-        else:
-            amplified_dev = 0.0
-        
-        # --- 4. BASELINE CORRECTION ---
-        baseline = avg_recent_form
+        # --- 3/4. BASELINE AND MODEL ADJUSTMENT ---
+        season_avg = season_average_with_prior(season_points, pid)
+        has_history = bool(season_points) or prior_season_average(pid)[1] > 0
+        if not has_history:
+            # Prior seasons load in the background after startup. Until they do
+            # (or for a player missing from them) the feature row's own
+            # expanding average across seasons is the best baseline available;
+            # without it a veteran would be scored as a rookie.
+            career_avg = float(features_dict.get('player_season_avg_points') or 0.0)
+            if career_avg > 0:
+                season_avg, has_history = career_avg, True
+        baseline, amplified_dev = combine_projection(
+            season_avg, avg_recent_form, float(pred_dev), pos, has_history)
 
         # --- 5. USAGE VACUUM LOGIC (Robust Time-Aware) ---
         injury_boost = 0.0
@@ -385,7 +463,17 @@ def run_base_prediction(pid, pos, week):
         # --- 6. FINAL SCORE ---
         final_score = max(0.0, baseline + amplified_dev + injury_boost)
         is_boosted = injury_boost > 0
-        
+        if breakdown is not None:
+            breakdown.update({
+                "season_avg": round(season_avg, 2),
+                "recent_form": round(float(avg_recent_form), 2),
+                "baseline": round(baseline, 2),
+                "model_adjustment": round(amplified_dev, 2),
+                "injury_boost": round(injury_boost, 2),
+                "games_this_season": len(season_points),
+                "has_history": has_history,
+            })
+
         return round(float(final_score), 2), is_boosted, features_dict, avg_recent_form
         
     except Exception as e:
@@ -427,7 +515,8 @@ async def get_player_card(player_id: str, week: int):
     team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
     # --- RUN PREDICTION ---
-    l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week)
+    breakdown: dict = {}
+    l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week, breakdown)
     
     # --- GET SEASON AVERAGE ---
     season_avg = 0.0
@@ -702,8 +791,9 @@ async def get_player_card(player_id: str, week: int):
         "floor_prediction": round(meta_score * 0.8, 2),
         "average_points": round(season_avg, 1), 
         "rolling_4wk_avg": round(rolling_avg_val, 1), 
-        "is_injury_boosted": is_boosted, 
-        "injury_status": final_status, 
+        "is_injury_boosted": is_boosted,
+        "projection_breakdown": breakdown or None,
+        "injury_status": final_status,
         "debug_err": None 
     }
 
@@ -725,7 +815,9 @@ async def get_team_roster_cards(team_abbr: str, week: int):
         ranked = read_db(q)
     except: pass
 
-    df_profile = model_data["df_profile"]
+    df_profile = model_data.get("df_profile")
+    if df_profile is None:
+        df_profile = pl.DataFrame()
     if ranked.is_empty() and ("team_abbr" in df_profile.columns or "team" in df_profile.columns):
         team_col = "team_abbr" if "team_abbr" in df_profile.columns else "team"
         candidates = df_profile.filter(
@@ -733,6 +825,13 @@ async def get_team_roster_cards(team_abbr: str, week: int):
             (pl.col("status") == "ACT")
         ).select(["player_id", "position"])
         ranked = candidates
+
+    # With no rankings and no profiles loaded (a cold start, or the database is
+    # down) there is no roster to build. That used to raise on the missing
+    # column and turn the whole matchup page into a 500, odds and all.
+    if "position" not in ranked.columns or "player_id" not in ranked.columns:
+        logger.warning("No roster source for %s week %s; returning an empty roster", team_abbr, week)
+        return []
 
     # --- OPTIMIZATION: Parallelize Player Card Fetching ---
     # Fetch all player cards concurrently to reduce wait time
