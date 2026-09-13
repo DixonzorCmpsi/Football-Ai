@@ -48,3 +48,5 @@ backend/rag_data/player_storylines.csv
 
 # pi's generated config for server-run agents (models.json points at the local proxy)
 backend/agent/runtime/.pi-agent/
+
+backend/rag_data/.etl_last_success
