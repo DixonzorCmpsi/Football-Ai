@@ -6,6 +6,94 @@ from datetime import datetime
 from ..config import logger, ETL_SCRIPT_PATH
 from .data_loader import refresh_app_state, refresh_db_data, load_depth_charts, load_historical_stats
 
+def python_for_scripts() -> str:
+    """The interpreter that has this app's packages, for running pipeline scripts.
+
+    On Windows a venv's python.exe is a launcher that starts the base install, so
+    inside the server `sys.executable` is the base interpreter. Spawning that ran
+    every ETL step without the venv ("No module named 'nflreadpy'"): the
+    half-hourly injury refresh and the daily ETL failed on every run. The venv's
+    own launcher, found from sys.prefix, restores the environment.
+    """
+    for candidate in (
+        os.path.join(sys.prefix, "Scripts", "python.exe"),
+        os.path.join(sys.prefix, "bin", "python"),
+    ):
+        if sys.prefix != sys.base_prefix and os.path.exists(candidate):
+            return candidate
+    return sys.executable
+
+
+_running_scripts: set = set()
+
+
+async def run_script(script: str) -> tuple[int, bytes, bytes]:
+    """Run a pipeline script and wait for it, without blocking the event loop.
+
+    Not asyncio.create_subprocess_exec: on Windows, uvicorn's reload mode runs a
+    SelectorEventLoop, which cannot start subprocesses (NotImplementedError), so
+    the refresh "failed" in the server while the same code worked from a shell.
+
+    Not asyncio.to_thread either: the default executor is joined when the loop
+    shuts down, so a reload or Ctrl+C waited for the whole ETL, a browser-driven
+    Bovada scrape included, and the server answered nothing for minutes. The wait
+    happens on a daemon thread, and terminate_running_scripts() ends the children
+    when the app stops.
+    """
+    import subprocess
+    import threading
+
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+    process = subprocess.Popen([python_for_scripts(), script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _running_scripts.add(process)
+
+    def _wait():
+        try:
+            out, err = process.communicate()
+            result = (process.returncode, out or b"", err or b"")
+        except Exception as exc:  # pragma: no cover - defensive
+            result = (-1, b"", str(exc).encode())
+        finally:
+            _running_scripts.discard(process)
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(lambda: done.done() or done.set_result(result))
+
+    threading.Thread(target=_wait, name=f"script:{os.path.basename(script)}", daemon=True).start()
+    return await done
+
+
+def terminate_running_scripts() -> int:
+    """End pipeline scripts this process started, so a stopping server doesn't leave them running."""
+    stopped = 0
+    for process in list(_running_scripts):
+        if process.poll() is None:
+            try:
+                if sys.platform == "win32":
+                    # The venv launcher starts a second python; end the whole tree.
+                    import subprocess
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+                else:
+                    process.terminate()
+                stopped += 1
+            except Exception:
+                pass
+    return stopped
+
+
+# A successful full ETL is stamped here, so a restart (or every dev auto-reload)
+# doesn't rerun a multi-minute scrape of data that is hours old at most.
+ETL_STAMP = os.path.join(os.path.dirname(ETL_SCRIPT_PATH), ".etl_last_success")
+
+
+def etl_ran_recently(hours: float | None = None) -> bool:
+    hours = float(os.getenv("STARTUP_ETL_MIN_AGE_HOURS", "20")) if hours is None else hours
+    try:
+        return (datetime.now().timestamp() - os.path.getmtime(ETL_STAMP)) < hours * 3600
+    except OSError:
+        return False
+
+
 def trigger_container_restart():
     """
     Triggers a graceful container restart by sending SIGTERM to the main process.
@@ -32,16 +120,16 @@ async def run_daily_etl_async(restart_after: bool = True):
 
     try:
         # Launch the process asynchronously
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, ETL_SCRIPT_PATH,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
+        returncode, stdout, stderr = await run_script(ETL_SCRIPT_PATH)
 
-        if process.returncode == 0:
+        if returncode == 0:
             logger.info("ETL process finished successfully")
-            
+            try:
+                with open(ETL_STAMP, "w") as stamp:
+                    stamp.write(datetime.now().isoformat())
+            except OSError:
+                pass
+
             if restart_after and os.getenv('RESTART_AFTER_ETL', 'true').lower() in ('1', 'true', 'yes'):
                 # Trigger container restart for clean data reload
                 # Short delay to ensure logs are written
@@ -54,7 +142,7 @@ async def run_daily_etl_async(restart_after: bool = True):
                 load_historical_stats()
                 load_depth_charts(force=True)
         else:
-            logger.error(f"ETL process exited with code {process.returncode}")
+            logger.error(f"ETL process exited with code {returncode}")
             if stderr: logger.error(f"STDERR: {stderr.decode()}")
     except Exception as e:
         logger.exception(f"Error during async ETL: {e}")
@@ -85,6 +173,58 @@ def _injury_script_path() -> str:
     return os.path.join(os.path.dirname(ETL_SCRIPT_PATH), INJURY_SCRIPT_NAME)
 
 
+def sync_injuries_to_db(csv_path: str | None = None, uri: str | None = None) -> int:
+    """Replace the database's injury rows for the weeks in the refreshed CSV.
+
+    The refresh used to stop at the CSV and then "reload" from the database,
+    which only the daily ETL wrote. So the half-hourly refresh never reached the
+    app, and repeated loads had left up to 15 snapshots per player with
+    conflicting statuses (54 players were both Active and Questionable), one of
+    them picked arbitrarily per request.
+
+    Delete-then-insert in one transaction: readers see the old week or the new
+    one, never a mix. Returns rows written; 0 without a database.
+    """
+    import polars as pl
+    import psycopg2
+    from psycopg2.extras import execute_values
+
+    from ..config import CURRENT_SEASON, DB_CONNECTION_STRING, RAG_DIR
+
+    uri = uri or DB_CONNECTION_STRING
+    csv_path = csv_path or os.path.join(RAG_DIR, f"weekly_injuries_{CURRENT_SEASON}.csv")
+    if not uri or not os.path.exists(csv_path):
+        return 0
+    df = (
+        pl.read_csv(csv_path, infer_schema_length=0)
+        .select(["player_id", "player_name", "injury_status", "week"])
+        .with_columns(pl.col("week").cast(pl.Int64))
+        .unique(subset=["player_id", "week"], keep="last", maintain_order=True)
+    )
+    if df.is_empty():
+        return 0
+    table = f"weekly_injuries_{CURRENT_SEASON}"
+    weeks = sorted(set(df["week"].to_list()))
+    conn = psycopg2.connect(uri)
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TABLE IF NOT EXISTS {table} "
+                "(player_id TEXT, player_name TEXT, injury_status TEXT, week BIGINT)"
+            )
+            cur.execute(f"DELETE FROM {table} WHERE week = ANY(%s)", (weeks,))
+            execute_values(
+                cur,
+                f"INSERT INTO {table} (player_id, player_name, injury_status, week) VALUES %s",
+                df.rows(),
+                page_size=2000,
+            )
+    finally:
+        conn.close()
+    logger.info("Injury refresh: wrote %d rows for weeks %s to %s", df.height, weeks, table)
+    return df.height
+
+
 async def run_injury_refresh_async() -> bool:
     """Re-pull injuries from Sleeper and reload them into memory.
 
@@ -96,16 +236,11 @@ async def run_injury_refresh_async() -> bool:
         return False
     logger.info("Injury refresh: pulling latest statuses from Sleeper...")
     try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
+        returncode, stdout, stderr = await run_script(script)
+        if returncode != 0:
             logger.error(
                 "Injury refresh failed (code %s): %s",
-                process.returncode,
+                returncode,
                 (stderr or b"").decode(errors="replace")[-800:],
             )
             return False
@@ -113,6 +248,7 @@ async def run_injury_refresh_async() -> bool:
         # Push the refreshed CSV into Postgres, then rebuild the in-memory
         # injury map so live requests see the new statuses without a restart.
         try:
+            await asyncio.to_thread(sync_injuries_to_db)
             refresh_db_data()
             refresh_app_state()
         except Exception:
