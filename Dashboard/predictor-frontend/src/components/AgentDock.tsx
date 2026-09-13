@@ -89,7 +89,7 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
 
   const status =
     settings.mode === 'byok'
-      ? `Your key · ${settings.model || 'no model'}`
+      ? `${settings.provider === 'ollama-local' ? 'Local Ollama' : 'Your key'} · ${settings.model || 'no model'}`
       : quota?.owner
         ? 'Free · owner, unlimited'
         : quota

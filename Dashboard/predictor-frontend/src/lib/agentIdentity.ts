@@ -135,7 +135,12 @@ export function byokPayload(settings: AgentSettings) {
   };
 }
 
+/** Providers that run without a key: an Ollama on the same machine as the backend. */
+export const KEYLESS_PROVIDERS = new Set(['ollama-local']);
+
 export function byokReady(settings: AgentSettings): boolean {
-  return settings.mode === 'byok' && !!settings.apiKey.trim() && !!settings.model.trim()
+  return settings.mode === 'byok'
+    && (KEYLESS_PROVIDERS.has(settings.provider) || !!settings.apiKey.trim())
+    && !!settings.model.trim()
     && (settings.provider !== 'custom' || !!settings.baseUrl.trim());
 }

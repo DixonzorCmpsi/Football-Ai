@@ -19,6 +19,8 @@ type Provider = {
   label: string;
   base_url: string | null;
   requires_base_url: boolean;
+  requires_key?: boolean;
+  local?: boolean;
   key_help_url: string;
   public_model_list: boolean;
 };
@@ -52,6 +54,7 @@ export default function AgentSettings({
   const [models, setModels] = useState<string[]>([]);
   const [modelsState, setModelsState] = useState<'idle' | 'loading' | 'error'>('idle');
   const [modelsError, setModelsError] = useState('');
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<TestResult>(null);
@@ -83,6 +86,7 @@ export default function AgentSettings({
       if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
       setModels(data.models || []);
       setModelsState('idle');
+      setModelsLoaded(true);
     } catch (err) {
       setModels([]);
       setModelsState('error');
@@ -193,6 +197,18 @@ export default function AgentSettings({
             </div>
           )}
 
+          {provider?.local && (
+            <div className="rounded-md bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 p-2 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400" data-testid="agent-ollama-help">
+              Uses the Ollama running on the same computer as this app's server. No key needed.
+              <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                <li>Pull a model with tool calling, e.g. <code>ollama pull qwen3</code>.</li>
+                <li>Ollama Cloud models run here too: <code>ollama signin</code>, then pick one ending in <code>-cloud</code>.</li>
+                <li>Give it room for the assistant's tools: set <code>OLLAMA_CONTEXT_LENGTH=32768</code> before starting Ollama.</li>
+              </ul>
+            </div>
+          )}
+
+          {provider?.requires_key !== false && (
           <div>
             <div className="flex items-center justify-between">
               <label className={label} htmlFor="agent-api-key">API key</label>
@@ -220,6 +236,7 @@ export default function AgentSettings({
               </button>
             </div>
           </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between">
@@ -241,6 +258,11 @@ export default function AgentSettings({
               {models.map((m) => <option key={m} value={m} />)}
             </datalist>
             {modelsState === 'error' && <p className="mt-1 text-[10px] text-red-500">{modelsError}</p>}
+            {provider?.local && modelsLoaded && modelsState === 'idle' && models.length === 0 && (
+              <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400" data-testid="agent-ollama-no-models">
+                Ollama is running but has no models yet. Run <code>ollama pull qwen3</code>, or <code>ollama signin</code> to use your Ollama Cloud models, then Load models.
+              </p>
+            )}
             {provider?.id === 'openrouter' && models.length > 0 && (
               <p className="mt-1 text-[10px] text-slate-400">Showing models that support tool calling, which the assistant needs.</p>
             )}
