@@ -328,6 +328,14 @@ def run_base_prediction(pid, pos, week, breakdown: dict | None = None):
         # --- 3/4. BASELINE AND MODEL ADJUSTMENT ---
         season_avg = season_average_with_prior(season_points, pid)
         has_history = bool(season_points) or prior_season_average(pid)[1] > 0
+        if not has_history:
+            # Prior seasons load in the background after startup. Until they do
+            # (or for a player missing from them) the feature row's own
+            # expanding average across seasons is the best baseline available;
+            # without it a veteran would be scored as a rookie.
+            career_avg = float(features_dict.get('player_season_avg_points') or 0.0)
+            if career_avg > 0:
+                season_avg, has_history = career_avg, True
         baseline, amplified_dev = combine_projection(
             season_avg, avg_recent_form, float(pred_dev), pos, has_history)
 
