@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users, KeyRound } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -190,7 +190,7 @@ export default function App() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   // The agent's conversation and panel visibility are app-wide: the dock floats
   // over every view and the panel takes the right rail's place.
-  const { panelOpen } = useAgentChatContext();
+  const { panelOpen, openDock, settings: agentSettings } = useAgentChatContext();
   const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
@@ -364,8 +364,28 @@ export default function App() {
     );
   }
 
+  // Where a user sets their own model key. It used to live only behind a gear
+  // inside the closed assistant dock, which nobody found.
+  const aiKeysButton = (testId: string, compact = false) => (
+    <button
+      onClick={() => openDock('settings')}
+      data-testid={testId}
+      title={agentSettings.mode === 'byok' ? `AI: your ${agentSettings.provider} key` : 'AI settings: use the free tier or your own API key'}
+      className={`flex items-center gap-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${compact ? 'px-1.5 py-1' : 'px-2.5 py-1.5'} ${
+        agentSettings.mode === 'byok'
+          ? 'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-300 hover:text-blue-600'
+      }`}
+    >
+      <KeyRound size={compact ? 12 : 14} />
+      <span className={compact ? 'text-[10px]' : 'hidden sm:inline'}>{agentSettings.mode === 'byok' ? 'Your key' : 'AI keys'}</span>
+    </button>
+  );
+
   // Shown in whichever right-rail header is mounted, trending or agent.
   const railControls = (
+    <div className="flex items-center gap-1.5">
+    {aiKeysButton('rail-ai-keys', true)}
     <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
       <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
         {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
@@ -373,6 +393,7 @@ export default function App() {
       <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
         Wk {activeWeek || "-"}
       </div>
+    </div>
     </div>
   );
   const rightRailVisible = showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS';
@@ -478,7 +499,7 @@ export default function App() {
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
               {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'MY_TEAM', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
-                <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+                <button key={mode} onClick={() => setViewMode(mode)} title={mode === 'GAME_RANKS' ? 'Ranks' : mode === 'MY_TEAM' ? 'My team' : mode.charAt(0) + mode.slice(1).toLowerCase()} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 whitespace-nowrap transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'TEAMS' && <Shield size={14}/>}
@@ -492,10 +513,17 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
+                  {/* With both 20rem rails open the header only has the width for
+                      labels from ~1900px; at 2xl (1536px) they overflowed into the
+                      right rail and "MY TEAM" wrapped. Icons carry a title instead. */}
+                  <span className={`${showSidebars ? 'hidden min-[1900px]:inline' : 'hidden lg:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
                 </button>
               ))}
             </div>
+
+            {/* With the right rail on screen the key button lives in its header
+                (railControls); the main header has no room left at 1280-1400px. */}
+            <div className={rightRailVisible ? 'xl:hidden' : ''}>{aiKeysButton('header-ai-keys')}</div>
 
             <div className={`flex items-center gap-2 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm ${showSidebars ? 'lg:hidden' : ''}`}>
                 <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
@@ -539,12 +567,16 @@ export default function App() {
               <button onClick={() => { setViewMode('MY_TEAM'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Team</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
+              <button onClick={() => { openDock('settings'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">AI settings &amp; API keys</button>
             </div>
           </div>
         </SidePanelDrawer>
 
         {/* CONTENT */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        {/* Bottom padding clears the floating agent button: without it the last
+            row of every view (the final game's moneyline, at any width) sat
+            permanently underneath it with no way to scroll it into view. */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-28 md:pb-24 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">

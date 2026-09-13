@@ -16,7 +16,7 @@ from typing import Any
 
 import requests
 
-from ..config import logger
+from ..config import CURRENT_SEASON, logger
 from ..state import model_data
 
 SLEEPER_BASE = "https://api.sleeper.app/v1"
@@ -32,13 +32,23 @@ _CACHE_TTL = 300.0
 PROJECTED_POSITIONS = {"QB", "RB", "WR", "TE"}
 FLEX_POSITIONS = {"RB", "WR", "TE"}
 
+# Positions we show with Sleeper's own projection (Rotowire's, served by Sleeper)
+# and never make a start/sit call on. We are not built to evaluate them.
+EXTERNAL_POSITIONS = ("K", "DEF")
+SLEEPER_PROJECTIONS_URL = "https://api.sleeper.com/projections/nfl/{season}/{week}"
+_SCORING_FIELD = {"PPR": "pts_ppr", "Half PPR": "pts_half_ppr", "Standard": "pts_std"}
+
 
 class SleeperError(RuntimeError):
     """A Sleeper lookup failed in a way the caller should surface to the user."""
 
 
 def _get(path: str, ttl: float = _CACHE_TTL):
-    url = f"{SLEEPER_BASE}{path}"
+    return _get_url(f"{SLEEPER_BASE}{path}", ttl)
+
+
+def _get_url(url: str, ttl: float = _CACHE_TTL):
+    path = url
     now = time.time()
     hit = _CACHE.get(url)
     if hit and (now - hit[1]) < ttl:
@@ -155,6 +165,50 @@ def _gsis_to_sleeper(gsis_id: str) -> str | None:
     return (model_data.get("gsis_to_sleeper") or {}).get(gsis_id)
 
 
+def external_projections(season: int, week: int) -> dict[str, dict]:
+    """Sleeper id -> Sleeper's projection row, for the positions we don't model.
+
+    Returns {} when Sleeper is unreachable: the roster still loads, those
+    players just show no projection.
+    """
+    params = "&".join(f"position[]={p}" for p in EXTERNAL_POSITIONS)
+    url = f"{SLEEPER_PROJECTIONS_URL.format(season=season, week=week)}?season_type=regular&{params}"
+    try:
+        rows = _get_url(url, ttl=1800) or []
+    except SleeperError as exc:
+        logger.warning("Sleeper projections unavailable: %s", exc)
+        return {}
+    return {str(r.get("player_id")): r for r in rows if r.get("player_id") is not None}
+
+
+def _external_card(sleeper_id: str, row: dict | None, scoring_type: str, in_saved_lineup: bool,
+                   gsis: str | None) -> dict:
+    """A roster row for a kicker or defense, carrying Sleeper's number, not ours."""
+    row = row or {}
+    player = row.get("player") or {}
+    stats = row.get("stats") or {}
+    field = _SCORING_FIELD.get(scoring_type, "pts_ppr")
+    points = stats.get(field, stats.get("pts_ppr"))
+    position = (player.get("position") or ("DEF" if not str(sleeper_id).isdigit() else "K")).upper()
+    if position == "DEF":
+        name = " ".join(x for x in (player.get("first_name"), player.get("last_name")) if x) or f"{sleeper_id} D/ST"
+    else:
+        name = " ".join(x for x in (player.get("first_name"), player.get("last_name")) if x) or "Kicker"
+    return {
+        "sleeper_id": str(sleeper_id),
+        "player_id": gsis,
+        "player_name": name,
+        "position": position,
+        "team": row.get("team") or player.get("team") or (sleeper_id if position == "DEF" else None),
+        "opponent": row.get("opponent"),
+        "injury_status": player.get("injury_status") or "Active",
+        "image": None,
+        "prediction": round(float(points), 2) if points is not None else None,
+        "projection_source": "sleeper" if points is not None else None,
+        "in_saved_lineup": in_saved_lineup,
+    }
+
+
 def rostered_sleeper_ids(league_id: str) -> set[str]:
     """Every player on any roster in the league -- i.e. NOT a free agent."""
     taken: set[str] = set()
@@ -180,12 +234,28 @@ async def analyze_roster(league_id: str, roster_id: int, week: int) -> dict:
 
     league = get_league(league_id) or {}
     saved_starters = {str(p) for p in (roster.get("starters") or []) if p}
+    try:
+        season = int(league.get("season") or 0) or CURRENT_SEASON
+    except (TypeError, ValueError):
+        season = CURRENT_SEASON
+    external = external_projections(season, week)
 
-    cards, unmatched = [], []
+    cards, special, unmatched = [], [], []
     for sleeper_id in (roster.get("players") or []):
+        sleeper_id = str(sleeper_id)
         gsis = _sleeper_to_gsis(sleeper_id)
+        # Kickers and defenses: Sleeper's projection, never ranked or recommended.
+        # A team defense's Sleeper id is its abbreviation, so it never maps to a player.
+        ext_row = external.get(sleeper_id)
+        ext_pos = ((ext_row or {}).get("player") or {}).get("position")
+        profile_pos = _profile_position(gsis)
+        if ext_row is not None or not sleeper_id.isdigit() or profile_pos in EXTERNAL_POSITIONS \
+                or (ext_pos or "").upper() in EXTERNAL_POSITIONS:
+            special.append(_external_card(sleeper_id, ext_row, league.get("scoring_type") or "PPR",
+                                          sleeper_id in saved_starters, gsis))
+            continue
         if not gsis:
-            unmatched.append(str(sleeper_id))
+            unmatched.append(sleeper_id)
             continue
         try:
             card = await get_player_card(gsis, week)
@@ -208,11 +278,17 @@ async def analyze_roster(league_id: str, roster_id: int, week: int) -> dict:
     recommended = _recommend_lineup(ranked, league.get("roster_positions") or [])
     rec_ids = {c["sleeper_id"] for c in recommended}
 
-    # Where the model disagrees with what the user actually has set.
+    # Where the model disagrees with what the user actually has set. Only
+    # positions we project can disagree: a saved kicker is not a "sit".
     bench_but_should_start = [c for c in recommended if not c.get("in_saved_lineup")]
     start_but_should_sit = [
-        c for c in cards if c.get("in_saved_lineup") and c["sleeper_id"] not in rec_ids
+        c for c in cards
+        if c.get("in_saved_lineup") and c["sleeper_id"] not in rec_ids
+        and (c.get("position") or "").upper() in PROJECTED_POSITIONS
     ]
+    special_order = {p: i for i, p in enumerate(EXTERNAL_POSITIONS)}
+    special.sort(key=lambda c: (special_order.get(c["position"], 9), not c["in_saved_lineup"], -(c["prediction"] or 0)))
+    saved_special_total = sum(c["prediction"] or 0 for c in special if c["in_saved_lineup"])
 
     return {
         "league": league,
@@ -223,9 +299,24 @@ async def analyze_roster(league_id: str, roster_id: int, week: int) -> dict:
         "bench_but_should_start": bench_but_should_start,
         "start_but_should_sit": start_but_should_sit,
         "projected_total": round(sum(_proj(c) for c in recommended), 2),
-        "position_counts": _position_counts(cards),
+        # Kickers and defenses: Sleeper's projections, no recommendation.
+        "special_teams": special,
+        "special_teams_projected_total": round(saved_special_total, 2),
+        "position_counts": _position_counts(cards + special),
         "unmatched_sleeper_ids": unmatched,
     }
+
+
+def _profile_position(gsis: str | None) -> str | None:
+    """Our profile's position for a player, uppercased, or None."""
+    profile = model_data.get("df_profile")
+    if not gsis or profile is None or profile.is_empty() or "position" not in profile.columns:
+        return None
+    import polars as pl
+    hit = profile.filter(pl.col("player_id") == gsis)
+    if hit.is_empty():
+        return None
+    return (hit.row(0, named=True).get("position") or "").strip().upper() or None
 
 
 def _position_counts(cards: list[dict]) -> dict:

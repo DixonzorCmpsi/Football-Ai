@@ -34,6 +34,15 @@ type AgentChatValue = {
   quota: AgentQuota | null;
   /** null until the server has answered; false when the free tier has no key. */
   houseConfigured: boolean | null;
+  /** Re-reads today's allowance, e.g. after a storyline summary drew on it. */
+  refreshQuota: () => void;
+  /**
+   * Opens the floating dock from anywhere: straight to its settings (the header's
+   * "AI keys" button) or to the conversation (a page handing it a question).
+   */
+  openDock: (view: 'chat' | 'settings') => void;
+  /** The latest openDock() call, which the dock reacts to. */
+  dockRequest: { view: 'chat' | 'settings'; nonce: number } | null;
 };
 
 const AgentChatContext = createContext<AgentChatValue | null>(null);
@@ -43,6 +52,10 @@ export function AgentChatProvider({ children }: { children: ReactNode }) {
   const { read } = useAgentScreenContext();
   const [panelOpen, setPanelOpen] = useState(false);
   const [settings, setSettings] = useState<AgentSettings>(() => loadSettings());
+  const [dockRequest, setDockRequest] = useState<AgentChatValue['dockRequest']>(null);
+  const openDock = useCallback((view: 'chat' | 'settings') => {
+    setDockRequest({ view, nonce: Date.now() + Math.random() });
+  }, []);
   // Read at send time, like the screen descriptor, so ask() stays stable.
   const settingsRef = useRef(settings);
 
@@ -77,10 +90,14 @@ export function AgentChatProvider({ children }: { children: ReactNode }) {
       updateSettings,
       quota: chat.quota,
       houseConfigured: chat.houseConfigured,
+      refreshQuota: () => void chat.refreshQuota(),
+      openDock,
+      dockRequest,
     }),
     [
       chat.turns, chat.streaming, chat.activeTool, chat.lastAnswer, chat.stop, chat.reset,
-      chat.quota, chat.houseConfigured, ask, panelOpen, settings, updateSettings,
+      chat.quota, chat.houseConfigured, chat.refreshQuota, ask, panelOpen, settings, updateSettings,
+      openDock, dockRequest,
     ],
   );
 
