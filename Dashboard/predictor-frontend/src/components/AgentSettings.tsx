@@ -298,6 +298,24 @@ export default function AgentSettings({
         </div>
       )}
 
+      {/* Screen navigation: whether the assistant moves the screen automatically. */}
+      <label className="flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-300 border-t border-slate-200 dark:border-slate-700 pt-3">
+        <input
+          type="checkbox"
+          checked={draft.allowNavigation !== false}
+          onChange={(e) => set({ allowNavigation: e.target.checked })}
+          className="mt-0.5"
+          data-testid="agent-allow-navigation"
+        />
+        <span>
+          Let the assistant move my screen
+          <span className="block text-[10px] text-slate-400">
+            When on, asking about a player or game opens that page automatically. When off, a button
+            appears in the chat for you to open it yourself.
+          </span>
+        </span>
+      </label>
+
       <button
         type="button"
         disabled={!canSave}

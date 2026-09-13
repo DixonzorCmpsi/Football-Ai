@@ -91,6 +91,12 @@ export type AgentSettings = {
    * user's call. Off means sessionStorage, which is gone when the tab is.
    */
   remember: boolean;
+  /**
+   * Whether the assistant may move the user's screen automatically. When off,
+   * screen-action buttons appear in the chat for the user to click manually
+   * instead of the screen following the agent. On by default.
+   */
+  allowNavigation: boolean;
 };
 
 export const DEFAULT_SETTINGS: AgentSettings = {
@@ -100,6 +106,7 @@ export const DEFAULT_SETTINGS: AgentSettings = {
   model: '',
   baseUrl: '',
   remember: false,
+  allowNavigation: true,
 };
 
 export function loadSettings(): AgentSettings {
