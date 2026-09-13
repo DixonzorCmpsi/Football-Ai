@@ -17,6 +17,11 @@ import GameRanksView from './components/GameRanksView';
 import { getTeamColor } from './utils/nflColors';
 import { sizedPlayerImage } from './utils/playerImage';
 import SleeperView from './components/SleeperView';
+import AgentDock from './components/AgentDock';
+import AgentPanel from './components/AgentPanel';
+import { useAgentScreenContext } from './contexts/AgentScreenContext';
+import type { ScreenEntity } from './contexts/AgentScreenContext';
+import { useAgentChatContext } from './contexts/AgentChatContext';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
@@ -183,6 +188,10 @@ export default function App() {
   };
   const [showSidebars, setShowSidebars] = useState(true); 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // The agent's conversation and panel visibility are app-wide: the dock floats
+  // over every view and the panel takes the right rail's place.
+  const { panelOpen } = useAgentChatContext();
+  const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS' | 'GAME_RANKS'>('SCHEDULE');
@@ -288,6 +297,62 @@ export default function App() {
   const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(safeWeek);
   const { games, loadingSchedule } = useSchedule(safeWeek);
 
+  // Tell the agent which page it is being asked about. This is the coarse
+  // layer -- a mounted view that knows more (the game page knows both teams,
+  // a player page knows the player) refines it with useAgentScreen().
+  useEffect(() => {
+    const facts: string[] = [];
+    const entities: ScreenEntity[] = [];
+    let title = '';
+
+    switch (viewMode) {
+      case 'SCHEDULE':
+        title = 'the weekly schedule';
+        break;
+      case 'GAME':
+        title = selectedGame ? `the ${selectedGame.away} at ${selectedGame.home} game page` : 'a game page';
+        if (selectedGame) {
+          entities.push({ type: 'team', name: selectedGame.away, detail: 'away' });
+          entities.push({ type: 'team', name: selectedGame.home, detail: 'home' });
+        }
+        break;
+      case 'GAME_RANKS':
+        title = 'the start/sit ranks board';
+        break;
+      case 'HISTORY':
+        title = 'a player game log';
+        if (selectedHistoryId) facts.push(`player id ${selectedHistoryId}`);
+        break;
+      case 'COMPARE':
+        title = 'the player comparison view';
+        if (compareList.length) facts.push(`comparing player ids ${compareList.join(', ')}`);
+        break;
+      case 'TIERS':
+        title = 'the tier list';
+        break;
+      case 'TEAMS':
+        title = 'the team index';
+        break;
+      case 'TEAM_PAGE':
+        title = teamModal ? `the ${teamModal.team} team page` : 'a team page';
+        if (teamModal) entities.push({ type: 'team', name: teamModal.team });
+        break;
+      case 'MY_TEAM':
+        title = 'their own fantasy team (Sleeper)';
+        break;
+      case 'PLAYOFFS':
+        title = 'the playoff picture';
+        break;
+      case 'LOOKUP':
+        title = 'player lookup';
+        break;
+      default:
+        title = viewMode.replace(/_/g, ' ').toLowerCase();
+    }
+
+    setAgentScreen({ view: viewMode, title, week: activeWeek, facts, entities });
+  }, [viewMode, activeWeek, selectedGame, selectedHistoryId, compareList, teamModal, setAgentScreen]);
+
   if (isSyncing) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
@@ -298,6 +363,19 @@ export default function App() {
       </div>
     );
   }
+
+  // Shown in whichever right-rail header is mounted, trending or agent.
+  const railControls = (
+    <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
+      <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
+        {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
+      </button>
+      <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
+        Wk {activeWeek || "-"}
+      </div>
+    </div>
+  );
+  const rightRailVisible = showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS';
 
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
@@ -740,6 +818,11 @@ export default function App() {
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
         <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+          {/* The agent panel slots into this rail rather than overlaying the page.
+              Closing it restores the trending list exactly as it was -- the rail
+              is the only thing that changes. */}
+          {panelOpen ? <AgentPanel headerExtra={railControls} /> : (
+          <>
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>
               <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-1">
@@ -749,16 +832,7 @@ export default function App() {
               <p className="text-xs text-slate-400 dark:text-slate-500">Most Added Players (24h)</p>
             </div>
 
-            {/* Theme + Week Toggle (Desktop Sidebar) */}
-            <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
-                <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
-                  {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
-                </button>
-                
-                <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
-                    Wk {activeWeek || "-"}
-                </div>
-            </div>
+            {railControls}
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             {loadingUp ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
@@ -778,8 +852,14 @@ export default function App() {
               ))
             }
           </div>
+          </>
+          )}
         </aside>
       )}
+
+      {/* Agentic entry point: floating on every view, nudged clear of the right
+          rail when that rail is on screen. */}
+      <AgentDock offsetClass={rightRailVisible ? 'xl:right-[21.5rem]' : ''} />
     </div>
   );
 }
