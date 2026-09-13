@@ -49,10 +49,12 @@ export const fetchPlayers = async () => {
 };
 
 // --- 3. Search Players (Used by Lookup) ---
-export const searchPlayers = async (query: string) => {
+// `all` also returns linemen, defenders and specialists: they have profiles and
+// stats but no projection. `skill` is for places that need a projection.
+export const searchPlayers = async (query: string, scope: 'skill' | 'all' = 'skill') => {
   if (!query) return [];
   try {
-    const response = await fetch(`${API_BASE_URL}/players/search?q=${query}`);
+    const response = await fetch(`${API_BASE_URL}/players/search?q=${encodeURIComponent(query)}&scope=${scope}`);
     if (!response.ok) return [];
     return await response.json();
   } catch (e) {

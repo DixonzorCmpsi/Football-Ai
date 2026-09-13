@@ -65,13 +65,42 @@ async def health_check():
 
     return status
 
+SKILL_POSITIONS = ['QB', 'RB', 'WR', 'TE']
+
+
 @router.get('/players/search')
-async def search_players(q: str):
+async def search_players(q: str, scope: str = "skill", limit: int = 20):
+    """Players whose name contains `q`, best matches first.
+
+    `scope=skill` (the default) is for places that need a projection, such as
+    Compare. `scope=all` also finds linemen, defenders and specialists, whose
+    profiles and stats exist even though the model does not project them; without
+    it the lookup page could not reach them at all.
+    """
     if not q: return []
     try:
-        expr = (pl.col('player_name').str.to_lowercase().str.contains(q.lower()) & (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE'])))
-        return model_data["df_profile"].filter(expr).select(['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status']).head(20).to_dicts()
-    except: return []
+        needle = q.strip().lower()
+        df = model_data["df_profile"]
+        expr = pl.col('player_name').str.to_lowercase().str.contains(needle, literal=True)
+        if scope != "all":
+            expr = expr & pl.col('position').is_in(SKILL_POSITIONS)
+        name = pl.col('player_name').str.to_lowercase()
+        ranked = (
+            df.filter(expr)
+            .with_columns(
+                # exact name, then a name or surname starting with the query, then anywhere
+                pl.when(name == needle).then(0)
+                .when(name.str.starts_with(needle) | name.str.contains(f" {needle}", literal=True)).then(1)
+                .otherwise(2).alias("_match"),
+                pl.when(pl.col('status') == 'ACT').then(0).otherwise(1).alias("_inactive"),
+            )
+            .sort(["_match", "_inactive", "player_name"])
+        )
+        cols = [c for c in ['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'] if c in df.columns]
+        return ranked.select(cols).head(max(1, min(int(limit), 100))).to_dicts()
+    except Exception as exc:
+        logger.warning(f"player search failed for {q!r}: {exc}")
+        return []
 
 async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
     if not model_data.get("sleeper_map"): refresh_app_state() 
