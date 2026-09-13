@@ -478,7 +478,7 @@ export default function App() {
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
               {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'MY_TEAM', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
-                <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+                <button key={mode} onClick={() => setViewMode(mode)} title={mode === 'GAME_RANKS' ? 'Ranks' : mode === 'MY_TEAM' ? 'My team' : mode.charAt(0) + mode.slice(1).toLowerCase()} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 whitespace-nowrap transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'TEAMS' && <Shield size={14}/>}
@@ -492,7 +492,10 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
+                  {/* With both 20rem rails open the header only has the width for
+                      labels from ~1900px; at 2xl (1536px) they overflowed into the
+                      right rail and "MY TEAM" wrapped. Icons carry a title instead. */}
+                  <span className={`${showSidebars ? 'hidden min-[1900px]:inline' : 'hidden lg:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
                 </button>
               ))}
             </div>
@@ -544,7 +547,10 @@ export default function App() {
         </SidePanelDrawer>
 
         {/* CONTENT */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        {/* Bottom padding clears the floating agent button: without it the last
+            row of every view (the final game's moneyline, at any width) sat
+            permanently underneath it with no way to scroll it into view. */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-28 md:pb-24 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
