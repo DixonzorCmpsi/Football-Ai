@@ -41,6 +41,10 @@ class Provider:
     max_tokens_field: str = "max_tokens"
     # OpenRouter accepts a `models` list and falls through it when one is down or rate limited.
     supports_model_fallback: bool = False
+    # A local Ollama needs no key.
+    requires_key: bool = True
+    # Runs on the same machine as this backend; only offered where that makes sense.
+    local: bool = False
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -65,6 +69,18 @@ PROVIDERS: dict[str, Provider] = {
             key_env="OLLAMA_API_KEY",
             key_help_url="https://ollama.com/settings/keys",
             public_model_list=True,
+        ),
+        Provider(
+            id="ollama-local",
+            label="Ollama (this computer)",
+            # Operator-configured, never taken from the browser, so pointing it at
+            # loopback is not the SSRF hole a user-supplied URL would be.
+            base_url=os.getenv("OLLAMA_LOCAL_URL", "http://127.0.0.1:11434/v1").rstrip("/"),
+            key_env=None,
+            key_help_url="https://ollama.com/download",
+            public_model_list=True,
+            requires_key=False,
+            local=True,
         ),
         Provider(
             id="openai",
@@ -148,6 +164,25 @@ def check_custom_base_url(url: str, resolve=socket.getaddrinfo) -> str:
     return url.strip().rstrip("/")
 
 
+def local_providers_enabled() -> bool:
+    """Whether "this computer" providers make sense for this server.
+
+    On a laptop, the backend and Ollama share a machine. On Cloud Run there is no
+    Ollama next to the container, and offering it would only produce errors.
+    INFERENCE_LOCAL_OLLAMA=true/false overrides the guess.
+    """
+    setting = os.getenv("INFERENCE_LOCAL_OLLAMA", "auto").lower()
+    if setting in ("1", "true", "yes"):
+        return True
+    if setting in ("0", "false", "no"):
+        return False
+    return not os.getenv("K_SERVICE")  # set by Cloud Run
+
+
+def provider_available(provider: Provider) -> bool:
+    return not provider.local or local_providers_enabled()
+
+
 def catalog() -> list[dict]:
     """What the settings UI offers. No secrets, and no house configuration."""
     return [
@@ -156,8 +191,11 @@ def catalog() -> list[dict]:
             "label": p.label,
             "base_url": p.base_url,
             "requires_base_url": p.base_url is None,
+            "requires_key": p.requires_key,
+            "local": p.local,
             "key_help_url": p.key_help_url,
             "public_model_list": p.public_model_list,
         }
         for p in PROVIDERS.values()
+        if provider_available(p)
     ]

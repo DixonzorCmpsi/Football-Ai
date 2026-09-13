@@ -187,6 +187,47 @@ def test_byok_uses_the_users_key_provider_and_model(client, upstream):
     assert HOUSE_KEY not in json.dumps(call)
 
 
+def test_a_local_ollama_needs_no_key(client, upstream, monkeypatch):
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    local = proxy.resolve_byok("ollama-local", "", "qwen3:8b", None)
+    proxy.set_byok("conv-local000", "browser-local000", local)
+    proxy.begin_question("conv-local000")
+
+    assert _pi_call(client, _token("conv-local000", "browser-local000")).status_code == 200
+    call = upstream.calls[-1]
+    assert call["url"] == "http://127.0.0.1:11434/v1/chat/completions"
+    assert call["body"]["model"] == "qwen3:8b"
+    assert HOUSE_KEY not in json.dumps(call)
+
+
+def test_local_ollama_is_not_offered_on_cloud_run(env, monkeypatch):
+    from applications.api.services.inference_providers import catalog
+
+    monkeypatch.delenv("INFERENCE_LOCAL_OLLAMA", raising=False)
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    assert "ollama-local" in [p["id"] for p in catalog()]
+    monkeypatch.setenv("K_SERVICE", "football-ai-api")
+    assert "ollama-local" not in [p["id"] for p in catalog()]
+    with pytest.raises(ValueError):
+        proxy.resolve_byok("ollama-local", "", "qwen3:8b", None)
+    monkeypatch.setenv("INFERENCE_LOCAL_OLLAMA", "true")
+    assert "ollama-local" in [p["id"] for p in catalog()]
+
+
+def test_ollama_not_running_is_a_plain_terminal_message(client, monkeypatch):
+    monkeypatch.delenv("K_SERVICE", raising=False)
+
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(proxy, "_transport", httpx.MockTransport(refuse))
+    proxy.set_byok("conv-local111", "browser-local111", proxy.resolve_byok("ollama-local", "", "qwen3:8b", None))
+    proxy.begin_question("conv-local111")
+    response = _pi_call(client, _token("conv-local111", "browser-local111"))
+    assert response.status_code == 424, "a 5xx would make pi retry for ~15s before showing it"
+    assert "isn't running on this computer" in response.json()["error"]["message"]
+
+
 def test_byok_does_not_spend_the_house_budget(client, upstream, monkeypatch):
     monkeypatch.setenv("INFERENCE_HOUSE_DAILY_REQUEST_BUDGET", "0")
     proxy.set_byok("conv-byok1111", "browser-byok1111", proxy.resolve_byok("groq", USER_KEY, "some-model", None))

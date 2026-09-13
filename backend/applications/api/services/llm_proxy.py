@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..config import logger
 from ..secret_store import get_secret
-from .inference_providers import PROVIDERS, Provider, UnsafeUpstream, check_custom_base_url
+from .inference_providers import PROVIDERS, Provider, UnsafeUpstream, check_custom_base_url, provider_available
 
 # The model id pi is told about. The proxy maps it to real models, so switching
 # the house model or a user switching providers never touches pi's config.
@@ -38,6 +38,12 @@ MAX_CALLS_PER_QUESTION = int(os.getenv("AGENT_MAX_LLM_CALLS_PER_QUESTION", "8"))
 BYOK_TTL_SECONDS = float(os.getenv("AGENT_BYOK_TTL", "3600"))
 
 DEFAULT_HOUSE_MODELS = "google/gemma-4-31b-it:free,nvidia/nemotron-3-super-120b-a12b:free"
+
+
+OLLAMA_NOT_RUNNING = (
+    "Ollama isn't running on this computer. Start the Ollama app (or `ollama serve`), "
+    "then pick a model you've pulled."
+)
 
 
 class HouseUnavailable(RuntimeError):
@@ -72,12 +78,13 @@ def house_models() -> list[str]:
 
 
 def house_api_key() -> str | None:
-    return get_secret("INFERENCE_HOUSE_API_KEY") or get_secret(house_provider().key_env or "")
+    provider = house_provider()
+    return get_secret("INFERENCE_HOUSE_API_KEY") or (get_secret(provider.key_env) if provider.key_env else None)
 
 
 def house_upstream() -> Upstream:
     provider = house_provider()
-    key = house_api_key()
+    key = house_api_key() or ("ollama" if not provider.requires_key else None)
     if not key:
         raise HouseUnavailable(f"No API key for the free assistant (set {provider.key_env})")
     # Operator-controlled, so not subject to the BYOK URL checks. Lets a test
@@ -111,10 +118,12 @@ _lock = threading.Lock()
 def resolve_byok(provider_id: str, api_key: str, model: str, base_url: str | None) -> Upstream:
     """Validate a user's settings into an Upstream. Raises ValueError with a user-facing reason."""
     provider = PROVIDERS.get(provider_id)
-    if provider is None:
+    if provider is None or not provider_available(provider):
         raise ValueError(f"Unknown provider {provider_id!r}")
     if not api_key.strip():
-        raise ValueError("Enter an API key")
+        if provider.requires_key:
+            raise ValueError("Enter an API key")
+        api_key = "ollama"  # a local Ollama ignores it, but the header must be present
     if not model.strip():
         raise ValueError("Choose a model")
     if provider.base_url is None:
@@ -250,6 +259,9 @@ async def forward(body: dict, upstream: Upstream):
         response = await client.send(request, stream=bool(payload.get("stream")))
     except httpx.HTTPError as exc:
         await client.aclose()
+        if upstream.provider.local and isinstance(exc, httpx.ConnectError):
+            # Terminal, not retryable: pi would otherwise back off and retry for ~15s.
+            return _error(424, OLLAMA_NOT_RUNNING)  # 424, not 503: pi retries 5xx for ~15s
         return _error(502, f"Could not reach {upstream.label}: {type(exc).__name__}")
 
     if response.status_code >= 400:
@@ -291,12 +303,17 @@ async def list_models(provider_id: str, api_key: str | None, base_url: str | Non
     lists are returned whole.
     """
     provider = PROVIDERS.get(provider_id)
-    if provider is None:
+    if provider is None or not provider_available(provider):
         raise ValueError(f"Unknown provider {provider_id!r}")
     url = check_custom_base_url(base_url or "") if provider.base_url is None else provider.base_url
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     async with _client() as client:
-        response = await client.get(f"{url}/models", headers=headers)
+        try:
+            response = await client.get(f"{url}/models", headers=headers)
+        except httpx.ConnectError:
+            if provider.local:
+                raise ValueError(OLLAMA_NOT_RUNNING) from None
+            raise
     if response.status_code in (401, 403):
         raise ValueError(f"{provider.label} rejected the API key")
     response.raise_for_status()
