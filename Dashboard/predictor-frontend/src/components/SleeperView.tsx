@@ -14,16 +14,20 @@ import {
 } from '../lib/api';
 import { sizedPlayerImage } from '../utils/playerImage';
 
-interface SleeperViewProps {
+export interface SleeperViewProps {
   week: number;
   season: number;
   onOpenHistory?: (playerId: string) => void;
   /** Lets the host header's Back button walk back one step inside this view. */
   onInnerNav?: (entry: { label: string; back: () => void } | null) => void;
+  /** Drives the active tab from outside (deep links). */
+  requestedTab?: Tab | null;
+  /** Fires when the tab changes from inside the view. */
+  onTabChange?: (tab: Tab) => void;
 }
 
-type Stage = 'USER' | 'LEAGUE' | 'TEAM';
-type Tab = 'LINEUP' | 'WAIVERS' | 'LEAGUE';
+export type Stage = 'USER' | 'LEAGUE' | 'TEAM';
+export type Tab = 'LINEUP' | 'WAIVERS' | 'LEAGUE';
 
 const num = (v: unknown) => {
   const n = Number(v);
@@ -163,7 +167,7 @@ const PlayerRow: React.FC<{
   </div>
 );
 
-const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, onInnerNav }) => {
+const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, onInnerNav, requestedTab, onTabChange }) => {
   const [stage, setStage] = useState<Stage>('USER');
   const [username, setUsername] = useState('');
   const [seasonInput, setSeasonInput] = useState(season);
@@ -178,7 +182,25 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
   const [analysis, setAnalysis] = useState<any>(null);
   const [waivers, setWaivers] = useState<any>(null);
   const [leagueData, setLeagueData] = useState<LeagueInsightsData | null>(null);
-  const [tab, setTab] = useState<Tab>('LINEUP');
+  const [tab, setTabState] = useState<Tab>('LINEUP');
+  // onTabChange may come and go (App may pass a new callback identity), so hold
+  // it in a ref and expose a never-changing setTab. That keeps the dozen
+  // callbacks below stable without each one depending on the host's callback.
+  const onTabChangeRef = useRef(onTabChange);
+  onTabChangeRef.current = onTabChange;
+  const setTab = useCallback((next: Tab) => {
+    setTabState(next);
+    onTabChangeRef.current?.(next);
+  }, []);
+  // Only apply an external requestedTab once per new value; otherwise this view's
+  // own setTab (which also fires onTabChange) would loop. We track the last value
+  // we consumed so a repeat of the same tab is a no-op.
+  const lastRequestedTab = useRef<Tab | null>(null);
+  useEffect(() => {
+    if (!requestedTab || requestedTab === lastRequestedTab.current) return;
+    lastRequestedTab.current = requestedTab;
+    setTabState(requestedTab);
+  }, [requestedTab]);
   // Leagues the user pinned, kept in the browser so they are one click away on
   // every visit without re-entering a handle.
   const [pinned, setPinned] = useState<PinnedLeague[]>(() => loadSaved()?.pinned || []);
@@ -295,7 +317,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
         return next;
       });
     });
-  }, [league, week, run]);
+  }, [league, week, run, setTab]);
 
   const loadWaivers = useCallback(() => {
     if (!league) return;
@@ -304,7 +326,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     run(async () => {
       setWaivers(await fetchSleeperWaivers(league.league_id, week, 25));
     });
-  }, [league, week, waivers, run]);
+  }, [league, week, waivers, run, setTab]);
 
   const loadLeague = useCallback(() => {
     if (!league) return;
@@ -313,7 +335,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     run(async () => {
       setLeagueData(await fetchSleeperLeagueInsights(league.league_id, week, analysis?.roster_id ?? null));
     });
-  }, [league, week, analysis, leagueData, run]);
+  }, [league, week, analysis, leagueData, run, setTab]);
 
   const openPinned = useCallback((pin: PinnedLeague) => {
     run(async () => {
@@ -329,7 +351,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
         saveSession({ rosterId: pin.rosterId });
       }
     });
-  }, [run, week]);
+  }, [run, week, setTab]);
 
   const reset = useCallback(() => {
     clearSession();
@@ -357,7 +379,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       return { label: 'search', back: () => { setUser(null); setLeagues([]); setStage('USER'); } };
     }
     return null;
-  }, [analysis, tab, stage]);
+  }, [analysis, tab, stage, setTab]);
 
   useEffect(() => {
     if (!onInnerNav) return;
@@ -376,7 +398,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     if (analysis && tab === 'WAIVERS') out.push({ label: 'Waiver wire' });
     if (analysis && tab === 'LEAGUE') out.push({ label: 'League' });
     return out;
-  }, [stage, user, league, analysis, teams, tab]);
+  }, [stage, user, league, analysis, teams, tab, setTab]);
 
   const recommendedIds = useMemo(
     () => new Set((analysis?.recommended_starters || []).map((c: any) => c.sleeper_id)),

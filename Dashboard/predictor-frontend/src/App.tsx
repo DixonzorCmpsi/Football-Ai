@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users, KeyRound } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
@@ -22,6 +22,9 @@ import AgentPanel from './components/AgentPanel';
 import { useAgentScreenContext } from './contexts/AgentScreenContext';
 import type { ScreenEntity } from './contexts/AgentScreenContext';
 import { useAgentChatContext } from './contexts/AgentChatContext';
+import { formatAppUrl, parseAppUrl } from './lib/appUrl';
+import type { AppLocation } from './lib/appUrl';
+import type { Tab as SleeperTab } from './components/SleeperView';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
@@ -230,6 +233,133 @@ export default function App() {
         return [...prev, playerId];
     });
   }, []);
+
+  // --- URL ↔ state sync ---------------------------------------------------
+  // The URL is the single source of truth for which screen is showing, so a
+  // reload, a shared link, or the browser's Back button all restore the right
+  // view. We push on internal navigation and apply on popstate. A suppress flag
+  // stops the push effect from echoing the location we just applied.
+  const [sleeperTab, setSleeperTab] = useState<SleeperTab>('LINEUP');
+  const suppressPush = useRef(false);
+
+  // Builds the canonical AppLocation from the *current* app state. Drives the
+  // push effect: whenever the user navigates, this changes, and we push.
+  const currentLocation: AppLocation = useMemo(() => {
+    switch (viewMode) {
+      case 'GAME':
+        return selectedGame
+          ? { view: 'GAME', home: selectedGame.home, away: selectedGame.away }
+          : { view: 'SCHEDULE' };
+      case 'COMPARE':
+        return { view: 'COMPARE', ids: compareList };
+      case 'HISTORY':
+        return selectedHistoryId
+          ? { view: 'HISTORY', playerId: selectedHistoryId }
+          : { view: 'SCHEDULE' };
+      case 'TEAM_PAGE':
+        return teamModal
+          ? { view: 'TEAM_PAGE', team: teamModal.team, tab: (teamModal.initialTab ?? 'overview') }
+          : { view: 'TEAMS' };
+      case 'MY_TEAM':
+        return { view: 'MY_TEAM', tab: sleeperTab };
+      default:
+        return { view: viewMode } as AppLocation;
+    }
+  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab]);
+
+  // Map an AppLocation (from the URL or the agent) onto the app's state setters.
+  // Uses setViewModeRaw so a popstate doesn't grow the nav stack — the browser
+  // already manages the Back stack in that case.
+  const applyLocation = useCallback(
+    (loc: AppLocation, push: boolean) => {
+      suppressPush.current = true;
+      switch (loc.view) {
+        case 'SCHEDULE':
+          setViewModeRaw('SCHEDULE');
+          break;
+        case 'GAME':
+          setSelectedGame({ home: loc.home, away: loc.away });
+          setViewModeRaw('GAME');
+          break;
+        case 'LOOKUP':
+          setViewModeRaw('LOOKUP');
+          break;
+        case 'COMPARE':
+          setCompareList(loc.ids);
+          setViewModeRaw('COMPARE');
+          break;
+        case 'HISTORY':
+          setSelectedHistoryId(loc.playerId);
+          setHistoryFrom('SCHEDULE');
+          setViewModeRaw('HISTORY');
+          break;
+        case 'TRENDING':
+          setViewModeRaw('TRENDING');
+          break;
+        case 'PICKS':
+          setViewModeRaw('PICKS');
+          break;
+        case 'PLAYOFFS':
+          setViewModeRaw('PLAYOFFS');
+          break;
+        case 'TIERS':
+          setViewModeRaw('TIERS');
+          break;
+        case 'TEAMS':
+          setViewModeRaw('TEAMS');
+          break;
+        case 'GAME_RANKS':
+          setViewModeRaw('GAME_RANKS');
+          break;
+        case 'TEAM_PAGE':
+          setTeamModal({ team: loc.team, initialTab: loc.tab });
+          setViewModeRaw('TEAM_PAGE');
+          break;
+        case 'MY_TEAM':
+          setSleeperTab(loc.tab);
+          setViewModeRaw('MY_TEAM');
+          break;
+      }
+      // Re-allow pushing after this tick so the push effect sees the settled state.
+      Promise.resolve().then(() => { suppressPush.current = false; });
+      if (push) {
+        const url = formatAppUrl(loc);
+        window.history.pushState({ loc }, '', url);
+      }
+    },
+    [],
+  );
+
+  // On first mount: parse the URL the page loaded with and apply it. This is a
+  // replaceState, not a push, so the initial entry is correct.
+  useEffect(() => {
+    const loc = parseAppUrl(window.location.pathname + window.location.search);
+    if (loc && loc.view !== 'SCHEDULE') {
+      applyLocation(loc, false);
+      window.history.replaceState({ loc }, '', formatAppUrl(loc));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // popstate: the user hit Back/Forward, or the agent called pushState. Apply
+  // whatever the URL now says, without pushing again.
+  useEffect(() => {
+    const onPop = () => {
+      const loc = parseAppUrl(window.location.pathname + window.location.search);
+      if (loc) applyLocation(loc, false);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [applyLocation]);
+
+  // Push effect: when currentLocation changes because the user navigated inside
+  // the app, reflect it in the address bar. Suppressed while applying a popstate
+  // so we don't double-push.
+  useEffect(() => {
+    if (suppressPush.current) return;
+    const url = formatAppUrl(currentLocation);
+    window.history.pushState({ loc: currentLocation }, '', url);
+  }, [currentLocation]);
 
   // GameRanksView and TierListView stay mounted for the whole session (hidden via
   // display:none) so their local state survives navigation. That means an unstable
@@ -740,12 +870,14 @@ export default function App() {
           {/* VIEW: MY TEAM - import a Sleeper roster and analyze it. */}
           {viewMode === 'MY_TEAM' && (
             <div className="mx-auto w-full max-w-[1600px] px-2">
-              <SleeperView
-                week={safeWeek}
-                season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
-                onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
-                onInnerNav={handleInnerNav}
-              />
+            <SleeperView
+              week={safeWeek}
+              season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
+              onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+              onInnerNav={handleInnerNav}
+              requestedTab={sleeperTab}
+              onTabChange={setSleeperTab}
+            />
             </div>
           )}
 
