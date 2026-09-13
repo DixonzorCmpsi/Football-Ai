@@ -29,7 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,16 @@ class AgentBusy(RuntimeError):
     """That conversation is already mid-answer."""
 
 
+class AgentForbidden(RuntimeError):
+    """The conversation belongs to a different browser."""
+
+
+# (conversation_id, client_id, owner) -> (extra env vars, extra CLI args) for a new
+# pi process. The API installs one to hand pi its proxy token and model config;
+# with none installed pi runs on its own defaults (used by the transport tests).
+SessionEnvFactory = Callable[[str, "str | None", bool], "tuple[dict[str, str], list[str]]"]
+
+
 def _pi_entry() -> Path:
     """Absolute path to pi's CLI JS, read from the installed package manifest.
 
@@ -104,6 +114,9 @@ class _Session:
     last_used: float = field(default_factory=time.time)
     reader: threading.Thread | None = None
     stderr_tail: list[str] = field(default_factory=list)
+    # The browser that started this conversation. Another browser presenting the
+    # same conversation id is refused rather than handed this one's context.
+    client_id: str | None = None
 
     def alive(self) -> bool:
         return self.process.poll() is None
@@ -115,10 +128,14 @@ class AgentRuntime:
     def __init__(self) -> None:
         self._sessions: dict[str, _Session] = {}
         self._guard = threading.Lock()
+        self._session_env: SessionEnvFactory | None = None
+
+    def use_session_env(self, factory: SessionEnvFactory | None) -> None:
+        self._session_env = factory
 
     # -- lifecycle ---------------------------------------------------------
 
-    def _spawn(self, conversation_id: str) -> _Session:
+    def _spawn(self, conversation_id: str, client_id: str | None = None, owner: bool = False) -> _Session:
         entry = _pi_entry()
         args = [
             _node_executable(),
@@ -147,6 +164,10 @@ class AgentRuntime:
 
         env = os.environ.copy()
         env.setdefault("FOOTBALL_AI_API", os.getenv("FOOTBALL_AI_API", "http://127.0.0.1:8000"))
+        if self._session_env is not None:
+            extra_env, extra_args = self._session_env(conversation_id, client_id, owner)
+            env.update(extra_env)
+            args += extra_args
         # Startup network calls (update check, telemetry) add latency to the
         # first prompt and tell pi.dev when this app is running. Neither helps.
         env.setdefault("PI_OFFLINE", "1")
@@ -174,7 +195,7 @@ class AgentRuntime:
         except FileNotFoundError as exc:
             raise AgentUnavailable(f"could not start node ({_node_executable()}): {exc}") from exc
 
-        session = _Session(conversation_id=conversation_id, process=process)
+        session = _Session(conversation_id=conversation_id, process=process, client_id=client_id)
         session.reader = threading.Thread(
             target=self._read_stdout,
             args=(session,),
@@ -264,10 +285,12 @@ class AgentRuntime:
             for cid in list(self._sessions):
                 self._close(cid)
 
-    def _session_for(self, conversation_id: str) -> _Session:
+    def _session_for(self, conversation_id: str, client_id: str | None = None, owner: bool = False) -> _Session:
         with self._guard:
             self._reap()
             session = self._sessions.get(conversation_id)
+            if session and client_id is not None and session.client_id not in (None, client_id):
+                raise AgentForbidden(conversation_id)
             if session and session.alive():
                 session.last_used = time.time()
                 return session
@@ -276,13 +299,15 @@ class AgentRuntime:
             if len(self._sessions) >= MAX_SESSIONS:
                 oldest = min(self._sessions, key=lambda c: self._sessions[c].last_used)
                 self._close(oldest)
-            session = self._spawn(conversation_id)
+            session = self._spawn(conversation_id, client_id, owner)
             self._sessions[conversation_id] = session
             return session
 
     # -- prompting ---------------------------------------------------------
 
-    def prompt(self, conversation_id: str, message: str) -> Iterator[dict]:
+    def prompt(
+        self, conversation_id: str, message: str, client_id: str | None = None, owner: bool = False
+    ) -> Iterator[dict]:
         """Send a prompt and yield pi's events until the run settles.
 
         Yields raw pi events; shaping for the browser happens in the route so
@@ -295,7 +320,7 @@ class AgentRuntime:
         """
         for attempt in (0, 1):
             streamed = False
-            for event in self._run(conversation_id, message):
+            for event in self._run(conversation_id, message, client_id, owner):
                 if event.get("type") == "_dead_on_arrival":
                     if attempt == 0 and not streamed:
                         self.close(conversation_id)
@@ -307,8 +332,10 @@ class AgentRuntime:
             else:
                 return
 
-    def _run(self, conversation_id: str, message: str) -> Iterator[dict]:
-        session = self._session_for(conversation_id)
+    def _run(
+        self, conversation_id: str, message: str, client_id: str | None = None, owner: bool = False
+    ) -> Iterator[dict]:
+        session = self._session_for(conversation_id, client_id, owner)
         if not session.lock.acquire(blocking=False):
             raise AgentBusy(conversation_id)
         try:

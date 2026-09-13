@@ -20,6 +20,10 @@ const API_BASE = (process.env.FOOTBALL_AI_API || "http://127.0.0.1:8000").replac
 // otherwise leaves the user watching a spinner with no way to tell why.
 const TOOL_TIMEOUT_MS = Number(process.env.FOOTBALL_AI_TOOL_TIMEOUT_MS || 60_000);
 
+// Minted by the backend for this conversation. The tool endpoints are not a public
+// API, and this is also how the backend knows whose session a tool call belongs to.
+const SESSION_TOKEN = process.env.FOOTBALL_AI_PROXY_TOKEN || "";
+
 interface JsonSchema {
 	type: string;
 	items?: { type: string };
@@ -66,7 +70,9 @@ function buildParameters(spec: ToolSpec) {
 
 async function fetchJson(path: string, init?: RequestInit, timeoutMs = TOOL_TIMEOUT_MS) {
 	const timer = AbortSignal.timeout(timeoutMs);
-	const response = await fetch(`${API_BASE}${path}`, { ...init, signal: timer });
+	const headers = new Headers(init?.headers);
+	if (SESSION_TOKEN) headers.set("authorization", `Bearer ${SESSION_TOKEN}`);
+	const response = await fetch(`${API_BASE}${path}`, { ...init, headers, signal: timer });
 	if (!response.ok) {
 		throw new Error(`${path} -> HTTP ${response.status} ${await response.text()}`);
 	}
