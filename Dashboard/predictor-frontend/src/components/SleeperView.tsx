@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff, Scale, Check, X } from 'lucide-react';
 import PlayerCompareModal from './PlayerCompareModal';
+import LeagueInsights from './LeagueInsights';
+import type { LeagueInsightsData } from './LeagueInsights';
 import {
   fetchSleeperUser,
   fetchSleeperLeague,
   fetchSleeperRosterAnalysis,
   fetchSleeperWaivers,
+  fetchSleeperLeagueInsights,
   type SleeperLeague,
   type SleeperTeam,
 } from '../lib/api';
@@ -20,7 +23,7 @@ interface SleeperViewProps {
 }
 
 type Stage = 'USER' | 'LEAGUE' | 'TEAM';
-type Tab = 'LINEUP' | 'WAIVERS';
+type Tab = 'LINEUP' | 'WAIVERS' | 'LEAGUE';
 
 const num = (v: unknown) => {
   const n = Number(v);
@@ -174,6 +177,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
   const [teams, setTeams] = useState<SleeperTeam[]>([]);
   const [analysis, setAnalysis] = useState<any>(null);
   const [waivers, setWaivers] = useState<any>(null);
+  const [leagueData, setLeagueData] = useState<LeagueInsightsData | null>(null);
   const [tab, setTab] = useState<Tab>('LINEUP');
   // Leagues the user pinned, kept in the browser so they are one click away on
   // every visit without re-entering a handle.
@@ -281,6 +285,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     run(async () => {
       setAnalysis(await fetchSleeperRosterAnalysis(league.league_id, rosterId, week));
       setWaivers(null);
+      setLeagueData(null);
       setTab('LINEUP');
       saveSession({ rosterId });
       setPinned((prev) => {
@@ -300,6 +305,15 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       setWaivers(await fetchSleeperWaivers(league.league_id, week, 25));
     });
   }, [league, week, waivers, run]);
+
+  const loadLeague = useCallback(() => {
+    if (!league) return;
+    setTab('LEAGUE');
+    if (leagueData && leagueData.league.week === week && leagueData.league.league_id === league.league_id) return;
+    run(async () => {
+      setLeagueData(await fetchSleeperLeagueInsights(league.league_id, week, analysis?.roster_id ?? null));
+    });
+  }, [league, week, analysis, leagueData, run]);
 
   const openPinned = useCallback((pin: PinnedLeague) => {
     run(async () => {
@@ -330,7 +344,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
   // the previous one rather than dumping them at the username form (or, worse,
   // out of the view entirely) and making them type their handle again.
   const backStep = useMemo(() => {
-    if (analysis && tab === 'WAIVERS') {
+    if (analysis && (tab === 'WAIVERS' || tab === 'LEAGUE')) {
       return { label: 'lineup', back: () => setTab('LINEUP') };
     }
     if (analysis) {
@@ -360,6 +374,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       out.push({ label: t?.team_name || `Roster ${analysis.roster_id}`, onClick: tab !== 'LINEUP' ? () => setTab('LINEUP') : undefined });
     }
     if (analysis && tab === 'WAIVERS') out.push({ label: 'Waiver wire' });
+    if (analysis && tab === 'LEAGUE') out.push({ label: 'League' });
     return out;
   }, [stage, user, league, analysis, teams, tab]);
 
@@ -620,6 +635,14 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
             >
               Waiver wire
             </button>
+            <button
+              onClick={loadLeague}
+              data-testid="sleeper-tab-league"
+              data-active={tab === 'LEAGUE'}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold ${tab === 'LEAGUE' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+            >
+              League
+            </button>
             <button onClick={reset} data-testid="sleeper-reset" className="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
               Start over
             </button>
@@ -637,7 +660,11 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
             </div>
           </div>
 
-          {tab === 'LINEUP' ? (
+          {tab === 'LEAGUE' ? (
+            leagueData ? (
+              <LeagueInsights data={leagueData} onFindWaivers={() => loadWaivers()} />
+            ) : null
+          ) : tab === 'LINEUP' ? (
             <div className="grid gap-4 lg:grid-cols-2">
               <div>
                 <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5">

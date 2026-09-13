@@ -131,5 +131,8 @@ export const fetchSleeperLeague = (leagueId: string) =>
 export const fetchSleeperRosterAnalysis = (leagueId: string, rosterId: number, week: number) =>
   sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/roster/${rosterId}/analysis?week=${week}`);
 
-export const fetchSleeperWaivers = (leagueId: string, week: number, limit = 25) =>
+export const fetchSleeperLeagueInsights = (leagueId: string, week: number, rosterId?: number | null) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/insights?week=${week}${rosterId != null ? `&roster_id=${rosterId}` : ''}`);
+
+export const fetchSleeperWaivers =(leagueId: string, week: number, limit = 25) =>
   sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/waivers?week=${week}&limit=${limit}`);
