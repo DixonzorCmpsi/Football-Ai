@@ -807,7 +807,9 @@ async def get_team_roster_cards(team_abbr: str, week: int):
         ranked = read_db(q)
     except: pass
 
-    df_profile = model_data["df_profile"]
+    df_profile = model_data.get("df_profile")
+    if df_profile is None:
+        df_profile = pl.DataFrame()
     if ranked.is_empty() and ("team_abbr" in df_profile.columns or "team" in df_profile.columns):
         team_col = "team_abbr" if "team_abbr" in df_profile.columns else "team"
         candidates = df_profile.filter(
@@ -815,6 +817,13 @@ async def get_team_roster_cards(team_abbr: str, week: int):
             (pl.col("status") == "ACT")
         ).select(["player_id", "position"])
         ranked = candidates
+
+    # With no rankings and no profiles loaded (a cold start, or the database is
+    # down) there is no roster to build. That used to raise on the missing
+    # column and turn the whole matchup page into a 500, odds and all.
+    if "position" not in ranked.columns or "player_id" not in ranked.columns:
+        logger.warning("No roster source for %s week %s; returning an empty roster", team_abbr, week)
+        return []
 
     # --- OPTIMIZATION: Parallelize Player Card Fetching ---
     # Fetch all player cards concurrently to reduce wait time
