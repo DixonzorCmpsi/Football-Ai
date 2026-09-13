@@ -56,6 +56,28 @@ def test_a_player_with_no_history_keeps_the_model_signal():
     assert adjustment > 1.4
 
 
+def test_a_veteran_is_not_scored_as_a_rookie_before_history_loads(history, monkeypatch):
+    """Prior seasons load after startup; in that window the feature row's average stands in."""
+    history([])
+    monkeypatch.setitem(model_data, "df_features", pl.DataFrame([{
+        "player_id": "vet", "week": 1, "team": "CAR", "player_season_avg_points": 9.5,
+    }]))
+    monkeypatch.setitem(model_data, "df_player_stats", pl.DataFrame({"player_id": ["x"], "week": [0]}))
+    monkeypatch.setitem(model_data, "df_profile", pl.DataFrame([{"player_id": "vet", "team_abbr": "CAR", "position": "WR"}]))
+    monkeypatch.setattr(pr, "load_player_history_from_db", lambda pid, week: pl.DataFrame())
+
+    class Flat:
+        def predict(self, rows):
+            return [1.4]
+
+    monkeypatch.setitem(model_data, "models", {"WR": {"model": Flat(), "features": ["player_season_avg_points"]}})
+    parts: dict = {}
+    score, *_ = pr.run_base_prediction("vet", "WR", 1, parts)
+    assert parts["has_history"] is True
+    assert parts["season_avg"] == pytest.approx(9.5)
+    assert score == pytest.approx(9.5 + 1.4 - pr.DEVIATION_CENTER["WR"], abs=0.01)
+
+
 def test_zero_point_games_count_in_the_prior_season_average(history):
     history([_game("p", 2025, w, pts) for w, pts in [(1, 10), (2, 0), (3, 0), (4, 10)]])
     avg, games = pr.prior_season_average("p")
