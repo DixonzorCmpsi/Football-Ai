@@ -6,6 +6,7 @@ from datetime import datetime
 from ..config import logger, DB_CONNECTION_STRING, RAG_DIR, CURRENT_SEASON
 from ..state import model_data
 from .utils import enforce_types
+from ..db import read_db
 
 DERIVED_CACHE_KEYS = (
     "team_rankings_cache",
@@ -210,7 +211,7 @@ def load_data_source(query: str, csv_filename: str, retries: int = 3, retry_dela
         attempt = 0
         while attempt < retries:
             try:
-                df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+                df = read_db(query)
                 logger.info(f"DB Load successful: {csv_filename} (attempt {attempt+1})")
                 return enforce_types(df)
             except Exception as e:
@@ -508,7 +509,7 @@ def load_player_history_from_db(player_id: str, week: int, limit: int = 12):
         return pl.DataFrame()
     try:
         q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT {int(limit)}"
-        df = pl.read_database_uri(q, DB_CONNECTION_STRING)
+        df = read_db(q)
         return enforce_types(df)
     except Exception as e:
         logger.warning(f"load_player_history_from_db error: {e}")

@@ -16,7 +16,9 @@ set -euo pipefail
 #   FRONTEND_PORT (default 5273)
 #   DB_CONNECTION_STRING (default postgresql://admin:password@localhost:5432/football_ai)
 #   RUN_ETL_ON_STARTUP (default true for local mode)
-#   ALLOW_CSV_FALLBACK (default true for local mode)
+#   ALLOW_CSV_FALLBACK (default false). Set to true ONLY to run deliberately on the
+#                      last CSV snapshot. Defaulting it to true let a stopped Docker
+#                      daemon turn into silently stale data.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="${1:-docker}"
@@ -39,6 +41,15 @@ require_docker() {
     exit 1
   fi
   if ! docker info >/dev/null 2>&1; then
+    # Docker Desktop does not always come back after a reboot. On macOS, start it
+    # rather than fail (or, as this script used to, fall back to stale CSV data).
+    if [[ "$(uname -s)" == "Darwin" ]] && open -a Docker >/dev/null 2>&1; then
+      color "Docker is not running; starting Docker Desktop..."
+      for _ in $(seq 1 90); do
+        docker info >/dev/null 2>&1 && return 0
+        sleep 2
+      done
+    fi
     err "Docker is not running. Start Docker Desktop and retry."
     exit 1
   fi
@@ -65,15 +76,17 @@ ensure_db() {
 }
 
 ensure_db_or_csv_fallback() {
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    ensure_db
-    export DB_CONNECTION_STRING
-    export ALLOW_CSV_FALLBACK="${ALLOW_CSV_FALLBACK:-true}"
-  else
-    warn "Docker is not available; starting backend with CSV fallback data."
+  if [[ "${ALLOW_CSV_FALLBACK:-false}" == "true" ]] && ! { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; then
+    warn "=================================================================="
+    warn " WARNING: running on the LAST CSV SNAPSHOT, not the live database."
+    warn " Data is stale. Unset ALLOW_CSV_FALLBACK to require Postgres."
+    warn "=================================================================="
     unset DB_CONNECTION_STRING
-    export ALLOW_CSV_FALLBACK="true"
+    return 0
   fi
+  # Default: the live database is required. Failing loudly beats serving stale data.
+  ensure_db
+  export DB_CONNECTION_STRING
 }
 
 backend_ready() {
@@ -133,9 +146,10 @@ start_backend() {
     fastapi uvicorn polars sqlalchemy psycopg2-binary apscheduler joblib \
     xgboost scikit-learn nflreadpy requests python-dotenv
   export DB_CONNECTION_STRING
-  export ALLOW_CSV_FALLBACK="${ALLOW_CSV_FALLBACK:-true}"
+  export ALLOW_CSV_FALLBACK="${ALLOW_CSV_FALLBACK:-false}"
   export RUN_ETL_ON_STARTUP="${RUN_ETL_ON_STARTUP:-true}"
-  exec uvicorn applications.server:app --reload --host 0.0.0.0 --port "$BACKEND_PORT"
+  # The venv's interpreter by path, not whatever `uvicorn` PATH resolves to.
+  exec .venv/bin/python -m uvicorn applications.server:app --reload --host 0.0.0.0 --port "$BACKEND_PORT"
 }
 
 ensure_backend() {

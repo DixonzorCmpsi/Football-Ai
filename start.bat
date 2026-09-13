@@ -7,7 +7,7 @@ rem Modes:
 rem   start.bat                 -> docker (full stack via docker compose)
 rem   start.bat local           -> local (Postgres in docker, backend+frontend on host)
 rem   start.bat frontend        -> frontend dev server; starts/checks backend first
-rem   start.bat backend         -> backend only (Postgres in docker if available, CSV fallback otherwise)
+rem   start.bat backend         -> backend only (Postgres in docker; starts Docker Desktop if it is not running)
 rem   start.bat db              -> database only (Postgres in docker)
 rem   start.bat stop            -> stop docker stack
 rem
@@ -16,7 +16,10 @@ rem   BACKEND_PORT (default 8000)
 rem   FRONTEND_PORT (default 5273)
 rem   DB_CONNECTION_STRING (default postgresql://admin:password@localhost:5432/football_ai)
 rem   RUN_ETL_ON_STARTUP (default true for local mode)
-rem   ALLOW_CSV_FALLBACK (default true for local mode)
+rem   ALLOW_CSV_FALLBACK (default false). Set to true ONLY to run deliberately on the
+rem                      last CSV snapshot. It used to default to true, and after a
+rem                      reboot (Docker Desktop not running) the backend silently served
+rem                      stale CSV data with no error anywhere.
 
 set "ROOT=%~dp0"
 set "MODE=%~1"
@@ -44,11 +47,26 @@ if errorlevel 1 (
   exit /b 1
 )
 docker info >nul 2>nul
-if errorlevel 1 (
-  echo Docker is not running. Start Docker Desktop and retry.
+if not errorlevel 1 exit /b 0
+rem Docker Desktop does not auto-start after every reboot. Start it rather than fail
+rem (or, as this script used to, quietly fall back to stale CSV data).
+set "DOCKER_DESKTOP=%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
+if not exist "%DOCKER_DESKTOP%" (
+  echo Docker is not running and Docker Desktop was not found at "%DOCKER_DESKTOP%". Start it and retry.
   exit /b 1
 )
-exit /b 0
+echo Docker is not running; starting Docker Desktop...
+start "" "%DOCKER_DESKTOP%"
+for /L %%I in (1,1,90) do (
+  docker info >nul 2>nul
+  if not errorlevel 1 (
+    echo Docker is running.
+    exit /b 0
+  )
+  timeout /t 2 /nobreak >nul
+)
+echo Docker Desktop did not start within 3 minutes. Start it manually and retry.
+exit /b 1
 
 :wait_db
 echo Waiting for Postgres to accept connections...
@@ -78,15 +96,28 @@ popd >nul
 exit /b %DB_READY_ERROR%
 
 :ensure_db_or_csv_fallback
+if /I not "%ALLOW_CSV_FALLBACK%"=="true" goto require_live_db
 call :require_docker
-if errorlevel 1 (
-  echo Docker is not available; starting backend with CSV fallback data.
-  set "DB_CONNECTION_STRING="
-  set "ALLOW_CSV_FALLBACK=true"
+if not errorlevel 1 (
+  call :ensure_db || exit /b 1
   exit /b 0
 )
-call :ensure_db || exit /b 1
-if "%ALLOW_CSV_FALLBACK%"=="" set "ALLOW_CSV_FALLBACK=true"
+echo.
+echo ==================================================================
+echo  WARNING: running on the LAST CSV SNAPSHOT, not the live database.
+echo  Data is stale. Unset ALLOW_CSV_FALLBACK to require Postgres.
+echo ==================================================================
+echo.
+set "DB_CONNECTION_STRING="
+exit /b 0
+
+:require_live_db
+rem Default: the live database is required. Failing loudly beats serving stale data.
+call :ensure_db
+if errorlevel 1 (
+  echo Postgres is required. To run on the last CSV snapshot instead, set ALLOW_CSV_FALLBACK=true.
+  exit /b 1
+)
 exit /b 0
 
 :backend_ready
@@ -149,7 +180,8 @@ echo Launching backend and frontend in separate windows.
 start "Football AI Backend" cmd /k ""%~f0" backend"
 call :wait_backend || exit /b 1
 start "Football AI Frontend" cmd /k ""%~f0" frontend"
-echo -^> Frontend:  http://localhost:%FRONTEND_PORT%
+echo -^> Frontend:  see the "Football AI Frontend" window for its URL. It moves off
+echo              %FRONTEND_PORT% if Windows has reserved that port.
 echo -^> Backend:   http://localhost:%BACKEND_PORT%
 echo -^> Postgres:  localhost:5432 (admin/password)
 exit /b 0
@@ -164,24 +196,63 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
   )
 )
-call ".venv\Scripts\activate.bat"
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet -r requirements.txt
+rem Always the venv's interpreter, by full path, so a failed or skipped activate.bat
+rem can never leave PATH pointing at the system Python, which lacks the backend deps
+rem (apscheduler, mcp). Note: on Windows the venv's python.exe is a launcher that runs
+rem the base interpreter as a child, so "Python312\python.exe -m uvicorn" in a process
+rem list is still this venv.
+set "PY=%CD%\.venv\Scripts\python.exe"
+"%PY%" -m pip install --quiet --upgrade pip
+"%PY%" -m pip install --quiet -r requirements.txt
 if errorlevel 1 (
   echo requirements.txt install failed; installing minimum backend dependencies.
-  python -m pip install --quiet fastapi uvicorn polars sqlalchemy psycopg2-binary apscheduler joblib xgboost scikit-learn nflreadpy requests python-dotenv
+  "%PY%" -m pip install --quiet fastapi uvicorn polars sqlalchemy psycopg2-binary apscheduler joblib xgboost scikit-learn nflreadpy requests python-dotenv
   if errorlevel 1 (
     popd >nul
     exit /b 1
   )
 )
-if "%ALLOW_CSV_FALLBACK%"=="" set "ALLOW_CSV_FALLBACK=true"
+call :repair_pyarrow
+set "PICKED_PORT="
+for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\find_free_port.ps1" -Preferred %BACKEND_PORT% -Fallbacks %BACKEND_PORT%') do set "PICKED_PORT=%%P"
+if not "!PICKED_PORT!"=="%BACKEND_PORT%" (
+  echo Backend port %BACKEND_PORT% is not available: another process holds it, or Windows
+  echo has reserved it. Check: netsh interface ipv4 show excludedportrange protocol=tcp
+  echo The backend is not moved automatically, because the frontend proxy, .mcp.json and
+  echo the agent extension all expect it on %BACKEND_PORT%. Set BACKEND_PORT to override.
+  popd >nul
+  exit /b 1
+)
 if "%RUN_ETL_ON_STARTUP%"=="" set "RUN_ETL_ON_STARTUP=true"
 set "DB_CONNECTION_STRING=%DB_CONNECTION_STRING%"
-python -m uvicorn applications.server:app --reload --host 0.0.0.0 --port %BACKEND_PORT%
+"%PY%" -m uvicorn applications.server:app --reload --host 0.0.0.0 --port %BACKEND_PORT%
 set "BACKEND_ERROR=%ERRORLEVEL%"
 popd >nul
 exit /b %BACKEND_ERROR%
+
+:repair_pyarrow
+rem pyarrow's DLL can be blocked by Windows Application Control (seen after a reboot
+rem on 2026-09-12). Force-reinstalling the same version cleared it. The backend now
+rem survives a block anyway (backend/db_read.py falls back to SQLAlchemy), so this
+rem only restores the fast path and never stops startup.
+"%PY%" -c "import pyarrow" >nul 2>nul
+if not errorlevel 1 exit /b 0
+echo pyarrow failed to import (possibly blocked by Windows Application Control); reinstalling it...
+set "PYARROW_VERSION="
+for /f "tokens=2" %%V in ('call "%PY%" -m pip show pyarrow 2^>nul ^| findstr /B /C:"Version:"') do set "PYARROW_VERSION=%%V"
+if defined PYARROW_VERSION (
+  "%PY%" -m pip install --quiet --force-reinstall --no-deps --no-cache-dir pyarrow==!PYARROW_VERSION!
+) else (
+  "%PY%" -m pip install --quiet --no-cache-dir pyarrow
+)
+"%PY%" -c "import pyarrow" >nul 2>nul
+if errorlevel 1 (
+  echo pyarrow is still blocked. The backend will use its slower SQLAlchemy read path.
+  echo To restore the fast path, allow pyarrow's DLL in Windows Security.
+) else (
+  echo pyarrow repaired.
+)
+exit /b 0
 
 :create_venv
 where py >nul 2>nul
@@ -214,7 +285,22 @@ exit /b 1
 :frontend
 call :ensure_backend || exit /b 1
 pushd "%ROOT%Dashboard\predictor-frontend" >nul
-echo Starting frontend on :%FRONTEND_PORT%
+rem Windows reserves port ranges at boot for Hyper-V/WinNAT, and they move between
+rem boots. 5273 fell inside 5249-5348 on 2026-09-12 and Vite died with "listen EACCES".
+rem Vite only retries on "in use", not on EACCES, so choose a free port up front.
+rem Moving the frontend is safe: it reaches the backend through its own /api proxy.
+set "PICKED_PORT="
+for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\find_free_port.ps1" -Preferred %FRONTEND_PORT%') do set "PICKED_PORT=%%P"
+if "!PICKED_PORT!"=="" (
+  echo No free port found for the frontend. Check: netsh interface ipv4 show excludedportrange protocol=tcp
+  popd >nul
+  exit /b 1
+)
+if not "!PICKED_PORT!"=="%FRONTEND_PORT%" (
+  echo Port %FRONTEND_PORT% is reserved by Windows or in use; using !PICKED_PORT! instead.
+  set "FRONTEND_PORT=!PICKED_PORT!"
+)
+echo Starting frontend on :!FRONTEND_PORT!
 if not exist "node_modules" (
   echo Installing frontend dependencies...
   call npm install
@@ -224,7 +310,10 @@ if not exist "node_modules" (
   )
 )
 set "VITE_API_BASE_URL=http://localhost:%BACKEND_PORT%/api"
-call npm run dev -- --port %FRONTEND_PORT% --host
+rem --strictPort: the port was just verified free. If it is taken in the gap, fail
+rem visibly instead of letting Vite drift to a port nobody was told about.
+echo -^> Frontend:  http://localhost:!FRONTEND_PORT!
+call npm run dev -- --port !FRONTEND_PORT! --strictPort --host
 set "FRONTEND_ERROR=%ERRORLEVEL%"
 popd >nul
 exit /b %FRONTEND_ERROR%

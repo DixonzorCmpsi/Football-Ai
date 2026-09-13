@@ -7,6 +7,7 @@ from ..config import logger, DB_CONNECTION_STRING, CURRENT_SEASON
 from ..state import model_data
 from .utils import calculate_fantasy_points, get_team_abbr, normalize_name, get_headshot_url, format_draft_info
 from .data_loader import load_player_history_from_db
+from ..db import read_db
 
 def get_injury_status_for_week(player_id: str, week: int, default="Active"):
     """
@@ -342,7 +343,7 @@ def run_base_prediction(pid, pos, week):
             else:
                 try:
                     q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{mate_id}' AND week < {int(week)} ORDER BY week DESC"
-                    mate_stats = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                    mate_stats = read_db(q)
                 except Exception as e:
                     mate_stats = pl.DataFrame()
 
@@ -440,7 +441,7 @@ async def get_player_card(player_id: str, week: int):
         if (not rolling_avg_val or rolling_avg_val == 0) and DB_CONNECTION_STRING:
             try:
                 q = f"SELECT y_fantasy_points_ppr, passing_yards, rushing_yards, receiving_yards, receptions, passing_touchdown, rush_touchdown, receiving_touchdown, interceptions, fumbles_lost, week FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 12"
-                hist_df = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                hist_df = read_db(q)
                 if not hist_df.is_empty():
                     pts = []
                     for row in hist_df.iter_rows(named=True):
@@ -476,7 +477,7 @@ async def get_player_card(player_id: str, week: int):
             else:
                 # DB lookup for last snap counts
                 q = f"SELECT * FROM weekly_snap_counts_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 1"
-                history_snaps = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                history_snaps = read_db(q)
 
             if not history_snaps.is_empty():
                 last_game = history_snaps.row(0, named=True)
@@ -646,7 +647,7 @@ async def get_player_card(player_id: str, week: int):
             if sched_df is None or sched_df.is_empty():
                 # fallback to DB schedule read (ensure DB-only behavior)
                 try:
-                    sched_df = pl.read_database_uri(f"SELECT * FROM schedule", DB_CONNECTION_STRING)
+                    sched_df = read_db(f"SELECT * FROM schedule")
                 except Exception:
                     sched_df = pl.DataFrame()
 
@@ -721,7 +722,7 @@ async def get_team_roster_cards(team_abbr: str, week: int):
     ranked = pl.DataFrame()
     try:
         q = f"SELECT player_id, position FROM weekly_rankings WHERE week={week} AND team_abbr='{team_abbr}' ORDER BY predicted_points DESC"
-        ranked = pl.read_database_uri(q, DB_CONNECTION_STRING)
+        ranked = read_db(q)
     except: pass
 
     df_profile = model_data["df_profile"]
@@ -805,7 +806,7 @@ def find_usage_boost_reason(player_id: str, week: int):
                     mate_stats = model_data["df_player_stats"].filter((pl.col('player_id') == mate_id) & (pl.col('week') < int(week)))
                 else:
                     q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{mate_id}' AND week < {int(week)} ORDER BY week DESC"
-                    mate_stats = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                    mate_stats = read_db(q)
 
                 if mate_stats.is_empty():
                     continue

@@ -7,6 +7,7 @@ from ..services.prediction import get_player_card
 from ..services.utils import calculate_fantasy_points, get_team_abbr
 from ..config import logger, DB_CONNECTION_STRING, CURRENT_SEASON
 from .tier_list import _fetch_team_weekly_from_nflreadpy, _load_team_weekly_table, _rank_asc, _rank_desc
+from ..db import read_db
 
 router = APIRouter()
 
@@ -419,7 +420,7 @@ async def get_player_history(player_id: str):
         if cur.is_empty() and DB_CONNECTION_STRING:
             try:
                 q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}'"
-                cur = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                cur = read_db(q)
             except Exception:
                 cur = pl.DataFrame()
         if not cur.is_empty():
