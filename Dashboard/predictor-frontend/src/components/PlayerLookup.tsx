@@ -7,6 +7,9 @@ import { searchPlayers } from '../lib/api';
 import type { PlayerData } from '../types';
 import { sizedPlayerImage } from '../utils/playerImage';
 
+const PROJECTED_POSITIONS = new Set(['QB', 'RB', 'WR', 'TE']);
+const isProjected = (position?: string) => PROJECTED_POSITIONS.has((position || '').toUpperCase());
+
 interface PlayerLookupProps {
   onViewHistory: (playerId: string) => void;
   compareList: string[]; 
@@ -47,7 +50,7 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
     }
 
     let active = true;
-    searchPlayers(debouncedQuery).then((res: any[]) => {
+    searchPlayers(debouncedQuery, 'all').then((res: any[]) => {
         if (active) setResults(res as SearchResult[]);
     }).catch(console.error);
 
@@ -55,8 +58,15 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
   }, [debouncedQuery, targetPlayerId]);
 
   const handleSelect = (player: SearchResult) => {
-    setQuery(player.player_name); 
+    setQuery(player.player_name);
     setResults([]); // Clear results immediately
+    // Only skill players have a projection card. For a lineman or defender the
+    // card would read "0.0 projected", so go straight to the profile, which
+    // carries their storylines and stats.
+    if (!isProjected(player.position)) {
+      onViewHistory(player.player_id);
+      return;
+    }
     setTargetPlayerId(player.player_id); // Set target ID
   };
 
@@ -139,7 +149,10 @@ const PlayerLookupView: React.FC<PlayerLookupProps> = ({
               >
                 <div>
                   <div className="font-bold text-slate-800 dark:text-slate-200 text-sm group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{p.player_name}</div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{p.position} • {p.team_abbr || p.team}</div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    {p.position} • {p.team_abbr || p.team}
+                    {!isProjected(p.position) && <span className="ml-1.5 normal-case tracking-normal font-semibold">· profile &amp; stats</span>}
+                  </div>
                 </div>
                 {p.headshot && (
                   <img
