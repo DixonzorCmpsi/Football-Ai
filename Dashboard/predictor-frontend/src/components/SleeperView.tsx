@@ -20,8 +20,12 @@ export interface SleeperViewProps {
   onOpenHistory?: (playerId: string) => void;
   /** Lets the host header's Back button walk back one step inside this view. */
   onInnerNav?: (entry: { label: string; back: () => void } | null) => void;
-  /** Drives the active tab from outside (deep links). */
-  requestedTab?: Tab | null;
+  /**
+   * Drives the active tab from outside (deep links, the assistant). A new nonce
+   * per request, so the same tab can be requested twice in a row. Opens through
+   * the same loaders the tab buttons use, so data is fetched.
+   */
+  requestedTab?: { tab: Tab; nonce: number } | null;
   /** Fires when the tab changes from inside the view. */
   onTabChange?: (tab: Tab) => void;
 }
@@ -192,15 +196,6 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     setTabState(next);
     onTabChangeRef.current?.(next);
   }, []);
-  // Only apply an external requestedTab once per new value; otherwise this view's
-  // own setTab (which also fires onTabChange) would loop. We track the last value
-  // we consumed so a repeat of the same tab is a no-op.
-  const lastRequestedTab = useRef<Tab | null>(null);
-  useEffect(() => {
-    if (!requestedTab || requestedTab === lastRequestedTab.current) return;
-    lastRequestedTab.current = requestedTab;
-    setTabState(requestedTab);
-  }, [requestedTab]);
   // Leagues the user pinned, kept in the browser so they are one click away on
   // every visit without re-entering a handle.
   const [pinned, setPinned] = useState<PinnedLeague[]>(() => loadSaved()?.pinned || []);
@@ -337,6 +332,21 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     });
   }, [league, week, analysis, leagueData, run, setTab]);
 
+  // A tab requested from outside (deep link, the assistant) opens through the
+  // same loaders the tab buttons use, so the tab's data actually loads —
+  // otherwise the League and Waivers areas render empty. The request is kept
+  // until it can run: loadLeague needs `analysis` to know which row is the
+  // user's, so a request that arrives before the roster is connected waits.
+  const appliedRequest = useRef<number | null>(null);
+  useEffect(() => {
+    if (!requestedTab || requestedTab.nonce === appliedRequest.current) return;
+    if (stage !== 'TEAM' || !league) return; // not connected yet: retry once it is
+    appliedRequest.current = requestedTab.nonce;
+    if (requestedTab.tab === 'WAIVERS') loadWaivers();
+    else if (requestedTab.tab === 'LEAGUE') loadLeague();
+    else setTab('LINEUP');
+  }, [requestedTab, stage, league, loadWaivers, loadLeague, setTab]);
+
   const openPinned = useCallback((pin: PinnedLeague) => {
     run(async () => {
       const data = await fetchSleeperLeague(pin.league_id);
@@ -362,16 +372,17 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
   }, []);
 
   // ---- one granular step back --------------------------------------------
-  // Each of these is a place the user can actually be, so Back should land on
-  // the previous one rather than dumping them at the username form (or, worse,
-  // out of the view entirely) and making them type their handle again.
+  // Before a roster is connected, the stages (search → leagues → team) are the
+  // user's only way around, so Back should walk them rather than dump them at
+  // the username form and make them type their handle again.
+  //
+  // Once a roster IS connected, Back must leave the page: the tabs are peer
+  // navigation with visible buttons, and swallowing a Back press to flip tabs
+  // or drop back to the teams list would keep the user here when they asked to
+  // go back to where they were (e.g. right after the assistant moved them).
+  // Returning is cheap — the session is saved and /my-team restores it.
   const backStep = useMemo(() => {
-    if (analysis && (tab === 'WAIVERS' || tab === 'LEAGUE')) {
-      return { label: 'lineup', back: () => setTab('LINEUP') };
-    }
-    if (analysis) {
-      return { label: 'teams', back: () => { setAnalysis(null); setWaivers(null); saveSession({ rosterId: null }); } };
-    }
+    if (analysis) return null;
     if (stage === 'TEAM') {
       return { label: 'leagues', back: () => { setLeague(null); setTeams([]); setStage('LEAGUE'); saveSession({ leagueId: null, rosterId: null }); } };
     }
@@ -379,7 +390,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       return { label: 'search', back: () => { setUser(null); setLeagues([]); setStage('USER'); } };
     }
     return null;
-  }, [analysis, tab, stage, setTab]);
+  }, [analysis, stage]);
 
   useEffect(() => {
     if (!onInnerNav) return;

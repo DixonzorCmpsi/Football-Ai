@@ -12,7 +12,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAgentChat } from '../hooks/useAgentChat';
-import type { AgentQuota, AgentTurn } from '../hooks/useAgentChat';
+import type { AgentQuota, AgentScreenAction, AgentTurn } from '../hooks/useAgentChat';
 import { loadSettings, saveSettings } from '../lib/agentIdentity';
 import type { AgentSettings } from '../lib/agentIdentity';
 import { useAgentScreenContext } from './AgentScreenContext';
@@ -43,8 +43,17 @@ type AgentChatValue = {
   openDock: (view: 'chat' | 'settings') => void;
   /** The latest openDock() call, which the dock reacts to. */
   dockRequest: { view: 'chat' | 'settings'; nonce: number } | null;
-  /** Screen actions the agent emitted in the last answer, for the host to apply. */
-  pendingActions: { url: string; label: string; tool: string }[];
+  /**
+   * Registers the host's screen-action handler. Actions are events: delivered
+   * the moment the stream carries them, never replayed from the transcript.
+   * Pass null to unregister.
+   */
+  setActionHandler: (fn: ((action: AgentScreenAction) => void) | null) => void;
+  /**
+   * Applies one action now — what the reopen buttons call. Bypasses the
+   * allowNavigation gate: a click is the user asking for it.
+   */
+  applyAgentAction: (action: AgentScreenAction) => void;
 };
 
 const AgentChatContext = createContext<AgentChatValue | null>(null);
@@ -76,6 +85,24 @@ export function AgentChatProvider({ children }: { children: ReactNode }) {
     [chat, read],
   );
 
+  // The host (App) registers the real applier — navigation logic lives there.
+  // The same function is both the event handler (registered via
+  // setActionHandler) and what the reopen buttons call (applyAgentAction):
+  // a click is the user asking for it, so it works regardless of the
+  // allowNavigation gate.
+  const actionApplierRef = useRef<((action: AgentScreenAction) => void) | null>(null);
+  const chatSetActionHandler = chat.setActionHandler;
+  const registerActionHandler = useCallback(
+    (fn: ((action: AgentScreenAction) => void) | null) => {
+      actionApplierRef.current = fn;
+      chatSetActionHandler(fn);
+    },
+    [chatSetActionHandler],
+  );
+  const applyAgentAction = useCallback((action: AgentScreenAction) => {
+    actionApplierRef.current?.(action);
+  }, []);
+
   const value = useMemo<AgentChatValue>(
     () => ({
       turns: chat.turns,
@@ -95,12 +122,13 @@ export function AgentChatProvider({ children }: { children: ReactNode }) {
       refreshQuota: () => void chat.refreshQuota(),
       openDock,
       dockRequest,
-      pendingActions: chat.lastAnswer?.actions || [],
+      setActionHandler: registerActionHandler,
+      applyAgentAction,
     }),
     [
       chat.turns, chat.streaming, chat.activeTool, chat.lastAnswer, chat.stop, chat.reset,
-      chat.quota, chat.houseConfigured, chat.refreshQuota, ask, panelOpen, settings, updateSettings,
-      openDock, dockRequest,
+      chat.quota, chat.houseConfigured, ask, panelOpen, settings, updateSettings,
+      openDock, dockRequest, registerActionHandler, applyAgentAction,
     ],
   );
 

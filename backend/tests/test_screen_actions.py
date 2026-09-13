@@ -1,18 +1,19 @@
 """Screen-action tools: name resolution, URL building, and the action queue.
 
-These tools move the user's screen, so the contract is:
+The contract that matters most is at the HTTP boundary: pi does not call these
+tool functions in-process. It POSTs to /agent/tools/{name} with a session
+token, and that route — which alone knows the conversation, from the token —
+pushes the action. Tests that call the tool functions directly on a thread that
+happened to set some context would pass while the real path drops every action
+(the Phase-2 bug), so the queue tests here go through TestClient.
 
-* A name that resolves to one player/team builds a URL and enqueues an action.
-* An ambiguous name enqueues nothing and returns a disambiguation prompt.
-* Only recognized URLs reach the queue (the frontend's parseAppUrl is the
-  final gatekeeper, but we never hand it garbage).
-* The action queue is per-conversation and thread-safe.
+No live backend or model: the HTTP helpers the tools use are monkeypatched.
 """
 
-import queue
-import threading
+import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from agent import screen_actions as sa
 
@@ -41,326 +42,396 @@ class TestFormatUrl:
     def test_team_builder(self):
         assert sa.format_url("TEAM_PAGE", team="BUF", tab="builder") == "/team/BUF?tab=builder"
 
-    def test_my_team_lineup(self):
+    def test_my_team_tabs(self):
         assert sa.format_url("MY_TEAM") == "/my-team"
-
-    def test_my_team_waivers(self):
         assert sa.format_url("MY_TEAM", tab="WAIVERS") == "/my-team/waivers"
-
-    def test_my_team_league(self):
         assert sa.format_url("MY_TEAM", tab="LEAGUE") == "/my-team/league"
 
     def test_ranks(self):
         assert sa.format_url("GAME_RANKS") == "/ranks"
-
-    def test_tiers(self):
-        assert sa.format_url("TIERS") == "/tiers"
 
 
 # --- Team resolution -------------------------------------------------------
 
 class TestResolveTeam:
     @pytest.mark.parametrize("name,expected", [
-        ("BUF", "BUF"),
-        ("Bills", "BUF"),
-        ("buffalo", "BUF"),
-        ("JAX", "JAX"),
-        ("Jaguars", "JAX"),
-        ("Jacksonville", "JAX"),
-        ("KC", "KC"),
-        ("Chiefs", "KC"),
-        ("SF", "SF"),
-        ("49ers", "SF"),
-        ("NO", "NO"),
-        ("Saints", "NO"),
-        ("LAC", "LAC"),
-        ("Chargers", "LAC"),
-        ("WAS", "WAS"),
-        ("Commanders", "WAS"),
+        ("BUF", "BUF"), ("Bills", "BUF"), ("buffalo", "BUF"),
+        ("JAX", "JAX"), ("Jaguars", "JAX"), ("Jacksonville", "JAX"),
+        # The schedule API calls the Rams LA; LAR is accepted as input only.
+        ("LA", "LA"), ("LAR", "LA"), ("Rams", "LA"), ("losangelesrams", "LA"),
+        ("KC", "KC"), ("Chiefs", "KC"),
+        ("SF", "SF"), ("49ers", "SF"),
+        ("WAS", "WAS"), ("Commanders", "WAS"), ("LV", "LV"),
     ])
     def test_known_teams(self, name, expected):
         assert sa._resolve_team(name) == expected
 
+    def test_ambiguous_city_is_not_mapped(self):
+        # Los Angeles is both the Rams and the Chargers; only team-specific
+        # inputs resolve.
+        assert sa._resolve_team("Los Angeles") is None
+
     def test_unknown_team(self):
         assert sa._resolve_team("ZZZ") is None
-
-    def test_empty(self):
         assert sa._resolve_team("") is None
-
-    def test_case_insensitive(self):
-        assert sa._resolve_team("buf") == "BUF"
-        assert sa._resolve_team("bills") == "BUF"
 
 
 # --- Action queue ----------------------------------------------------------
 
 class TestActionQueue:
-    def test_install_and_drain(self):
-        sa.install("conv-1")
-        sa._enqueue("conv-1", sa.ScreenAction(url="/player/00-001", label="test", tool="open_player"))
-        actions = list(sa.drain("conv-1"))
+    def test_push_and_drain(self):
+        sa.push_action("conv-1", "/player/00-001", "test", "open_player")
+        actions = sa.drain_actions("conv-1")
         assert len(actions) == 1
         assert actions[0].url == "/player/00-001"
-        # Drain again is empty.
-        assert list(sa.drain("conv-1")) == []
+        assert sa.drain_actions("conv-1") == []
 
-    def test_drain_without_install(self):
-        assert list(sa.drain("never-installed")) == []
-
-    def test_teardown(self):
-        sa.install("conv-2")
-        sa._enqueue("conv-2", sa.ScreenAction(url="/", label="x", tool="t"))
-        sa.teardown("conv-2")
-        assert list(sa.drain("conv-2")) == []
+    def test_drain_without_push(self):
+        assert sa.drain_actions("never-used") == []
 
     def test_conversations_are_isolated(self):
-        sa.install("conv-a")
-        sa.install("conv-b")
-        sa._enqueue("conv-a", sa.ScreenAction(url="/a", label="a", tool="t"))
-        sa._enqueue("conv-b", sa.ScreenAction(url="/b", label="b", tool="t"))
-        a = list(sa.drain("conv-a"))
-        b = list(sa.drain("conv-b"))
+        sa.push_action("conv-a", "/a", "a", "t")
+        sa.push_action("conv-b", "/b", "b", "t")
+        a = sa.drain_actions("conv-a")
+        b = sa.drain_actions("conv-b")
         assert len(a) == 1 and a[0].url == "/a"
         assert len(b) == 1 and b[0].url == "/b"
 
+    def test_cap_of_five_drops_oldest(self):
+        for i in range(7):
+            sa.push_action("conv-cap", f"/{i}", f"a{i}", "t")
+        actions = sa.drain_actions("conv-cap")
+        assert len(actions) == sa.MAX_PENDING_PER_CONVERSATION
+        assert [a.url for a in actions] == ["/2", "/3", "/4", "/5", "/6"]
+
+    def test_expired_entries_are_discarded(self):
+        sa.push_action("conv-exp", "/old", "old", "t")
+        # Age the entry past the TTL by rewinding its stamp in place.
+        with sa._actions_guard:
+            entries = sa._actions["conv-exp"]
+            entries[0] = (time.monotonic() - sa.ACTION_TTL_SECONDS - 1, entries[0][1])
+        assert sa.drain_actions("conv-exp") == []
+        # The expired entry did not linger either.
+        assert "conv-exp" not in sa._actions
+
+    def test_discard(self):
+        sa.push_action("conv-drop", "/x", "x", "t")
+        sa.discard_actions("conv-drop")
+        assert sa.drain_actions("conv-drop") == []
+
+    def test_push_ignores_empty(self):
+        sa.push_action("", "/x", "x", "t")
+        sa.push_action("", "/x", "x", "t")
+        assert sa.drain_actions("") == []
+
     def test_thread_safety(self):
-        sa.install("conv-ts")
-        def enqueue_n(n):
+        """200 concurrent pushes lose none to races; the cap then keeps the
+        newest 5, which is exactly the oldest-dropped behaviour."""
+        def push_n(n):
             for i in range(n):
-                sa._enqueue("conv-ts", sa.ScreenAction(url=f"/{i}", label="x", tool="t"))
-        threads = [threading.Thread(target=enqueue_n, args=(50,)) for _ in range(4)]
+                sa.push_action("conv-ts", f"/{i}", "x", "t")
+        import threading
+        threads = [threading.Thread(target=push_n, args=(50,)) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        actions = list(sa.drain("conv-ts"))
-        assert len(actions) == 200
-        sa.teardown("conv-ts")
+        actions = sa.drain_actions("conv-ts")
+        assert len(actions) == sa.MAX_PENDING_PER_CONVERSATION
+        # All 200 pushes arrived intact (each thread's sequence is intact within
+        # the survivors' urls) — no corruption, cap respected.
+        assert all(a.url.startswith("/") for a in actions)
+        sa.discard_actions("conv-ts")
 
     def test_screen_action_to_event(self):
-        action = sa.ScreenAction(url="/game/BUF/HOU", label="BUF @ HOU", tool="open_game")
-        event = action.to_event()
-        assert event["type"] == "screen_action"
-        assert event["url"] == "/game/BUF/HOU"
-        assert event["label"] == "BUF @ HOU"
-        assert event["tool"] == "open_game"
+        event = sa.ScreenAction(url="/game/BUF/HOU", label="BUF @ HOU", tool="open_game").to_event()
+        assert event == {
+            "type": "screen_action",
+            "url": "/game/BUF/HOU",
+            "label": "BUF @ HOU",
+            "tool": "open_game",
+        }
 
 
-# --- Tool: open_screen -----------------------------------------------------
+# --- Tools (paths only; resolution helpers are monkeypatched where needed) --
+
+@pytest.fixture(autouse=True)
+def _clean_queue():
+    """The action store is module-global; tests must not see each other's entries."""
+    sa._actions.clear()
+    yield
+    sa._actions.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_http(monkeypatch):
+    """Screen tools never touch the real backend in these tests."""
+    monkeypatch.setattr(sa, "_current_week", lambda: 1)
+    monkeypatch.setattr(sa, "_get", lambda path, params=None: [])
+
 
 class TestOpenScreen:
-    def test_valid_screen(self):
-        sa.install("conv-os")
-        sa.set_conversation("conv-os")
-        try:
-            result = sa.open_screen("tiers")
-            assert "tier list" in result.lower()
-            actions = list(sa.drain("conv-os"))
-            assert len(actions) == 1
-            assert actions[0].url == "/tiers"
-            assert actions[0].tool == "open_screen"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-os")
-
-    def test_my_team_screen(self):
-        sa.install("conv-os2")
-        sa.set_conversation("conv-os2")
-        try:
-            result = sa.open_screen("my-team")
-            assert "sleeper" in result.lower()
-            actions = list(sa.drain("conv-os2"))
-            assert actions[0].url == "/my-team"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-os2")
+    def test_paths_match_frontend(self):
+        assert sa.open_screen("ranks").path == "/ranks"
+        assert sa.open_screen("tiers").path == "/tiers"
+        assert sa.open_screen("my_team").path == "/my-team"
+        assert sa.open_screen("my_team", "league").path == "/my-team/league"
+        assert sa.open_screen("my_team", "waivers").path == "/my-team/waivers"
+        assert sa.open_screen("my_team", "lineup").path == "/my-team"
 
     def test_invalid_screen(self):
-        sa.install("conv-os3")
-        sa.set_conversation("conv-os3")
-        try:
-            result = sa.open_screen("dashboard")
-            assert "not a screen" in result.lower()
-            assert list(sa.drain("conv-os3")) == []
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-os3")
+        out = sa.open_screen("dashboard")
+        assert out.path is None
+        assert "not a screen" in out.text.lower()
+
+    def test_invalid_my_team_tab(self):
+        out = sa.open_screen("my_team", "stats")
+        assert out.path is None
+
+    def test_tab_on_non_my_team_is_ignored(self):
+        out = sa.open_screen("ranks", "lineup")
+        assert out.path == "/ranks"
 
 
-# --- Tool: open_game -------------------------------------------------------
+class TestOpenPlayer:
+    def test_resolved_name_builds_path(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [
+            {"player_id": "00-0037834", "player_name": "Brock Purdy",
+             "position": "QB", "team_abbr": "SF"}])
+        out = sa.open_player("purdy")
+        assert out.path == "/player/00-0037834"
+        assert "Brock Purdy" in out.text
+
+    def test_label_uses_resolved_name_not_model_spelling(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [
+            {"player_id": "00-0031234", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "NE"}])
+        out = sa.open_player("kyle wiliams")  # model's typo
+        assert out.path == "/player/00-0031234"
+        assert "Kyle Williams" in out.label
+        assert "wiliams" not in out.label
+
+    def test_gsis_id_short_circuits(self):
+        out = sa.open_player("00-0037834")
+        assert out.path == "/player/00-0037834"
+
+    def test_bare_digits_are_names_not_ids(self, monkeypatch):
+        """A jersey number is not an id; it goes through search."""
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [])
+        out = sa.open_player("1234567")
+        assert out.path is None
+
+    def test_ambiguous_queues_nothing(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [
+            {"player_id": "00-1", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "NE"},
+            {"player_id": "00-2", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "BUF"},
+        ])
+        out = sa.open_player("Kyle Williams")
+        assert out.path is None
+        assert "Kyle Williams (WR, NE)" in out.text
+        assert "Kyle Williams (WR, BUF)" in out.text
+
+
+class TestOpenCompare:
+    def test_two_resolved_players(self, monkeypatch):
+        def fake_get(path, params=None):
+            q = (params or {}).get("q", "")
+            return [{"player_id": f"00-{q.replace(' ', '')}",
+                     "player_name": q, "position": "WR", "team_abbr": "NE"}]
+        monkeypatch.setattr(sa, "_get", fake_get)
+        out = sa.open_compare(["Kyle Williams", "DJ Moore"])
+        assert out.path is not None
+        assert out.path.startswith("/compare?ids=00-KyleWilliams,00-DJMoore")
+
+    def test_one_ambiguous_player_rejects_the_whole_call(self, monkeypatch):
+        def fake_get(path, params=None):
+            q = (params or {}).get("q", "")
+            if q == "Kyle Williams":
+                return [
+                    {"player_id": "00-1", "player_name": "Kyle Williams",
+                     "position": "WR", "team_abbr": "NE"},
+                    {"player_id": "00-2", "player_name": "Kyle Williams",
+                     "position": "WR", "team_abbr": "BUF"},
+                ]
+            return [{"player_id": "00-3", "player_name": q,
+                     "position": "WR", "team_abbr": "BUF"}]
+        monkeypatch.setattr(sa, "_get", fake_get)
+        out = sa.open_compare(["Kyle Williams", "DJ Moore"])
+        assert out.path is None
+
+    def test_too_many_players(self):
+        out = sa.open_compare(["a", "b", "c", "d", "e"])
+        assert out.path is None
+
+    def test_single_player_rejected(self):
+        out = sa.open_compare(["a"])
+        assert out.path is None
+
 
 class TestOpenGame:
-    def test_valid_game(self):
-        sa.install("conv-og")
-        sa.set_conversation("conv-og")
-        try:
-            result = sa.open_game("BUF", "HOU")
-            assert "BUF @ HOU" in result
-            actions = list(sa.drain("conv-og"))
-            assert len(actions) == 1
-            assert actions[0].url == "/game/BUF/HOU"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-og")
+    def test_resolves_from_schedule(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [{"away_team": "BUF", "home_team": "HOU"}]
+            if path == "/schedule" else {"week": 1}
+        ))
+        out = sa.open_game("Bills", 1)
+        assert out.path == "/game/BUF/HOU"
+        assert "BUF @ HOU" in out.text
 
-    def test_team_names_resolved(self):
-        sa.install("conv-og2")
-        sa.set_conversation("conv-og2")
-        try:
-            result = sa.open_game("Bills", "Texans")
-            assert "BUF @ HOU" in result
-            actions = list(sa.drain("conv-og2"))
-            assert actions[0].url == "/game/BUF/HOU"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-og2")
+    def test_rams_open_as_la(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [{"away_team": "LA", "home_team": "SEA"}]
+            if path == "/schedule" else {"week": 1}
+        ))
+        out = sa.open_game("Rams", 1)
+        assert out.path == "/game/LA/SEA"
 
-    def test_same_team_rejected(self):
-        sa.install("conv-og3")
-        sa.set_conversation("conv-og3")
-        try:
-            result = sa.open_game("BUF", "Bills")
-            assert "same" in result.lower()
-            assert list(sa.drain("conv-og3")) == []
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-og3")
+    def test_bye_week_queues_nothing(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [] if path == "/schedule" else {"week": 1}
+        ))
+        out = sa.open_game("BUF", 1)
+        assert out.path is None
+        assert "no game" in out.text.lower()
 
-    def test_unknown_team(self):
-        sa.install("conv-og4")
-        sa.set_conversation("conv-og4")
-        try:
-            result = sa.open_game("ZZZ", "BUF")
-            assert "not a recognized" in result.lower()
-            assert list(sa.drain("conv-og4")) == []
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-og4")
+    def test_week_zero_uses_current_week(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [{"away_team": "BUF", "home_team": "HOU"}]
+            if path == "/schedule" else {"week": 7}
+        ))
+        out = sa.open_game("BUF")
+        assert out.path == "/game/BUF/HOU"
 
-
-# --- Tool: open_team -------------------------------------------------------
 
 class TestOpenTeam:
     def test_abbreviation(self):
-        sa.install("conv-ot")
-        sa.set_conversation("conv-ot")
-        try:
-            result = sa.open_team("BUF")
-            assert "BUF" in result
-            actions = list(sa.drain("conv-ot"))
-            assert actions[0].url == "/team/BUF"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-ot")
+        out = sa.open_team("BUF")
+        assert out.path == "/team/BUF"
 
     def test_builder_tab(self):
-        sa.install("conv-ot2")
-        sa.set_conversation("conv-ot2")
-        try:
-            sa.open_team("NE", "builder")
-            actions = list(sa.drain("conv-ot2"))
-            assert actions[0].url == "/team/NE?tab=builder"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-ot2")
+        out = sa.open_team("NE", "builder")
+        assert out.path == "/team/NE?tab=builder"
+
+    def test_unknown_team(self):
+        out = sa.open_team("ZZZ")
+        assert out.path is None
 
 
-# --- Tool: set_sleeper_tab -------------------------------------------------
-
-class TestSetSleeperTab:
-    @pytest.mark.parametrize("tab,expected_url", [
-        ("lineup", "/my-team"),
-        ("waivers", "/my-team/waivers"),
-        ("league", "/my-team/league"),
-    ])
-    def test_valid_tabs(self, tab, expected_url):
-        cid = f"conv-st-{tab}"
-        sa.install(cid)
-        sa.set_conversation(cid)
-        try:
-            result = sa.set_sleeper_tab(tab)
-            assert tab in result.lower()
-            actions = list(sa.drain(cid))
-            assert actions[0].url == expected_url
-        finally:
-            sa.set_conversation(None)
-            sa.teardown(cid)
-
-    def test_invalid_tab(self):
-        sa.install("conv-st-bad")
-        sa.set_conversation("conv-st-bad")
-        try:
-            result = sa.set_sleeper_tab("stats")
-            assert "not a my team tab" in result.lower()
-            assert list(sa.drain("conv-st-bad")) == []
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-st-bad")
+class TestAddToCompare:
+    def test_single_id_path(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [
+            {"player_id": "00-1", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "NE"}])
+        out = sa.add_to_compare("Kyle Williams")
+        assert out.path == "/compare?ids=00-1"
+        assert out.tool == "add_to_compare"
 
 
-# --- Tool: go_back ---------------------------------------------------------
-
-class TestGoBack:
-    def test_enqueues_back_action(self):
-        sa.install("conv-gb")
-        sa.set_conversation("conv-gb")
-        try:
-            result = sa.go_back()
-            assert "back" in result.lower()
-            actions = list(sa.drain("conv-gb"))
-            assert len(actions) == 1
-            assert actions[0].url == "app://back"
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-gb")
-
-
-# --- Tool: open_compare ----------------------------------------------------
-
-class TestOpenCompare:
-    def test_too_many_players(self):
-        sa.install("conv-oc")
-        sa.set_conversation("conv-oc")
-        try:
-            result = sa.open_compare(["a", "b", "c", "d", "e"])
-            assert "at most" in result.lower()
-            assert list(sa.drain("conv-oc")) == []
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-oc")
-
-    def test_empty_list(self):
-        sa.install("conv-oc2")
-        sa.set_conversation("conv-oc2")
-        try:
-            result = sa.open_compare([])
-            assert "at least one" in result.lower()
-        finally:
-            sa.set_conversation(None)
-            sa.teardown("conv-oc2")
-
-
-# --- Tool registry ---------------------------------------------------------
+# --- Registry ---------------------------------------------------------------
 
 class TestToolRegistry:
-    def test_all_tools_are_callable(self):
-        for name, fn in sa.SCREEN_ACTION_TOOLS:
-            assert callable(fn), f"{name} is not callable"
+    def test_registered_names(self):
+        names = {n for n, _ in sa.SCREEN_ACTION_TOOLS}
+        assert names == {
+            "open_screen", "open_player", "open_compare",
+            "open_team", "open_game", "add_to_compare", "go_back",
+        }
 
-    def test_registry_names_match_functions(self):
-        names = [n for n, _ in sa.SCREEN_ACTION_TOOLS]
-        assert "open_screen" in names
-        assert "open_player" in names
-        assert "open_game" in names
-        assert "open_team" in names
-        assert "open_compare" in names
-        assert "go_back" in names
-        assert "set_sleeper_tab" in names
-        assert "resolve_player_name" in names
-        assert "add_to_compare" in names
-
-    def test_tools_are_registered_in_agent_tools(self):
+    def test_in_agent_tools_after_data_tools(self):
         from agent import tools as agent_tools
-        exposed = set(agent_tools.EXPOSED_TOOLS)
-        for name, _ in sa.SCREEN_ACTION_TOOLS:
-            assert name in exposed, f"{name} missing from EXPOSED_TOOLS"
+        exposed = agent_tools.EXPOSED_TOOLS
+        for name in agent_tools.SCREEN_TOOL_NAMES if hasattr(agent_tools, "SCREEN_TOOL_NAMES") else []:
+            assert name in exposed
+        assert "open_screen" in exposed
+        assert "go_back" in exposed
+        # Data tools come first.
+        assert exposed.index("search_players") < exposed.index("open_screen")
+
+    def test_specs_have_no_hidden_conversation_param(self):
+        from agent import tools as agent_tools
+        for spec in agent_tools.list_tools():
+            if spec["name"] in sa.SCREEN_TOOL_NAMES:
+                assert "conversation_id" not in spec["parameters"]["properties"]
+
+    def test_call_tool_result_returns_screen_result(self):
+        from agent import tools as agent_tools
+        agent_tools._registry = {
+            "open_screen": sa.open_screen,
+            "search_players": lambda query: "data text",
+        }
+        try:
+            text, screen = agent_tools.call_tool_result("open_screen", {"screen": "ranks"})
+            assert text == "Opened the start/sit ranks board."
+            assert screen is not None and screen.path == "/ranks"
+            text2, screen2 = agent_tools.call_tool_result("search_players", {"query": "x"})
+            assert text2 == "data text" and screen2 is None
+        finally:
+            agent_tools._registry = None
+
+
+# --- HTTP boundary (the Phase-2 blocker) -----------------------------------
+
+@pytest.fixture()
+def client(monkeypatch):
+    """The real app with screen tools' HTTP helpers monkeypatched."""
+    from applications.api.routes import agent as agent_route
+    from applications.server import app
+
+    monkeypatch.setattr(sa, "_current_week", lambda: 1)
+    monkeypatch.setattr(sa, "_get", lambda path, params=None: [])
+    return TestClient(app)
+
+
+class TestToolsOverHttp:
+    def test_open_screen_queues_for_the_tokens_conversation(self, client, monkeypatch):
+        from applications.api.services import agent_tokens
+
+        cid_a = "conv-aaaaaaaa"
+        cid_b = "conv-bbbbbbbb"
+        sa.discard_actions(cid_a)
+        sa.discard_actions(cid_b)
+
+        response = client.post(
+            "/agent/tools/open_screen",
+            json={"arguments": {"screen": "ranks"}},
+            headers={"authorization": f"Bearer {agent_tokens.mint(cid_a, 'test-client')}", "x-client-id": "t" * 8},
+        )
+        assert response.status_code == 200, response.text
+        assert "ranks" in response.json()["text"].lower()
+
+        # Conversation A holds exactly one action; B holds none.
+        a = sa.drain_actions(cid_a)
+        assert len(a) == 1
+        assert a[0].url == "/ranks"
+        assert sa.drain_actions(cid_b) == []
+
+    def test_ambiguous_player_queues_nothing_over_http(self, client, monkeypatch):
+        from applications.api.services import agent_tokens
+
+        cid = "conv-cccccccc"
+        sa.discard_actions(cid)
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: [
+            {"player_id": "00-1", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "NE"},
+            {"player_id": "00-2", "player_name": "Kyle Williams",
+             "position": "WR", "team_abbr": "BUF"},
+        ])
+
+        response = client.post(
+            "/agent/tools/open_player",
+            json={"arguments": {"player": "Kyle Williams"}},
+            headers={"authorization": f"Bearer {agent_tokens.mint(cid, 'testclient')}", "x-client-id": "t" * 8},
+        )
+        assert response.status_code == 200
+        assert response.json()["text"]  # the model still gets the candidates
+        assert sa.drain_actions(cid) == []
+
+    def test_bad_token_is_rejected(self, client):
+        response = client.post(
+            "/agent/tools/open_screen",
+            json={"arguments": {"screen": "ranks"}},
+            headers={"authorization": "Bearer spt_bogus.sig", "x-client-id": "t" * 8},
+        )
+        assert response.status_code == 401

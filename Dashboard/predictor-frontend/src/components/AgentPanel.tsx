@@ -18,7 +18,7 @@ import { toolLabel } from '../utils/agentLabels';
  * access to them.
  */
 export default function AgentPanel({ headerExtra }: { headerExtra?: ReactNode }) {
-  const { turns, streaming, activeTool, reset, closePanel } = useAgentChatContext();
+  const { turns, streaming, activeTool, reset, closePanel, applyAgentAction } = useAgentChatContext();
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -99,14 +99,7 @@ export default function AgentPanel({ headerExtra }: { headerExtra?: ReactNode })
                     <button
                       key={`${action.url}-${i}`}
                       type="button"
-                      onClick={() => {
-                        if (action.url === 'app://back') {
-                          window.history.back();
-                        } else {
-                          window.history.pushState({}, '', action.url);
-                          window.dispatchEvent(new PopStateEvent('popstate'));
-                        }
-                      }}
+                      onClick={() => applyAgentAction(action)}
                       data-testid="agent-panel-action-button"
                       className="text-[10px] font-bold px-2 py-1 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
                     >

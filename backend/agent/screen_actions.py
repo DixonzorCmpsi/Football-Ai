@@ -1,47 +1,49 @@
-"""Screen-action tools for the in-app agent.
+"""Screen-action tools: let the in-app agent move the user's browser.
 
-The agent can move the user's screen the same way a mouse and keyboard can: open
-a page, jump to a player, start a comparison, switch the My Team tab. Each tool
-resolves a name to an id (when needed), builds the web address the frontend
-recognizes, and enqueues an action that the chat SSE stream ships to the browser
-in the same pass as text deltas.
+Every navigation a mouse can perform has a tool here: open a page, jump to a
+player, start a comparison, go back. The tools **return** a ``ScreenResult``
+carrying the web address; they never touch a queue. The route that serves pi's
+tool calls knows the conversation from the session token (``ProxyGrant``), so it
+pushes the action onto that conversation's queue, and the chat SSE stream
+delivers it to the browser. A tool therefore cannot claim "Opening ..." unless
+the route actually queued the movement: the tool either resolved a path or it
+returned text saying why it didn't.
 
 Design:
 
-* **One action queue per conversation.** Tools run on the agent's thread (pi's
-  tool-execution worker); the SSE pump runs on the event loop. A thread-safe
-  queue bridges them, the same pattern the chat pump uses for pi events.
 * **The backend resolves names; the browser applies the URL.** A tool never
-  trusts the model's spelling of "00-0037834". It calls the same
-  ``/players/search`` endpoint the MCP tools use, and an ambiguous name returns
-  a list to pick from rather than a wrong guess.
-* **Only recognized URLs.** ``format_url`` builds every path from validated
-  components; the browser's ``parseAppUrl`` is the final gatekeeper. A path that
-  does not parse to a location is dropped before it reaches the DOM.
-* **Ambiguous = nothing moves.** If a name matches two or more players, no action
-  is queued. The tool's return text tells the agent to disambiguate.
+  trusts the model's spelling of an id. It calls the same ``/players/search``
+  endpoint the MCP tools use, and an ambiguous name returns a list to pick
+  from rather than a silent wrong pick.
+* **Only recognized URLs.** ``format_url`` mirrors the frontend's
+  ``formatAppUrl`` (``Dashboard/predictor-frontend/src/lib/appUrl.ts``); that
+  parser is the final gatekeeper in the browser.
+* **Ambiguous = nothing moves.** A name matching two or more players means no
+  path at all, and the text lists candidates to disambiguate.
 
-The tools are registered alongside the MCP football tools (see ``agent/tools.py``)
-and proxied to this module by the same HTTP endpoint the pi extension already
-calls. They are pure-Python functions that return ``str`` — the same contract as
-every other tool — and side-effect the queue via the ``active_conversation``
-context manager the route sets up before each prompt.
+Registered in ``agent/tools.py`` after the MCP data tools. Not published to the
+MCP server: Claude Code has no browser to move.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import queue
+import os
+import re
 import threading
-from dataclasses import dataclass, field
-from typing import Any, Iterator
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-# Team abbreviations the app's schedule/matchup endpoints accept. Sourced from
-# the 32 active NFL franchises. A tool that receives "Jacksonville" or "JAX"
-# both resolve to "JAX".
+# --- Team abbreviations ------------------------------------------------------
+# Matches what GET /schedule/{week} returns (the Rams are "LA" there), which is
+# the same vocabulary /team/{TEAM} and /game/{away}/{home} accept. LAR/Los
+# Angeles Rams inputs normalize to LA; bare LOSANGELES is deliberately absent
+# because it is ambiguous between the Rams and the Chargers.
 TEAM_ALIASES: dict[str, str] = {
     "ARI": "ARI", "ARZ": "ARI", "CARDINALS": "ARI", "ARIZONA": "ARI",
     "ATL": "ATL", "FALCONS": "ATL", "ATLANTA": "ATL",
@@ -61,7 +63,7 @@ TEAM_ALIASES: dict[str, str] = {
     "KC": "KC", "KAN": "KC", "CHIEFS": "KC", "KANSASCITY": "KC",
     "LV": "LV", "LVR": "LV", "RAIDERS": "LV", "OAK": "LV", "LASVEGAS": "LV",
     "LAC": "LAC", "CHARGERS": "LAC", "SD": "LAC", "LOSANGELESCHARGERS": "LAC",
-    "LAR": "LAR", "RAMS": "LAR", "LOSANGELESRAMS": "LAR", "LOSANGELES": "LAR",
+    "LA": "LA", "LAR": "LA", "RAMS": "LA", "LOSANGELESRAMS": "LA",
     "MIA": "MIA", "DOLPHINS": "MIA", "MIAMI": "MIA",
     "MIN": "MIN", "VIKINGS": "MIN", "MINNESOTA": "MIN",
     "NE": "NE", "NWE": "NE", "PATRIOTS": "NE", "NEWENGLAND": "NE",
@@ -77,21 +79,64 @@ TEAM_ALIASES: dict[str, str] = {
     "WAS": "WAS", "WSH": "WAS", "COMMANDERS": "WAS", "WASHINGTON": "WAS",
 }
 
-# The screens the agent can send the user to. Kept in sync with the frontend's
-# AppLocation view names (see src/lib/appUrl.ts).
+# Screens the agent can open. Mirrors the frontend's AppLocation views.
 NAV_SCREENS = {
-    "schedule", "lookup", "trending", "picks", "playoffs",
-    "tiers", "teams", "ranks", "my-team",
+    "schedule", "lookup", "compare", "trending", "picks", "playoffs",
+    "tiers", "teams", "ranks", "my_team",
 }
+# Tabs only valid with my_team (see open_screen).
+MY_TEAM_TABS = {"lineup", "waivers", "league"}
 
 MAX_COMPARE_IDS = 4
+
+# A gsis id is exactly "00-" plus 7 digits. Anything else is a name and goes
+# through search.
+GSIS_ID_RE = re.compile(r"^00-\d{7}$")
+
+SCREEN_LABELS = {
+    "schedule": "the weekly schedule",
+    "lookup": "player lookup",
+    "compare": "the comparison tray",
+    "trending": "trending players",
+    "picks": "your saved picks",
+    "playoffs": "the playoff picture",
+    "tiers": "the tier list",
+    "teams": "the team index",
+    "ranks": "the start/sit ranks board",
+    "my_team": "your Sleeper roster",
+}
+_SCREEN_VIEW = {
+    "schedule": "SCHEDULE", "lookup": "LOOKUP", "compare": "COMPARE",
+    "trending": "TRENDING", "picks": "PICKS", "playoffs": "PLAYOFFS",
+    "tiers": "TIERS", "teams": "TEAMS", "ranks": "GAME_RANKS",
+    "my_team": "MY_TEAM",
+}
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ScreenResult:
+    """What a screen tool returns: text for the model, plus the movement.
+
+    ``path`` is None when nothing should move (invalid input, ambiguous name,
+    no game that week). The route pushes non-None results onto the
+    conversation's action queue.
+    """
+
+    text: str
+    path: str | None = None
+    label: str | None = None
+    tool: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Action queue
 # ---------------------------------------------------------------------------
 
-@dataclass
+@dataclass(frozen=True)
 class ScreenAction:
     """One movement the browser should perform."""
 
@@ -108,60 +153,41 @@ class ScreenAction:
         }
 
 
-@dataclass
-class _ConversationActions:
-    actions: queue.Queue = field(default_factory=queue.Queue)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+MAX_PENDING_PER_CONVERSATION = 5
+ACTION_TTL_SECONDS = 120.0
+
+# conversation_id -> list of (monotonic stamp, ScreenAction). A list under a
+# lock rather than queue.Queue because of two behaviours a Queue doesn't give:
+# an oldest-dropped cap and expiry filtering on drain.
+_actions: dict[str, list[tuple[float, ScreenAction]]] = {}
+_actions_guard = threading.Lock()
 
 
-# One queue per conversation_id. The chat route installs one before prompting pi
-# and drains it alongside pi's own events.
-_queues: dict[str, _ConversationActions] = {}
-_queues_guard = threading.Lock()
-
-
-def install(conversation_id: str) -> None:
-    """Create (or reset) the action queue for this conversation."""
-    with _queues_guard:
-        _queues[conversation_id] = _ConversationActions()
-
-
-def drain(conversation_id: str) -> Iterator[ScreenAction]:
-    """Yield every queued action without blocking, then stop."""
-    ca = _queues.get(conversation_id)
-    if not ca:
+def push_action(conversation_id: str, path: str, label: str, tool: str = "") -> None:
+    """Queue one movement for this conversation; the oldest drops past the cap."""
+    if not conversation_id or not path:
         return
-    while True:
-        try:
-            yield ca.actions.get_nowait()
-        except queue.Empty:
-            return
+    with _actions_guard:
+        entries = _actions.setdefault(conversation_id, [])
+        entries.append((time.monotonic(), ScreenAction(url=path, label=label, tool=tool)))
+        while len(entries) > MAX_PENDING_PER_CONVERSATION:
+            entries.pop(0)
 
 
-def teardown(conversation_id: str) -> None:
-    _queues.pop(conversation_id, None)
+def drain_actions(conversation_id: str) -> list[ScreenAction]:
+    """Remove and return every unexpired queued action for this conversation."""
+    now = time.monotonic()
+    with _actions_guard:
+        entries = _actions.pop(conversation_id, None)
+        if not entries:
+            return []
+    return [a for ts, a in entries if now - ts < ACTION_TTL_SECONDS]
 
 
-def _enqueue(conversation_id: str, action: ScreenAction) -> None:
-    ca = _queues.get(conversation_id)
-    if not ca:
-        logger.debug("screen action enqueued with no queue for %s", conversation_id)
-        return
-    ca.actions.put(action)
-
-
-# The conversation_id is set by the route before the prompt runs. Tools read it
-# from here — they don't receive it as a parameter because the model would have
-# to supply it, and the model does not know it.
-_current_conversation: threading.local = threading.local()
-
-
-def set_conversation(conversation_id: str | None) -> None:
-    _current_conversation.cid = conversation_id  # type: ignore[attr-defined]
-
-
-def _cid() -> str:
-    return getattr(_current_conversation, "cid", None) or ""
+def discard_actions(conversation_id: str) -> None:
+    """Drop leftovers from an earlier question so its stale actions never replay."""
+    with _actions_guard:
+        _actions.pop(conversation_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +203,6 @@ def format_url(view: str, **kw: Any) -> str:
     v = view.upper()
     if v == "SCHEDULE":
         return "/"
-    if v == "GAME":
-        return f"/game/{_enc(kw['away'])}/{_enc(kw['home'])}"
     if v == "LOOKUP":
         return "/lookup"
     if v == "COMPARE":
@@ -208,256 +232,260 @@ def format_url(view: str, **kw: Any) -> str:
         if tab == "LEAGUE":
             return "/my-team/league"
         return "/my-team"
+    if v == "GAME":
+        return f"/game/{_enc(kw['away'])}/{_enc(kw['home'])}"
     return "/"
 
 
 # ---------------------------------------------------------------------------
-# Name resolution — reuses the backend's /players/search
+# Backend helpers — same HTTP surface the MCP tools use
 # ---------------------------------------------------------------------------
 
+_API_BASE = os.getenv("FOOTBALL_AI_API", "http://127.0.0.1:8000").rstrip("/")
+
+
+def _get(path: str, params: dict | None = None) -> Any:
+    """GET the backend. 404 -> None; other failures raise, so a tool can say so."""
+    resp = httpx.get(f"{_API_BASE}{path}", params=params, timeout=10.0)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 400:
+        resp.raise_for_status()
+    return resp.json()
+
+
+def _current_week() -> int:
+    data = _get("/current_week") or {}
+    try:
+        return int(data.get("week") or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _resolve_team(name: str) -> str | None:
-    """Accept 'JAX', 'Jacksonville', 'jaguars' and return 'JAX'."""
-    key = name.strip().upper().replace(".", "").replace(" ", "")
-    if key in TEAM_ALIASES:
-        return TEAM_ALIASES[key]
-    # Try the first word (e.g. "Kansas City" -> "KANSASCITY" -> no match, but
-    # "Chiefs" -> "CHIEFS" -> "KC"). Also try the full city name.
+    """Accept 'JAX', 'Jaguars', 'jacksonville' and return the schedule's abbr."""
+    key = (name or "").strip().upper().replace(".", "").replace(" ", "")
     return TEAM_ALIASES.get(key)
 
 
-def _http_get(path: str, params: dict | None = None) -> Any:
-    """Lightweight GET to the backend, used for player search."""
-    import os
-    import httpx
+def _resolve_player(name_or_id: str) -> tuple[str | None, str | None, str]:
+    """Accept a gsis id or a name. Returns (player_id, player_name, note).
 
-    base = (os.getenv("FOOTBALL_AI_API", "http://127.0.0.1:8000")).rstrip("/")
-    url = f"{base}{path}"
-    try:
-        resp = httpx.get(url, params=params, timeout=10.0)
-        if resp.status_code == 404:
-            return None
-        if resp.status_code >= 400:
-            return None
-        return resp.json()
-    except Exception:
-        return None
-
-
-def _resolve_player(name_or_id: str) -> tuple[str | None, str]:
-    """Accept a gsis id or a name. Returns (player_id, note).
-
-    Same logic as mcp_server._resolve_player, duplicated here so this module
-    has no import dependency on mcp_server (which may not be installed in the
-    agent's interpreter).
+    An exact case-insensitive match wins, then a single result. Two or more
+    candidates means (None, None, listing) and the caller navigates nowhere.
     """
     probe = (name_or_id or "").strip()
     if not probe:
-        return None, "No player given."
-    if probe.startswith("00-") or probe.replace("-", "").isdigit():
-        return probe, ""
+        return None, None, "No player given."
+    if GSIS_ID_RE.match(probe):
+        return probe, probe, ""
 
-    results = _http_get("/players/search", {"q": probe}) or []
+    results = _get("/players/search", {"q": probe}) or []
     if not results:
-        return None, f"No player matched '{probe}'."
-    exact = [r for r in results
-             if (r.get("player_name") or "").strip().lower() == probe.lower()]
+        return None, None, f"No player matched '{probe}'."
+
+    def name_of(r: dict) -> str:
+        return (r.get("player_name") or "").strip()
+
+    exact = [r for r in results if name_of(r).lower() == probe.lower()]
     if len(exact) == 1:
-        return exact[0]["player_id"], ""
+        return exact[0]["player_id"], name_of(exact[0]), ""
     if len(results) == 1:
-        return results[0]["player_id"], ""
+        return results[0]["player_id"], name_of(results[0]), ""
+
     pool = exact or results
-    if len(pool) == 1:
-        return pool[0]["player_id"], ""
     listing = ", ".join(
-        f"{r.get('player_name')} ({r.get('team')}, {r.get('position')})"
-        for r in pool[:6]
+        f"{name_of(r)} ({r.get('position')}, {r.get('team_abbr')})"
+        for r in pool[:5]
     )
-    return None, f"'{probe}' matched {len(pool)} players: {listing}. Pick one and call the tool again with the full name."
-
-
-def _enqueue_action(tool: str, url: str, label: str) -> None:
-    _enqueue(_cid(), ScreenAction(url=url, label=label, tool=tool))
+    return None, None, (
+        f"'{probe}' matched {len(pool)} players: {listing}. "
+        "Pick one and call the tool again with the full name."
+    )
 
 
 # ---------------------------------------------------------------------------
-# Tools — each returns str (same contract as MCP tools) and side-effects the queue
+# Tools
 # ---------------------------------------------------------------------------
 
-# --- Navigation: the five core tools from the prompt -------------------------
+def open_screen(screen: str, tab: str = "") -> ScreenResult:
+    """Send the user to a named screen: schedule, lookup, compare, trending,
+    picks, playoffs, tiers, teams, ranks, or my_team.
 
-def open_screen(screen: str) -> str:
-    """Send the user to a named screen: schedule, lookup, trending, picks,
-    playoffs, tiers, teams, ranks, or my-team.
-
-    Use this when the question implies a page change but no specific player,
-    team or game. For "show me the Bills game" use open_game; for "pull up
-    Purdy" use open_player.
+    Use this when the user asks to go somewhere or see something, or when the
+    page answers better than words. For a specific player use open_player; for
+    a game use open_game. ``tab`` applies to my_team only: lineup, waivers, or
+    league.
     """
-    key = (screen or "").strip().lower().replace(" ", "-")
+    key = (screen or "").strip().lower().replace("-", "_").replace(" ", "_")
     if key not in NAV_SCREENS:
-        return (
+        return ScreenResult(
             f"'{screen}' is not a screen I can open. "
             f"Choose from: {', '.join(sorted(NAV_SCREENS))}."
         )
-    label_map = {
-        "schedule": "the weekly schedule",
-        "lookup": "player lookup",
-        "trending": "trending players",
-        "picks": "your saved picks",
-        "playoffs": "the playoff picture",
-        "tiers": "the tier list",
-        "teams": "the team index",
-        "ranks": "the start/sit ranks board",
-        "my-team": "your Sleeper roster",
-    }
-    view = {
-        "schedule": "SCHEDULE", "lookup": "LOOKUP", "trending": "TRENDING",
-        "picks": "PICKS", "playoffs": "PLAYOFFS", "tiers": "TIERS",
-        "teams": "TEAMS", "ranks": "GAME_RANKS", "my-team": "MY_TEAM",
-    }[key]
-    url = format_url(view)
-    _enqueue_action("open_screen", url, label_map[key])
-    return f"Opening {label_map[key]}."
+    if key == "my_team":
+        t = (tab or "lineup").strip().lower()
+        if t not in MY_TEAM_TABS:
+            return ScreenResult(
+                f"'{tab}' is not a my_team tab. Use lineup, waivers, or league."
+            )
+        path = format_url("MY_TEAM", tab=t.upper())
+        return ScreenResult(
+            text=f"Opened your Sleeper roster, {t} tab.",
+            path=path,
+            label=f"My team, {t} tab",
+            tool="open_screen",
+        )
+    path = format_url(_SCREEN_VIEW[key])
+    label = SCREEN_LABELS[key]
+    return ScreenResult(
+        text=f"Opened {label}.", path=path, label=label, tool="open_screen"
+    )
 
 
-def open_player(player: str) -> str:
-    """Open a player's full projection page (game log, props, injury status).
+def open_player(player: str) -> ScreenResult:
+    """Open a player's projection page (game log, props, injury status).
 
     Accepts a name ("Brock Purdy") or a gsis id ("00-0037834"). If the name
-    matches more than one player, nothing opens — the return text lists the
-    matches so you can disambiguate and call again.
+    matches more than one player, nothing opens — the text lists the matches
+    so you can disambiguate and call again.
     """
-    pid, note = _resolve_player(player)
+    pid, resolved_name, note = _resolve_player(player)
     if not pid:
-        return note
-    url = format_url("HISTORY", player_id=pid)
-    _enqueue_action("open_player", url, f"{player}'s page")
-    return f"Opening {player}'s page."
+        return ScreenResult(note or f"Could not resolve '{player}'.")
+    path = format_url("HISTORY", player_id=pid)
+    return ScreenResult(
+        text=f"Opened {resolved_name}'s page.",
+        path=path,
+        label=f"{resolved_name}'s page",
+        tool="open_player",
+    )
 
 
-def open_compare(players: list[str]) -> str:
-    """Open the side-by-side comparison view for up to 4 players.
+def open_compare(players: list[str]) -> ScreenResult:
+    """Open the side-by-side comparison view for 2 to 4 players.
 
     Pass full names or gsis ids. Each is resolved independently; if any name is
-    ambiguous the whole call is rejected so the user doesn't land on a partial
+    ambiguous the whole call is rejected so the user never lands on a partial
     comparison.
     """
     if not players:
-        return "Pass at least one player name."
+        return ScreenResult("Pass at least two players to compare.")
     if len(players) > MAX_COMPARE_IDS:
-        return f"Compare supports at most {MAX_COMPARE_IDS} players; you passed {len(players)}."
+        return ScreenResult(
+            f"Compare holds at most {MAX_COMPARE_IDS} players; you passed {len(players)}."
+        )
 
     ids: list[str] = []
     names: list[str] = []
     for p in players:
-        pid, note = _resolve_player(p)
+        pid, resolved_name, note = _resolve_player(p)
         if not pid:
-            return f"Cannot compare: {note}"
+            return ScreenResult(f"Cannot compare: {note}")
         ids.append(pid)
-        names.append(p)
-    url = format_url("COMPARE", ids=ids)
-    label = " vs ".join(names[:2]) if len(names) <= 2 else f"{len(names)} players"
-    _enqueue_action("open_compare", url, f"comparing {label}")
-    return f"Opening comparison of {', '.join(names)}."
+        names.append(resolved_name or p)
+    path = format_url("COMPARE", ids=ids)
+    label = "Compare: " + " vs ".join(names)
+    return ScreenResult(
+        text=f"Opened the comparison of {' vs '.join(names)} on the user's screen.",
+        path=path,
+        label=label,
+        tool="open_compare",
+    )
 
 
-def open_team(team: str, tab: str = "overview") -> str:
+def open_team(team: str, tab: str = "overview") -> ScreenResult:
     """Open a team's page (offense overview or team builder).
 
-    ``team`` accepts an abbreviation ("BUF"), a full name ("Bills") or a city
-    ("Buffalo"). ``tab`` is "overview" (default) or "builder" for the team
-    builder.
+    ``team`` accepts an abbreviation ("BUF"), a nickname ("Bills") or a city
+    ("Buffalo"). ``tab`` is "overview" (default) or "builder".
     """
     abbr = _resolve_team(team)
     if not abbr:
-        return f"'{team}' is not a recognized team. Use an abbreviation like BUF, KC, or SF."
+        return ScreenResult(
+            f"'{team}' is not a recognized team. Use an abbreviation like BUF, KC, or SF."
+        )
     tab_lower = (tab or "overview").strip().lower()
     if tab_lower not in ("overview", "builder"):
         tab_lower = "overview"
-    url = format_url("TEAM_PAGE", team=abbr, tab=tab_lower)
-    _enqueue_action("open_team", url, f"the {abbr} team page ({tab_lower})")
-    return f"Opening the {abbr} team page, {tab_lower} tab."
+    path = format_url("TEAM_PAGE", team=abbr, tab=tab_lower)
+    return ScreenResult(
+        text=f"Opened the {abbr} team page, {tab_lower} tab.",
+        path=path,
+        label=f"{abbr} team ({tab_lower})",
+        tool="open_team",
+    )
 
 
-def open_game(away: str, home: str) -> str:
-    """Open the matchup page for a specific game (away team at home team).
+def open_game(team: str, week: int = 0) -> ScreenResult:
+    """Open the matchup page for the game a team plays in a given week.
 
-    Both arguments accept abbreviations ("BUF"), full names ("Bills") or cities
-    ("Buffalo"). The away team is listed first.
+    ``team`` accepts an abbreviation ("BUF"), a nickname ("Bills") or a city
+    ("Buffalo"). ``week`` 0 means the current week, so you never need to know
+    who is home. A bye week opens nothing and says so.
     """
-    away_abbr = _resolve_team(away)
-    home_abbr = _resolve_team(home)
-    if not away_abbr:
-        return f"'{away}' is not a recognized away team."
-    if not home_abbr:
-        return f"'{home}' is not a recognized home team."
-    if away_abbr == home_abbr:
-        return "The away and home teams are the same."
-    url = format_url("GAME", away=away_abbr, home=home_abbr)
-    _enqueue_action("open_game", url, f"{away_abbr} @ {home_abbr}")
-    return f"Opening the {away_abbr} @ {home_abbr} game."
+    abbr = _resolve_team(team)
+    if not abbr:
+        return ScreenResult(
+            f"'{team}' is not a recognized team. Use an abbreviation like BUF, KC, or SF."
+        )
+    wk = week or _current_week()
+    games = _get("/schedule", {"week": wk}) or []
+    row = next(
+        (g for g in games if g.get("home_team") == abbr or g.get("away_team") == abbr),
+        None,
+    )
+    if not row:
+        return ScreenResult(f"The {abbr} have no game in week {wk} (bye week).")
+    away, home = row.get("away_team"), row.get("home_team")
+    path = format_url("GAME", away=away, home=home)
+    return ScreenResult(
+        text=f"Opened {away} @ {home} (week {wk}).",
+        path=path,
+        label=f"{away} @ {home}",
+        tool="open_game",
+    )
 
 
-# --- UI interaction tools ---------------------------------------------------
+def add_to_compare(player: str) -> ScreenResult:
+    """Add one player to the comparison tray the user is building.
 
-def add_to_compare(player: str) -> str:
-    """Add a player to the comparison tray and switch to the compare view.
-
-    Use this when the user is already looking at someone and says "add him to
-    my comparison" — it resolves the name and opens compare with the player
-    included. The compare view holds up to 4 players.
+    Use this when the user says "add him to my comparison" rather than naming
+    the whole set at once. The browser merges the id into its existing list.
+    For a fresh comparison of named players, prefer open_compare.
     """
-    pid, note = _resolve_player(player)
+    pid, resolved_name, note = _resolve_player(player)
     if not pid:
-        return note
-    # We don't know the existing compare list from here; the browser merges.
-    # The URL carries just this player; the frontend's applyLocation for
-    # COMPARE replaces the list, so we use open_compare semantics.
-    url = format_url("COMPARE", ids=[pid])
-    _enqueue_action("add_to_compare", url, f"comparing {player}")
-    return f"Added {player} to the comparison and opened the view."
+        return ScreenResult(note or f"Could not resolve '{player}'.")
+    path = format_url("COMPARE", ids=[pid])
+    return ScreenResult(
+        text=f"Added {resolved_name} to the comparison on the user's screen.",
+        path=path,
+        label=f"Compare {resolved_name}",
+        tool="add_to_compare",
+    )
 
 
-def go_back() -> str:
-    """Send the user back one screen, like the browser's Back button."""
-    # A special URL the frontend intercepts: it calls history.back().
-    _enqueue_action("go_back", "app://back", "the previous screen")
-    return "Going back."
+def go_back() -> ScreenResult:
+    """Send the user back one screen, like the browser's Back button.
 
-
-def set_sleeper_tab(tab: str) -> str:
-    """Switch the My Team (Sleeper) view to a tab: lineup, waivers, or league.
-
-    The user must already be on the My Team page, or this will navigate there
-    first.
+    Use it when the user says "go back" after you (or they) changed screens.
     """
-    t = (tab or "lineup").strip().lower()
-    if t not in ("lineup", "waivers", "league"):
-        return f"'{tab}' is not a My Team tab. Use lineup, waivers, or league."
-    url = format_url("MY_TEAM", tab=t.upper())
-    _enqueue_action("set_sleeper_tab", url, f"my team, {t} tab")
-    return f"Switching My Team to the {t} tab."
-
-
-def resolve_player_name(name: str) -> str:
-    """Look up a player's id and team without opening a page.
-
-    Use this when you need to confirm a name resolves to exactly one player
-    before calling open_player or open_compare, or when the user asks "is there
-    a player named X" without wanting to navigate.
-    """
-    pid, note = _resolve_player(name)
-    if not pid:
-        return note
-    return f"{name} -> player_id {pid}."
+    return ScreenResult(
+        text="Went back one screen.",
+        path="app://back",
+        label="Back to the previous screen",
+        tool="go_back",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Tool registry: names the pi extension discovers via /agent/tools
+# Tool registry
 # ---------------------------------------------------------------------------
 
-# (name, function) in the order the model should see them. Navigation first,
-# then interaction, then the resolver.
+# (name, function), after the data tools in agent/tools.py's list. Fewer,
+# non-overlapping tools means fewer wrong picks by small models: resolve_player
+# and set_sleeper_tab were removed in favour of search_players and open_screen.
 SCREEN_ACTION_TOOLS: tuple[tuple[str, Any], ...] = (
     ("open_screen", open_screen),
     ("open_player", open_player),
@@ -466,16 +494,6 @@ SCREEN_ACTION_TOOLS: tuple[tuple[str, Any], ...] = (
     ("open_game", open_game),
     ("add_to_compare", add_to_compare),
     ("go_back", go_back),
-    ("set_sleeper_tab", set_sleeper_tab),
-    ("resolve_player_name", resolve_player_name),
 )
 
-# JSON Schema types the tool signatures use. Mirrors agent/tools._JSON_TYPES
-# but adds list[str] (already there) — kept local so this module is standalone.
-_JSON_TYPES: dict[Any, dict] = {
-    str: {"type": "string"},
-    int: {"type": "integer"},
-    float: {"type": "number"},
-    bool: {"type": "boolean"},
-    list[str]: {"type": "array", "items": {"type": "string"}},
-}
+SCREEN_TOOL_NAMES: frozenset[str] = frozenset(name for name, _ in SCREEN_ACTION_TOOLS)

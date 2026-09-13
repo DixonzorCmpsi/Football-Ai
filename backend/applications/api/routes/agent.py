@@ -94,11 +94,14 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
-def _require_session_token(request: Request) -> None:
+def _require_session_token(request: Request):
+    """The grant the request's session token carries, or a 401."""
     header = request.headers.get("authorization") or ""
     token = header[7:].strip() if header.lower().startswith("bearer ") else None
-    if verify(token) is None:
+    grant = verify(token)
+    if grant is None:
         raise HTTPException(status_code=401, detail="Agent session token required")
+    return grant
 
 
 # Exempt from the per-IP limiter for the same reason as the proxy: the calls come
@@ -122,10 +125,15 @@ def call_agent_tool(name: str, call: ToolCall, request: Request):
     A failing tool returns 200 with `error` set rather than an HTTP error: the
     model needs to read what went wrong and try something else, and an exception
     crossing the extension boundary would abort the whole answer instead.
+
+    A screen tool that resolved a movement has its path pushed onto this
+    conversation's action queue. Only this route knows the conversation — it
+    comes from the session token — so the queue is touched here, never inside
+    the tools.
     """
-    _require_session_token(request)
+    grant = _require_session_token(request)
     try:
-        return {"text": agent_tools.call_tool(name, call.arguments)}
+        text, screen = agent_tools.call_tool_result(name, call.arguments)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"No agent tool named '{name}'") from None
     except agent_tools.ToolsUnavailable as exc:
@@ -133,6 +141,11 @@ def call_agent_tool(name: str, call: ToolCall, request: Request):
     except Exception as exc:
         logger.warning("agent tool %s failed: %s", name, exc)
         return {"error": f"{type(exc).__name__}: {exc}"}
+    if screen is not None and screen.path:
+        screen_actions.push_action(
+            grant.conversation_id, screen.path, screen.label or screen.text, screen.tool or name
+        )
+    return {"text": text}
 
 
 # ---------------------------------------------------------------------------
@@ -359,10 +372,9 @@ async def agent_chat(request: Request, body: ChatRequest):
 
     prompt = build_prompt(body.message.strip(), body.screen)
     proxy.begin_question(body.conversation_id)
-    # Set up the action queue so screen-action tools can enqueue movements
-    # that this stream ships to the browser alongside text deltas.
-    screen_actions.install(body.conversation_id)
-    screen_actions.set_conversation(body.conversation_id)
+    # Leftovers from an earlier question must never replay into this answer's
+    # stream. The queue lives for the conversation; only its stale entries go.
+    screen_actions.discard_actions(body.conversation_id)
     bridge: queue.Queue = queue.Queue()
     _DONE = object()
 
@@ -408,10 +420,9 @@ async def agent_chat(request: Request, body: ChatRequest):
                     settled = True
                     failed = out["type"] == "error"
                 yield _sse(out)
-                # After each event, drain any screen actions the tools enqueued.
-                # Done in-line so a tool's action reaches the browser before the
-                # next text delta, preserving the causal order the user expects.
-                for action in screen_actions.drain(body.conversation_id):
+                # Drain after each event so an action reaches the browser next
+                # to the text that caused it, in the order the model made them.
+                for action in screen_actions.drain_actions(body.conversation_id):
                     yield _sse(action.to_event())
             # A pipe that closes mid-answer still owes the UI a terminal event,
             # otherwise the dock spins forever.
@@ -423,12 +434,10 @@ async def agent_chat(request: Request, body: ChatRequest):
                     if text
                     else {"type": "error", "message": model_error or "The agent returned nothing."}
                 )
-            # Final drain: actions enqueued by the last tool call.
-            for action in screen_actions.drain(body.conversation_id):
+            # Actions from the last tool call land after the answer settles.
+            for action in screen_actions.drain_actions(body.conversation_id):
                 yield _sse(action.to_event())
         finally:
-            screen_actions.set_conversation(None)
-            screen_actions.teardown(body.conversation_id)
             # A question that produced no answer shouldn't cost the user one.
             if quota is not None and failed and not answer and not owner:
                 await run_in_threadpool(usage().refund_question, client_id, ip)

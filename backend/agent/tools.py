@@ -13,9 +13,11 @@ two agents.
 Tool specs are derived from the functions themselves (signature + docstring),
 so adding a tool to the MCP server and listing its name here is the whole job.
 
-Screen-action tools (open_player, open_game, etc.) live in
-``agent.screen_actions`` and are merged into the same registry so the model
-sees one flat tool list.
+Screen-action tools (open_player, open_game, ...) live in
+``agent.screen_actions`` and sit in the same registry after the data tools.
+They return a ``ScreenResult`` rather than plain text: the route pushes its
+path onto the conversation's action queue, because only the route knows which
+conversation a call belongs to (from the session token).
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ import inspect
 import logging
 import typing
 from typing import Any, Callable
+
+from agent.screen_actions import SCREEN_ACTION_TOOLS, SCREEN_TOOL_NAMES, ScreenResult
 
 logger = logging.getLogger(__name__)
 
@@ -48,20 +52,9 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "sleeper_analyze_roster",
     "sleeper_waiver_targets",
     "get_status",
-)
+) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS)
 
-# Screen-action tools: move the user's screen, resolve names to ids. See
-# agent/screen_actions.py. Listed after the football tools so the model sees
-# data tools first, but they are equal citizens in the registry.
-from agent import screen_actions as _screen_actions
-
-SCREEN_ACTION_TOOL_NAMES: tuple[str, ...] = tuple(
-    name for name, _fn in _screen_actions.SCREEN_ACTION_TOOLS
-)
-
-EXPOSED_TOOLS += SCREEN_ACTION_TOOL_NAMES
-
-# Python annotation -> JSON Schema. The tool signatures only use these four;
+# Python annotation -> JSON Schema. The tool signatures only use these;
 # anything else should fail loudly at import rather than reach the model as an
 # untyped parameter it will guess at.
 _JSON_TYPES: dict[Any, dict] = {
@@ -77,17 +70,17 @@ class ToolsUnavailable(RuntimeError):
     """The MCP tool module could not be imported; the agent has no tools."""
 
 
-_registry: dict[str, Callable[..., str]] | None = None
+_registry: dict[str, Callable[..., Any]] | None = None
 
 
-def _load() -> dict[str, Callable[..., str]]:
+def _load() -> dict[str, Callable[..., Any]]:
     """Import the MCP server module and pick out the exposed functions.
 
     FastMCP's @mcp.tool() returns the undecorated function, so these are plain
     callables -- no MCP session, no transport, just a function call.
 
-    Screen-action tools from agent.screen_actions are merged in alongside the
-    MCP tools so the model sees one flat list.
+    Screen-action tools come from agent.screen_actions, not mcp_server, and are
+    merged in so the model sees one flat list.
     """
     global _registry
     if _registry is not None:
@@ -97,12 +90,10 @@ def _load() -> dict[str, Callable[..., str]]:
     except Exception as exc:  # pragma: no cover - import environment specific
         raise ToolsUnavailable(f"cannot import mcp_server.server: {exc}") from exc
 
-    found: dict[str, Callable[..., str]] = {}
+    found: dict[str, Callable[..., Any]] = {}
     for name in EXPOSED_TOOLS:
-        # Screen-action tools come from screen_actions, not mcp_server.
-        screen_fn = dict(_screen_actions.SCREEN_ACTION_TOOLS).get(name)
-        if screen_fn is not None:
-            found[name] = screen_fn
+        if name in SCREEN_TOOL_NAMES:
+            found[name] = dict(SCREEN_ACTION_TOOLS)[name]
             continue
         fn = getattr(mcp_server, name, None)
         if not callable(fn):
@@ -113,7 +104,7 @@ def _load() -> dict[str, Callable[..., str]]:
     return found
 
 
-def _spec(name: str, fn: Callable[..., str]) -> dict:
+def _spec(name: str, fn: Callable[..., Any]) -> dict:
     sig = inspect.signature(fn)
     # get_type_hints, not __annotations__: mcp_server uses `from __future__
     # import annotations`, so the raw annotations are strings like "int".
@@ -155,21 +146,42 @@ def list_tools() -> list[dict]:
     return [_spec(name, fn) for name, fn in _load().items()]
 
 
-def call_tool(name: str, arguments: dict | None = None) -> str:
-    """Run one tool. Raises KeyError for an unknown name."""
-    registry = _load()
-    if name not in registry:
-        raise KeyError(name)
-    fn = registry[name]
-    args = dict(arguments or {})
+def is_screen_tool(name: str) -> bool:
+    return name in SCREEN_TOOL_NAMES
 
-    # Drop anything the model invented. A stray keyword would raise TypeError
-    # deep inside the tool, which reads to the user as a backend failure.
+
+def _clean_args(fn: Callable, name: str, arguments: dict | None) -> dict:
+    """Drop anything the model invented. A stray keyword would raise TypeError
+    deep inside the tool, which reads to the user as a backend failure."""
+    args = dict(arguments or {})
     accepted = set(inspect.signature(fn).parameters)
     unknown = [k for k in args if k not in accepted]
     for key in unknown:
         args.pop(key)
     if unknown:
         logger.info("agent tool %s: ignored unknown argument(s) %s", name, unknown)
+    return args
 
-    return fn(**args)
+
+def call_tool(name: str, arguments: dict | None = None) -> str:
+    """Run one tool and return its text. Raises KeyError for an unknown name."""
+    text, _screen = call_tool_result(name, arguments)
+    return text
+
+
+def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, ScreenResult | None]:
+    """Run one tool; also return its ScreenResult when it is a screen tool.
+
+    A screen tool that resolved a movement returns (text, ScreenResult) and the
+    route queues the path for the conversation. A data tool returns
+    (text, None). Raises KeyError for an unknown name.
+    """
+    registry = _load()
+    if name not in registry:
+        raise KeyError(name)
+    fn = registry[name]
+    args = _clean_args(fn, name, arguments)
+    out = fn(**args)
+    if isinstance(out, ScreenResult):
+        return out.text, out
+    return str(out), None

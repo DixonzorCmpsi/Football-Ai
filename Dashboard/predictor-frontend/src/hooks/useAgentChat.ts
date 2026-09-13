@@ -30,10 +30,13 @@ export type AgentTurn = {
   text: string;
   /** Tools the agent called for this answer, in order, deduped. */
   tools?: string[];
-  /** Screen actions the agent emitted (open player, open game, etc.). */
+  /** Screen actions in this answer, kept for the reopen buttons. */
   actions?: { url: string; label: string; tool: string }[];
   error?: boolean;
 };
+
+/** One movement the browser should perform, as sent by the screen_action event. */
+export type AgentScreenAction = { url: string; label: string; tool: string };
 
 const STORE_KEY = 'spotai.agent.session.v1';
 
@@ -69,6 +72,13 @@ export function useAgentChat() {
   // Free-tier allowance, refreshed by every answer and by refreshQuota().
   const [quota, setQuota] = useState<AgentQuota | null>(null);
   const [houseConfigured, setHouseConfigured] = useState<boolean | null>(null);
+  // The host's action handler, held in a ref so registering it never makes
+  // `send` (or anything else) stale. Actions are delivered as events the
+  // moment they arrive — never replayed from the transcript on reload.
+  const actionHandlerRef = useRef<((a: AgentScreenAction) => void) | null>(null);
+  const setActionHandler = useCallback((fn: ((a: AgentScreenAction) => void) | null) => {
+    actionHandlerRef.current = fn;
+  }, []);
 
   const refreshQuota = useCallback(async () => {
     try {
@@ -184,10 +194,11 @@ export function useAgentChat() {
             } else if (event.type === 'tool' && event.state === 'end') {
               setActiveTool(null);
             } else if (event.type === 'screen_action' && event.url) {
-              patchLast((t) => ({
-                ...t,
-                actions: [...(t.actions || []), { url: event.url!, label: event.label || '', tool: event.tool || '' }],
-              }));
+              const action: AgentScreenAction = { url: event.url, label: event.label || '', tool: event.tool || '' };
+              patchLast((t) => ({ ...t, actions: [...(t.actions || []), action] }));
+              // Deliver now, as an event. The transcript copy is for the
+              // reopen buttons only; nothing replays it on reload.
+              actionHandlerRef.current?.(action);
             } else if (event.type === 'done') {
               // Authoritative: deltas can be dropped, this is the whole answer.
               if (event.text) patchLast((t) => ({ ...t, text: event.text! }));
@@ -238,5 +249,5 @@ export function useAgentChat() {
 
   const lastAnswer = [...turns].reverse().find((t) => t.role === 'agent') || null;
 
-  return { turns, send, stop, reset, streaming, activeTool, lastAnswer, quota, houseConfigured, refreshQuota };
+  return { turns, send, stop, reset, streaming, activeTool, lastAnswer, quota, houseConfigured, refreshQuota, setActionHandler };
 }

@@ -22,6 +22,7 @@ import AgentPanel from './components/AgentPanel';
 import { useAgentScreenContext } from './contexts/AgentScreenContext';
 import type { ScreenEntity } from './contexts/AgentScreenContext';
 import { useAgentChatContext } from './contexts/AgentChatContext';
+import type { AgentScreenAction } from './hooks/useAgentChat';
 import { formatAppUrl, parseAppUrl } from './lib/appUrl';
 import type { AppLocation } from './lib/appUrl';
 import type { Tab as SleeperTab } from './components/SleeperView';
@@ -192,9 +193,8 @@ export default function App() {
   const [showSidebars, setShowSidebars] = useState(true); 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   // The agent's conversation and panel visibility are app-wide: the dock floats
-  // over every view and the panel takes the right rail's place.
-  const { panelOpen, openDock, settings: agentSettings, pendingActions } = useAgentChatContext();
-  const allowNavigation = agentSettings.allowNavigation !== false;
+  // over every view and the panel takes the right rail's place. (Panel state and
+  // settings are read further down, next to where they're used.)
   const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
@@ -238,10 +238,14 @@ export default function App() {
   // --- URL ↔ state sync ---------------------------------------------------
   // The URL is the single source of truth for which screen is showing, so a
   // reload, a shared link, or the browser's Back button all restore the right
-  // view. We push on internal navigation and apply on popstate. A suppress flag
-  // stops the push effect from echoing the location we just applied.
+  // view. One source of pushes: the effect below, which pushes only when the
+  // URL differs from the state's canonical form. Applying a URL (popstate,
+  // initial load) just sets state; the effect then sees no difference.
   const [sleeperTab, setSleeperTab] = useState<SleeperTab>('LINEUP');
-  const suppressPush = useRef(false);
+  // The tab request the agent (or a deep link) sent, with a nonce so the same
+  // tab can be requested twice in a row. Separate from sleeperTab, which only
+  // reports what SleeperView is showing.
+  const [sleeperTabRequest, setSleeperTabRequest] = useState<{ tab: SleeperTab; nonce: number } | null>(null);
 
   // Builds the canonical AppLocation from the *current* app state. Drives the
   // push effect: whenever the user navigates, this changes, and we push.
@@ -268,124 +272,182 @@ export default function App() {
     }
   }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab]);
 
-  // Map an AppLocation (from the URL or the agent) onto the app's state setters.
-  // Uses setViewModeRaw so a popstate doesn't grow the nav stack — the browser
-  // already manages the Back stack in that case.
+  // Map an AppLocation onto the app's state setters. `push` decides the view
+  // setter: agent actions and buttons use setViewMode so the header Back button
+  // (which walks the in-app navStack) can return from them; popstate and the
+  // initial load use the raw setter, because the browser stack already covers
+  // those and pushing again would double-count.
   const applyLocation = useCallback(
     (loc: AppLocation, push: boolean) => {
-      suppressPush.current = true;
+      const setView = push ? setViewMode : setViewModeRaw;
       switch (loc.view) {
         case 'SCHEDULE':
-          setViewModeRaw('SCHEDULE');
+          setView('SCHEDULE');
           break;
         case 'GAME':
           setSelectedGame({ home: loc.home, away: loc.away });
-          setViewModeRaw('GAME');
+          setView('GAME');
           break;
         case 'LOOKUP':
-          setViewModeRaw('LOOKUP');
+          setView('LOOKUP');
           break;
         case 'COMPARE':
           setCompareList(loc.ids);
-          setViewModeRaw('COMPARE');
+          setView('COMPARE');
           break;
         case 'HISTORY':
           setSelectedHistoryId(loc.playerId);
           setHistoryFrom('SCHEDULE');
-          setViewModeRaw('HISTORY');
+          setView('HISTORY');
           break;
         case 'TRENDING':
-          setViewModeRaw('TRENDING');
+          setView('TRENDING');
           break;
         case 'PICKS':
-          setViewModeRaw('PICKS');
+          setView('PICKS');
           break;
         case 'PLAYOFFS':
-          setViewModeRaw('PLAYOFFS');
+          setView('PLAYOFFS');
           break;
         case 'TIERS':
-          setViewModeRaw('TIERS');
+          setView('TIERS');
           break;
         case 'TEAMS':
-          setViewModeRaw('TEAMS');
+          setView('TEAMS');
           break;
         case 'GAME_RANKS':
-          setViewModeRaw('GAME_RANKS');
+          setView('GAME_RANKS');
           break;
         case 'TEAM_PAGE':
           setTeamModal({ team: loc.team, initialTab: loc.tab });
-          setViewModeRaw('TEAM_PAGE');
+          setView('TEAM_PAGE');
           break;
         case 'MY_TEAM':
-          setSleeperTab(loc.tab);
-          setViewModeRaw('MY_TEAM');
+          setSleeperTabRequest({ tab: loc.tab, nonce: Date.now() + Math.random() });
+          setView('MY_TEAM');
           break;
       }
-      // Re-allow pushing after this tick so the push effect sees the settled state.
-      Promise.resolve().then(() => { suppressPush.current = false; });
-      if (push) {
-        const url = formatAppUrl(loc);
-        window.history.pushState({ loc }, '', url);
-      }
+      // No push here: the effect that watches currentLocation is the one
+      // source of pushes, and it fires once this state settles.
     },
-    [],
+    [setViewMode],
   );
 
-  // On first mount: parse the URL the page loaded with and apply it. This is a
-  // replaceState, not a push, so the initial entry is correct.
+  // On first mount: parse the URL the page loaded with and apply it. Raw
+  // setter — the browser owns this history entry already. lastAppliedFrom
+  // records the URL the state came from so the push effect doesn't echo it.
+  const lastAppliedFrom = useRef<string | null>(null);
   useEffect(() => {
-    const loc = parseAppUrl(window.location.pathname + window.location.search);
-    if (loc && loc.view !== 'SCHEDULE') {
+    const here = window.location.pathname + window.location.search;
+    const loc = parseAppUrl(here);
+    if (loc) {
+      lastAppliedFrom.current = formatAppUrl(loc);
       applyLocation(loc, false);
-      window.history.replaceState({ loc }, '', formatAppUrl(loc));
+      const url = formatAppUrl(loc);
+      if (url !== here) {
+        window.history.replaceState({ loc }, '', url);
+      }
+    } else {
+      // Unknown path: behave as today, landing on the schedule at '/'.
+      window.history.replaceState({ loc: { view: 'SCHEDULE' } }, '', '/');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // popstate: the user hit Back/Forward, or the agent called pushState. Apply
-  // whatever the URL now says, without pushing again.
+  // popstate: the user hit Back/Forward. Apply whatever the URL now says,
+  // without pushing again (raw setter; the browser manages the stack).
   useEffect(() => {
     const onPop = () => {
-      const loc = parseAppUrl(window.location.pathname + window.location.search);
-      if (loc) applyLocation(loc, false);
+      const here = window.location.pathname + window.location.search;
+      const loc = parseAppUrl(here);
+      if (loc) {
+        lastAppliedFrom.current = formatAppUrl(loc);
+        applyLocation(loc, false);
+      }
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, [applyLocation]);
 
-  // Push effect: when currentLocation changes because the user navigated inside
-  // the app, reflect it in the address bar. Suppressed while applying a popstate
-  // so we don't double-push.
+  // The one source of pushes. When the state's canonical URL differs from the
+  // address bar — because the user clicked somewhere, or the agent navigated —
+  // push it. An application that came *from* the URL (mount, popstate) is
+  // skipped: the entry is the browser's already. So are no-op navigations
+  // (url already matches) and views a URL cannot express.
   useEffect(() => {
-    if (suppressPush.current) return;
     const url = formatAppUrl(currentLocation);
+    if (lastAppliedFrom.current !== null) {
+      if (url === lastAppliedFrom.current) {
+        // Settled into the URL-driven location: consumed, nothing to push.
+        lastAppliedFrom.current = null;
+        return;
+      }
+      // Not settled yet (the URL effect's setState hasn't committed) — wait.
+      return;
+    }
+    const here = window.location.pathname + window.location.search;
+    if (url === here) return;
+    // A view without its payload cannot be expressed; don't rewrite to a
+    // fallback screen the user didn't ask for.
+    const inexpressible =
+      (currentLocation.view === 'GAME' && !selectedGame) ||
+      (currentLocation.view === 'HISTORY' && !selectedHistoryId);
+    if (inexpressible) return;
     window.history.pushState({ loc: currentLocation }, '', url);
-  }, [currentLocation]);
+  }, [currentLocation, selectedGame, selectedHistoryId]);
 
   // --- Agent screen actions -----------------------------------------------
-  // When the agent emits a screen_action (open_player, open_game, etc.), apply
-  // it to the app's state — but only if the user hasn't turned off auto-
-  // navigation. When off, the action button still appears in the chat for the
-  // user to click manually. Each action is applied once; we track the count so
-  // a re-render doesn't double-navigate.
-  const appliedActionCount = useRef(0);
-  useEffect(() => {
-    if (!pendingActions.length) return;
-    // Only apply actions we haven't seen yet.
-    const newActions = pendingActions.slice(appliedActionCount.current);
-    appliedActionCount.current = pendingActions.length;
-    if (!allowNavigation) return;
-    for (const action of newActions) {
+  // Actions are events: they arrive once from the stream and are applied
+  // immediately. The transcript keeps a copy only for the reopen buttons;
+  // nothing replays them on reload. allowNavigation gates the automatic move —
+  // when off, the button still works because a click is the user asking.
+  const { panelOpen, openDock, settings: agentSettings, setActionHandler } = useAgentChatContext();
+  const allowNavigation = agentSettings.allowNavigation !== false;
+  const applyAgentActionRef = useRef<(action: AgentScreenAction) => void>(() => {});
+
+  const compareWithCap = useCallback((ids: string[]) => {
+    // compare holds at most 4 ids; an add merges into what's already there.
+    setCompareList((prev) => {
+      const merged = [...prev];
+      for (const id of ids) if (!merged.includes(id)) merged.push(id);
+      return merged.slice(0, 4);
+    });
+  }, []);
+
+  const applyAgentAction = useCallback(
+    (action: AgentScreenAction) => {
       if (action.url === 'app://back') {
         window.history.back();
-        continue;
+        return;
       }
       const loc = parseAppUrl(action.url);
-      if (loc) {
-        applyLocation(loc, true);
+      if (!loc) {
+        console.warn('agent action: unrecognized url', action.url);
+        return;
       }
-    }
-  }, [pendingActions, applyLocation, allowNavigation]);
+      if (action.tool === 'add_to_compare') {
+        // Merge the id into the current tray, then show it.
+        const ids = loc.view === 'COMPARE' ? loc.ids : [];
+        compareWithCap(ids);
+        setViewMode('COMPARE');
+        return;
+      }
+      applyLocation(loc, true);
+    },
+    [applyLocation, compareWithCap, setViewMode],
+  );
+
+  applyAgentActionRef.current = applyAgentAction;
+
+  // Register once: stream events go through the ref, which always holds the
+  // latest applier, so a settings change never leaves a stale handler behind.
+  useEffect(() => {
+    setActionHandler((action) => {
+      // The setting gates the automatic movement only.
+      if (allowNavigation) applyAgentActionRef.current(action);
+    });
+    return () => setActionHandler(null);
+  }, [setActionHandler, allowNavigation]);
 
   // GameRanksView and TierListView stay mounted for the whole session (hidden via
   // display:none) so their local state survives navigation. That means an unstable
@@ -901,7 +963,7 @@ export default function App() {
               season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
               onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
               onInnerNav={handleInnerNav}
-              requestedTab={sleeperTab}
+              requestedTab={sleeperTabRequest}
               onTabChange={setSleeperTab}
             />
             </div>
