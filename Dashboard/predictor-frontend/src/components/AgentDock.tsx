@@ -1,17 +1,23 @@
 /**
- * The floating entry point to the agent, bottom-right on every view.
+ * The floating entry point to the agent, bottom-center on every view.
  *
- * Collapsed it is one button. Open it is a composer with the latest answer in a
- * small box directly above the input -- close to the question, no navigation.
- * When the answer outgrows that box (or the user wants the thread), "See more"
- * hands off to the side panel, which takes the right rail's place.
+ * Collapsed it is one button (or press / or Ctrl/Cmd+K). Open it is a centered
+ * composer with the latest answer in a small box directly above the input --
+ * close to the question, no navigation. When the answer outgrows that box (or
+ * the user wants the thread), "See more" hands off to the side panel.
+ *
+ * While the assistant is operating the screen it steps aside: the composer
+ * shrinks in place to a small status pill saying what it's doing, so the page
+ * it is working on stays visible (the top of the page holds the nav it clicks). Esc (a real key press, not one the
+ * assistant sent) stops the run. When the run ends the composer comes back
+ * with the answer.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, ChevronsRight, KeyRound, Loader2, Settings2, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { useAgentChatContext } from '../contexts/AgentChatContext';
 import { byokReady } from '../lib/agentIdentity';
-import { toolLabel } from '../utils/agentLabels';
+import { isScreenTool, toolLabel } from '../utils/agentLabels';
 import AgentSettings from './AgentSettings';
 
 /** Answers taller than this get clipped with a "See more" affordance. */
@@ -23,7 +29,13 @@ const SUGGESTIONS = [
   'What does the line say?',
 ];
 
-export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }) {
+/** Whether a key press landed in something the user is typing into. */
+function typingInto(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+}
+
+export default function AgentDock() {
   const {
     ask, stop, reset, streaming, activeTool, lastAnswer, turns, panelOpen, openPanel,
     settings, updateSettings, quota, houseConfigured, dockRequest, applyAgentAction,
@@ -52,6 +64,33 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
 
   // While the panel has the thread, the dock is just the composer for it.
   const showPeek = !panelOpen && !!lastAnswer;
+
+  // Once this run has touched the screen, keep out of its way until it ends.
+  // Tied to the run rather than the current tool, so the dock doesn't flicker
+  // back between steps while the model thinks.
+  const steppingAside = streaming && (lastAnswer?.tools ?? []).some(isScreenTool);
+  const lastMove = lastAnswer?.actions?.[lastAnswer.actions.length - 1];
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Keys the assistant dispatches while driving the page are untrusted;
+      // only the person at the keyboard can stop it or summon the dock.
+      if (!e.isTrusted) return;
+      if (steppingAside && e.key === 'Escape') {
+        e.preventDefault();
+        stop();
+        return;
+      }
+      const shortcut = (e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typingInto(e.target));
+      if (shortcut) {
+        e.preventDefault();
+        setOpen(true);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [steppingAside, stop]);
 
   // Whether to offer "See more" at all: only when there is more to see.
   //
@@ -96,6 +135,38 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
           ? `Free · ${quota.remaining} of ${quota.limit} left today`
           : 'Free';
 
+  if (steppingAside) {
+    const label = activeTool ? toolLabel(activeTool) : 'thinking';
+    const step = label.charAt(0).toUpperCase() + label.slice(1);
+    return (
+      <div
+        data-testid="agent-working"
+        data-agent-ignore
+        role="status"
+        aria-live="polite"
+        className="fixed z-[70] bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 max-w-[calc(100vw-2rem)] flex items-center gap-2 rounded-full bg-slate-900/95 dark:bg-slate-100/95 text-white dark:text-slate-900 pl-3 pr-1.5 py-1.5 shadow-xl shadow-slate-900/25 backdrop-blur"
+      >
+        <span className="relative flex h-2.5 w-2.5 shrink-0">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-60 motion-safe:animate-ping" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
+        </span>
+        <span className="text-[12px] font-bold truncate">
+          {step}
+          {lastMove?.label && <span className="font-medium opacity-70"> · {lastMove.label}</span>}
+        </span>
+        <button
+          type="button"
+          onClick={stop}
+          data-testid="agent-working-stop"
+          title="Stop the assistant (Esc)"
+          className="ml-1 shrink-0 inline-flex items-center gap-1 rounded-full bg-white/15 dark:bg-slate-900/10 hover:bg-white/25 dark:hover:bg-slate-900/20 px-2 py-0.5 text-[11px] font-bold"
+        >
+          <Square size={9} /> Esc
+        </button>
+      </div>
+    );
+  }
+
   if (!open) {
     return (
       <button
@@ -104,7 +175,8 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
         data-testid="agent-dock-button"
         data-agent-ignore
         aria-label="Ask the AI about this page"
-        className={`fixed z-[60] bottom-20 right-4 md:bottom-6 ${offsetClass} h-12 w-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-900/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95`}
+        title="Ask about this page ( / )"
+        className="fixed z-[60] bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-900/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
       >
         {streaming ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} />}
       </button>
@@ -116,7 +188,7 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
       data-testid="agent-dock"
       // The assistant can't see or touch its own dock: this is where API keys are typed.
       data-agent-ignore
-      className={`fixed z-[60] bottom-20 right-4 md:bottom-6 ${offsetClass} w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xl shadow-slate-900/10 overflow-hidden`}
+      className={`fixed z-[60] bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 w-[34rem] max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xl shadow-slate-900/10 overflow-hidden`}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40">
         <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">

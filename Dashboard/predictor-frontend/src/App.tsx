@@ -1133,9 +1133,9 @@ export default function App() {
         </aside>
       )}
 
-      {/* Agentic entry point: floating on every view, nudged clear of the right
-          rail when that rail is on screen. */}
-      <AgentDock offsetClass={rightRailVisible ? 'xl:right-[21.5rem]' : ''} />
+      {/* Agentic entry point: bottom-center on every view; steps aside to a
+          status pill while the assistant is using the screen. */}
+      <AgentDock />
     </div>
   );
 }

@@ -39,6 +39,16 @@ const LABELS: Record<string, string> = {
   scroll: 'scrolling',
 };
 
+/** Tools that move or operate the user's screen. While one has run, the dock steps aside. */
+const SCREEN_TOOLS = new Set([
+  'open_screen', 'open_player', 'open_compare', 'open_team', 'open_game', 'open_player_card',
+  'add_to_compare', 'go_back', 'read_screen', 'click', 'type_text', 'press_key', 'select_option', 'scroll',
+]);
+
+export function isScreenTool(name: string): boolean {
+  return SCREEN_TOOLS.has(name);
+}
+
 export function toolLabel(name: string): string {
   return LABELS[name] || name.replace(/_/g, ' ');
 }
