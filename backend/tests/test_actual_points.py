@@ -37,6 +37,14 @@ def test_final_game_without_a_stat_line_is_zero_not_blank(week_one):
     assert prediction.actual_result("inactive", "TB", 1) == (0.0, True)
 
 
+def test_prop_actuals_line_up_with_the_card_labels(week_one):
+    stats = prediction.actual_stats("irving", 1, True)
+    assert stats["Rush Yds"] == 71 and stats["Receptions"] == 3 and stats["Rec Yds"] == 20 and stats["TDs"] == 1
+    assert stats["Pass Yds"] is None, "a column the stat line doesn't carry stays unknown"
+    assert prediction.actual_stats("inactive", 1, True)["Rush Yds"] == 0
+    assert prediction.actual_stats("chase", 2, False) is None
+
+
 def test_unplayed_game_has_no_actual(week_one):
     assert prediction.actual_result("chase", "CIN", 2) == (None, False)
     assert prediction.actual_result("somebody", "SEA", 1) == (None, False)

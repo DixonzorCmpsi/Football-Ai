@@ -22,6 +22,8 @@ export interface PlayerData {
   actual_points?: number | null;
   /** The player's game for this week is over. */
   game_final?: boolean;
+  /** What happened, keyed by prop label ("Pass Yds", "Receptions", "TDs", ...); null before the game. */
+  actual_stats?: Record<string, number | null> | null;
   snap_percentage?: number;
   is_injury_boosted?: boolean; // <-- Add this line
   // Depth-chart starter (pos_rank == 1). Drives roster ordering so the

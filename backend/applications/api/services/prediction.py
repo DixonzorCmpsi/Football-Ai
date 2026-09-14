@@ -503,6 +503,41 @@ def get_average_points_fallback(player_id, week):
         logger.warning(f"Average points fallback error: {e}")
     return 0.0
 
+# Card prop label -> the stat-line column(s) that settle it.
+PROP_STAT_COLUMNS = {
+    "Pass Yds": ("passing_yards",),
+    "Pass TDs": ("passing_touchdown",),
+    "Pass Att": ("attempts",),
+    "Rush Yds": ("rushing_yards",),
+    "Rush Att": ("rush_attempts",),
+    "Rec Yds": ("receiving_yards",),
+    "Receptions": ("receptions",),
+    "TDs": ("rush_touchdown", "receiving_touchdown"),
+}
+
+
+def actual_stats(player_id: str, week: int, game_final: bool) -> dict | None:
+    """What the player actually did, keyed by the card's prop labels.
+
+    None before the game. A final game with no stat line is all zeros: he
+    recorded nothing, which is exactly how his props settled.
+    """
+    stats = model_data.get("df_player_stats")
+    row = None
+    if isinstance(stats, pl.DataFrame) and not stats.is_empty() and {"player_id", "week"} <= set(stats.columns):
+        mine = stats.filter((pl.col("player_id") == player_id) & (pl.col("week") == int(week)))
+        if not mine.is_empty():
+            row = mine.row(0, named=True)
+    if row is None and not game_final:
+        return None
+    out = {}
+    for label, cols in PROP_STAT_COLUMNS.items():
+        values = [row.get(c) for c in cols] if row is not None else [0]
+        known = [float(v) for v in values if v is not None]
+        out[label] = (int(sum(known)) if float(sum(known)).is_integer() else round(sum(known), 1)) if known else None
+    return out
+
+
 def actual_result(player_id: str, team: str | None, week: int) -> tuple[float | None, bool]:
     """(full-PPR points the player scored that week, whether his team's game is final).
 
@@ -818,6 +853,8 @@ async def get_player_card(player_id: str, week: int):
         # Full PPR, once the week's stat line exists; game_final says the game is over.
         "actual_points": actual_points,
         "game_final": game_final,
+        # Pass Yds, Rec Yds, Receptions, TDs, ... as they happened, to set beside each prop line.
+        "actual_stats": actual_stats(player_id, week, game_final),
         "team": team,
         "opponent": opponent,
         "draft_position": format_draft_info(p_row.get('draft_year'), p_row.get('draft_number')),

@@ -44,6 +44,10 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
   const renderPropRow = (label: string, line: number | null, prob: number | null, propType: string) => {
     if (!line) return null;
     const pick = getPick(data.player_id, propType, data.week);
+    // After the game: what he actually did, beside the line it settled.
+    const actualValue = data.actual_stats?.[label];
+    const settled = actualValue != null;
+    const wentOver = settled && actualValue! > line;
     
     return (
       <div className="flex justify-between items-center text-[10px]">
@@ -72,6 +76,22 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
           <span className="text-slate-700 dark:text-white font-mono bg-white dark:bg-white/5 px-1.5 rounded shadow-sm border border-slate-100 dark:border-transparent">
             {line}
           </span>
+          {settled && (
+            <span
+              data-testid="prop-actual"
+              title={`Actual ${label}: ${actualValue} (${wentOver ? 'over' : actualValue! < line ? 'under' : 'push'} ${line})`}
+              className={`min-w-[44px] text-right font-mono font-black px-1 rounded ${
+                wentOver
+                  ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30'
+                  : actualValue! < line
+                    ? 'text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-900/30'
+                    : 'text-slate-600 dark:text-white/70'
+              }`}
+            >
+              {actualValue}
+              <span className="ml-0.5 text-[8px]">{wentOver ? 'O' : actualValue! < line ? 'U' : 'P'}</span>
+            </span>
+          )}
           <span className={`min-w-[28px] text-right ${getProbColor(prob)}`}>
             {prob ? `${prob}%` : ''}
           </span>
@@ -238,8 +258,23 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
 
         <div className="flex justify-between items-center text-[10px] border-t border-slate-200 dark:border-white/10 pt-1">
           <span className="text-slate-500 dark:text-white/60 font-medium">Anytime TD</span>
-          <span className={`font-mono ${getProbColor(data.anytime_td_prob)}`}>
-            {data.anytime_td_prob ? `${data.anytime_td_prob}%` : '-'}
+          <span className="flex items-center gap-2">
+            <span className={`font-mono ${getProbColor(data.anytime_td_prob)}`}>
+              {data.anytime_td_prob ? `${data.anytime_td_prob}%` : '-'}
+            </span>
+            {data.actual_stats?.TDs != null && (
+              <span
+                data-testid="prop-actual"
+                className={`min-w-[44px] text-right font-mono font-black px-1 rounded ${
+                  data.actual_stats.TDs > 0
+                    ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30'
+                    : 'text-slate-500 dark:text-white/50'
+                }`}
+                title="Rushing + receiving touchdowns scored"
+              >
+                {data.actual_stats.TDs > 0 ? `${data.actual_stats.TDs} TD` : 'no TD'}
+              </span>
+            )}
           </span>
         </div>
 
