@@ -249,6 +249,25 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
 
         {data.position === 'QB' && renderPropRow('Pass TDs', data.pass_td_line, data.pass_td_prob, 'Pass TDs')}
 
+        {/* No passing-TD line posted, but the game is played: still show the TDs he threw,
+            so "no rush/rec TD" below never reads as "no touchdowns at all". */}
+        {data.position === 'QB' && !data.pass_td_line && data.actual_stats?.['Pass TDs'] != null && (
+          <div className="flex justify-between items-center text-[10px]">
+            <span className="text-slate-500 dark:text-white/60 font-medium">Pass TDs</span>
+            <span
+              data-testid="prop-actual"
+              title="Touchdown passes thrown (no Vegas line posted)"
+              className={`min-w-[44px] text-right font-mono font-black px-1 rounded ${
+                data.actual_stats['Pass TDs']! > 0
+                  ? 'text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-900/30'
+                  : 'text-slate-500 dark:text-white/50'
+              }`}
+            >
+              {data.actual_stats['Pass TDs']} thrown
+            </span>
+          </div>
+        )}
+
         {/* --- NEW PROPS --- */}
         {data.position === 'QB' && renderPropRow('Pass Att', data.pass_att_line ?? null, data.pass_att_prob ?? null, 'Pass Att')}
 
@@ -257,7 +276,11 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
         {(data.position === 'WR' || data.position === 'TE') && renderPropRow('Receptions', data.rec_line ?? null, data.rec_prob ?? null, 'Receptions')}
 
         <div className="flex justify-between items-center text-[10px] border-t border-slate-200 dark:border-white/10 pt-1">
-          <span className="text-slate-500 dark:text-white/60 font-medium">Anytime TD</span>
+          {/* Anytime TD is the player crossing the goal line himself: rushing or receiving.
+              A quarterback's touchdown passes don't count, so say so. */}
+          <span className="text-slate-500 dark:text-white/60 font-medium" title="Scores a rushing or receiving touchdown himself; touchdown passes don't count">
+            Anytime TD <span className="text-slate-400 dark:text-white/40">(rush/rec)</span>
+          </span>
           <span className="flex items-center gap-2">
             <span className={`font-mono ${getProbColor(data.anytime_td_prob)}`}>
               {data.anytime_td_prob ? `${data.anytime_td_prob}%` : '-'}
@@ -272,7 +295,7 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
                 }`}
                 title="Rushing + receiving touchdowns scored"
               >
-                {data.actual_stats.TDs > 0 ? `${data.actual_stats.TDs} TD` : 'no TD'}
+                {data.actual_stats.TDs > 0 ? `${data.actual_stats.TDs} TD` : data.position === 'QB' ? 'no rush TD' : 'no TD'}
               </span>
             )}
           </span>
