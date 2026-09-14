@@ -529,7 +529,7 @@ async def get_player_card(player_id: str, week: int):
         # If prediction failed, try to compute rolling average directly from DB (robust fallback)
         if (not rolling_avg_val or rolling_avg_val == 0) and DB_CONNECTION_STRING:
             try:
-                q = f"SELECT y_fantasy_points_ppr, passing_yards, rushing_yards, receiving_yards, receptions, passing_touchdown, rush_touchdown, receiving_touchdown, interceptions, fumbles_lost, week FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 12"
+                q = f"SELECT y_fantasy_points_ppr, passing_yards, rushing_yards, receiving_yards, receptions, passing_touchdown, rush_touchdown, receiving_touchdown, interception AS interceptions, COALESCE(rushing_fumbles_lost, 0) + COALESCE(receiving_fumbles_lost, 0) AS fumbles_lost, week FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 12"
                 hist_df = read_db(q)
                 if not hist_df.is_empty():
                     pts = []
@@ -586,6 +586,8 @@ async def get_player_card(player_id: str, week: int):
     total_line = None 
     spread_val = None
     implied_total = None
+    moneyline = None
+    lines_source = None
     props_data = [] 
     prop_line = None
     prop_prob = None
@@ -616,6 +618,8 @@ async def get_player_card(player_id: str, week: int):
                 # Calculate spread relative to player's team
                 h_team = get_team_abbr(row.get("home_team"))
                 p_team = get_team_abbr(team) # Ensure player team is also normalized
+                moneyline = row.get("home_ml") if h_team == p_team else row.get("away_ml")
+                lines_source = "schedule" if row.get("processed_at") == "schedule" else "bovada"
                 
                 if raw_spread is not None:
                     try:
@@ -645,7 +649,16 @@ async def get_player_card(player_id: str, week: int):
                     p_props = week_props.filter(pl.col("player_name") == match)
 
             if not p_props.is_empty():
-                props_data = p_props.select(["prop_type", "line", "odds", "implied_prob"]).to_dicts()
+                keep = [c for c in ["prop_type", "line", "odds", "implied_prob", "side"] if c in p_props.columns]
+                props_data = p_props.select(keep).to_dicts()
+
+                def _over_side(df: pl.DataFrame) -> pl.DataFrame:
+                    # A market has an over AND an under row. Without this the
+                    # headline "over probability" was whichever row came first.
+                    if df.is_empty() or "side" not in df.columns:
+                        return df
+                    overs = df.filter(pl.col("side").cast(pl.Utf8).str.to_lowercase().is_in(["over", "yes"]))
+                    return overs if not overs.is_empty() else df
                 
                 target_props = []
                 if pos == 'QB': target_props = ["Passing Yards", "Pass Yards", "Pass Yds"]
@@ -664,9 +677,8 @@ async def get_player_card(player_id: str, week: int):
                     if main_p.is_empty() and pos == 'RB':
                          main_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("rushing & receiving yards"))
 
+                    main_p = _over_side(main_p)
                     if not main_p.is_empty():
-                        # Sort to prefer exact match if possible (though contains is broad)
-                        # Just take the first one for now
                         row = main_p.row(0, named=True)
                         prop_line = row['line']
                         prop_prob = row['implied_prob'] 
@@ -678,6 +690,7 @@ async def get_player_card(player_id: str, week: int):
                         td_pass = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not td_pass.is_empty(): break
                     
+                    td_pass = _over_side(td_pass)
                     if not td_pass.is_empty():
                         row = td_pass.row(0, named=True)
                         pass_td_line = row['line']
@@ -688,6 +701,7 @@ async def get_player_card(player_id: str, week: int):
                     for keyword in ["passing attempts", "pass attempts", "pass att"]:
                         att_pass = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not att_pass.is_empty(): break
+                    att_pass = _over_side(att_pass)
                     if not att_pass.is_empty():
                         row = att_pass.row(0, named=True)
                         pass_att_line = row['line']
@@ -701,6 +715,7 @@ async def get_player_card(player_id: str, week: int):
                         # Avoid "Receiving Yards" matching "Rec"
                         rec_p = rec_p.filter(~pl.col("prop_type").str.to_lowercase().str.contains("yards"))
                         if not rec_p.is_empty(): break
+                    rec_p = _over_side(rec_p)
                     if not rec_p.is_empty():
                         row = rec_p.row(0, named=True)
                         rec_line = row['line']
@@ -712,6 +727,7 @@ async def get_player_card(player_id: str, week: int):
                     for keyword in ["rushing attempts", "rush attempts", "rush att"]:
                         rush_att = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not rush_att.is_empty(): break
+                    rush_att = _over_side(rush_att)
                     if not rush_att.is_empty():
                         row = rush_att.row(0, named=True)
                         rush_att_line = row['line']
@@ -721,6 +737,7 @@ async def get_player_card(player_id: str, week: int):
                 if td_p.is_empty():
                     td_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("anytime touchdown"))
 
+                td_p = _over_side(td_p)
                 if not td_p.is_empty():
                     anytime_td_prob = td_p.row(0, named=True)['implied_prob']
 
@@ -774,6 +791,9 @@ async def get_player_card(player_id: str, week: int):
         "overunder": float(total_line) if total_line else None,
         "spread": spread_val,
         "implied_total": round(implied_total, 1) if implied_total else None,
+        "moneyline": moneyline,
+        # "bovada" or "schedule" (nflverse's line when Bovada has none for this game).
+        "lines_source": lines_source,
         "props": props_data,
         "prop_line": prop_line, 
         "prop_prob": prop_prob,

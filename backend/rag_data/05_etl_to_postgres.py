@@ -155,19 +155,11 @@ PIPELINE_STEPS = [
     #         ("../dataPrep/featured_dataset_avg.csv", "featured_dataset", "replace") 
     #     ]
     # },
-   # 10. BOVADA CRAWLER (Get Game URLs)
+    # 10. BOVADA ODDS: game lines + player props from Bovada's JSON board.
+    # Replaces 10_bovada_crawler -> 11_bovada_scraper -> 12_process_bovada, the
+    # headless-Chrome text scrape that hung the ETL and misread Bovada's new layout.
     {
-        "script": "10_bovada_crawler.py",
-        "uploads": [] 
-    },
-
-    # 11. BOVADA SCRAPER (Visit URLs -> Menu.json)
-    {
-        "script": "11_bovada_scraper.py",
-        "uploads": []
-    },
-    {
-        "script": "12_process_bovada.py",
+        "script": "10b_bovada_api_props.py",
         "uploads": [
              (f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "smart_append"),
              (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "smart_append")

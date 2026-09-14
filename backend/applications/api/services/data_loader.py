@@ -321,6 +321,70 @@ def _ensure_rookies_merged() -> None:
         logger.warning(f"Rookie merge after data reload failed: {e}")
 
 
+def _american_prob(odds) -> float | None:
+    try:
+        value = int(str(odds).replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+    if value == 0:
+        return None
+    prob = 100.0 / (value + 100.0) if value > 0 else abs(value) / (abs(value) + 100.0)
+    return round(prob * 100.0, 2)
+
+
+def fill_lines_from_schedule(lines: pl.DataFrame | None, schedule: pl.DataFrame) -> pl.DataFrame:
+    """Bovada's lines, plus the schedule's own lines for every game Bovada lacks.
+
+    Bovada lists only games that haven't kicked off, and its scrape has broken
+    before without anyone noticing. nflverse's schedule carries a spread, total
+    and moneylines for every game, so the over/under, implied team totals and
+    game script never go blank just because one book's page changed. Rows keep
+    df_lines' shape: home_spread is the home side's handicap (negative = favored).
+    """
+    lines = lines if lines is not None else pl.DataFrame()
+    needed = {"game_id", "total_line", "spread_line"}
+    if schedule is None or schedule.is_empty() or not needed.issubset(schedule.columns):
+        return lines
+
+    def has_value(col: str) -> pl.Expr:
+        return pl.col(col).is_not_null() & (pl.col(col).cast(pl.Utf8) != "")
+
+    covered: set[str] = set()
+    if not lines.is_empty() and {"game_id", "total_over"}.issubset(lines.columns):
+        covered = set(lines.filter(has_value("total_over"))["game_id"].to_list())
+
+    rows = []
+    for g in schedule.filter(pl.col("total_line").is_not_null()).iter_rows(named=True):
+        if g["game_id"] in covered:
+            continue
+        spread = g.get("spread_line")
+        home_ml, away_ml = g.get("moneyline_home"), g.get("moneyline_away")
+        fmt_ml = lambda v: None if v is None else (f"+{int(v)}" if int(v) > 0 else str(int(v)))
+        rows.append({
+            "game_id": g["game_id"], "week": g.get("week"), "season": g.get("season"),
+            "home_team": g.get("home_team"), "away_team": g.get("away_team"),
+            "total_over": float(g["total_line"]),
+            "home_spread": -float(spread) if spread is not None else None,
+            "away_spread": float(spread) if spread is not None else None,
+            "home_ml": fmt_ml(home_ml), "away_ml": fmt_ml(away_ml),
+            "home_ml_prob": _american_prob(home_ml), "away_ml_prob": _american_prob(away_ml),
+            "processed_at": "schedule",
+        })
+    if not rows:
+        return lines
+
+    fallback = pl.DataFrame(rows, infer_schema_length=None)
+    if lines.is_empty():
+        return fallback
+    # A game Bovada listed without a total (the broken scrape) is replaced, not duplicated.
+    kept = lines.filter(~pl.col("game_id").is_in([r["game_id"] for r in rows])) if "game_id" in lines.columns else lines
+    for col in fallback.columns:
+        if col in kept.columns:
+            fallback = fallback.with_columns(pl.col(col).cast(kept.schema[col], strict=False))
+    logger.info("Game lines: %s from Bovada, %s filled from the schedule", kept.height, fallback.height)
+    return pl.concat([kept, fallback], how="diagonal_relaxed")
+
+
 def refresh_db_data():
     logger.info("Loading dataframes from DB/CVS sources...")
     invalidate_derived_caches()
@@ -356,6 +420,8 @@ def refresh_db_data():
                 logger.info("Loaded %s schedule rows from the local season fixture", model_data["df_schedule"].height)
             except Exception as e:
                 logger.warning("Unable to load local season schedule %s: %s", schedule_path, e)
+
+    model_data["df_lines"] = fill_lines_from_schedule(model_data.get("df_lines"), model_data["df_schedule"])
 
     apply_current_roster_overrides()
     _ensure_rookies_merged()
