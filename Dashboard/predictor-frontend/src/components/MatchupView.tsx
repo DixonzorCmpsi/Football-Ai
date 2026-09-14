@@ -11,6 +11,7 @@ import { getTeamColor } from '../utils/nflColors';
 import { sizedPlayerImage } from '../utils/playerImage';
 import type { MatchupData, InjuryData, ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
+import type { CardTab } from '../lib/appUrl';
 import { useAgentScreen } from '../contexts/AgentScreenContext';
 
 interface MatchupViewProps {
@@ -23,6 +24,13 @@ interface MatchupViewProps {
   compareList: string[];
   onToggleCompare: (id: string) => void;
   onOpenHistory?: (id: string) => void;
+  /**
+   * The open player card, owned by the host so it lives in the URL
+   * (/game/NYJ/TEN?player=...&tab=...). Without these props the view keeps
+   * its own state as before.
+   */
+  card?: { playerId: string; tab: CardTab } | null;
+  onCardChange?: (card: { playerId: string; tab: CardTab } | null) => void;
 }
 
 type PositionFilter = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
@@ -72,9 +80,20 @@ const InjuryCard = React.memo(({ player }: { player: InjuryData }) => {
     );
 });
 
-const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory, onInnerNav }) => {
+const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory, onInnerNav, card, onCardChange }) => {
   const [data, setData] = useState<MatchupData | null>(null);
-  const [selectedPlayer, setSelectedPlayer] = useState<PlayerData | null>(null);
+  const [ownCard, setOwnCard] = useState<{ playerId: string; tab: CardTab } | null>(null);
+  const controlled = onCardChange !== undefined;
+  const shownCard = controlled ? card ?? null : ownCard;
+  const setCard = useCallback((next: { playerId: string; tab: CardTab } | null) => {
+    if (controlled) onCardChange?.(next);
+    else setOwnCard(next);
+  }, [controlled, onCardChange]);
+  const setSelectedPlayer = useCallback((p: PlayerData | null) => setCard(p ? { playerId: p.player_id, tab: 'log' } : null), [setCard]);
+  const selectedPlayer = useMemo(() => {
+    if (!shownCard || !data) return null;
+    return [...(data.home_roster ?? []), ...(data.away_roster ?? [])].find((p) => p.player_id === shownCard.playerId) ?? null;
+  }, [shownCard, data]);
   const [loading, setLoading] = useState(true);
   const [filterPos, setFilterPos] = useState<PositionFilter>('ALL');
   const [activeTab, setActiveTab] = useState<ViewTab>('ROSTER');
@@ -486,7 +505,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
         )}
       </div>
 
-      {selectedPlayer && <PlayerModal player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />}
+      {selectedPlayer && shownCard && (
+        <PlayerModal
+          player={selectedPlayer}
+          onClose={() => setSelectedPlayer(null)}
+          tab={shownCard.tab}
+          onTabChange={(tab) => setCard({ playerId: shownCard.playerId, tab })}
+        />
+      )}
     </div>
   );
 };

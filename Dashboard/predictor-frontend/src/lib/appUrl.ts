@@ -11,10 +11,10 @@
 
 export type AppLocation =
   | { view: 'SCHEDULE' }
-  | { view: 'GAME'; home: string; away: string; week?: number }
+  | { view: 'GAME'; home: string; away: string; week?: number; player?: string; card?: CardTab }
   | { view: 'LOOKUP' }
   | { view: 'COMPARE'; ids: string[] }
-  | { view: 'HISTORY'; playerId: string }
+  | { view: 'HISTORY'; playerId: string; show?: PlayerView }
   | { view: 'TRENDING' }
   | { view: 'PICKS' }
   | { view: 'PLAYOFFS' }
@@ -23,6 +23,13 @@ export type AppLocation =
   | { view: 'GAME_RANKS' }
   | { view: 'TEAM_PAGE'; team: string; tab: 'overview' | 'builder' }
   | { view: 'MY_TEAM'; tab: 'LINEUP' | 'WAIVERS' | 'LEAGUE' };
+
+/** Tabs of the player card that opens over a game page. */
+export type CardTab = 'log' | 'visuals' | 'storylines' | 'vegas';
+export const CARD_TABS: CardTab[] = ['log', 'visuals', 'storylines', 'vegas'];
+/** Tabs of the full player page. */
+export type PlayerView = 'table' | 'visual' | 'storylines';
+export const PLAYER_VIEWS: PlayerView[] = ['table', 'visual', 'storylines'];
 
 const TEAM_RE = /^[A-Z]{2,3}$/;
 const PLAYER_ID_RE = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -39,6 +46,12 @@ function enc(seg: string): string {
   return encodeURIComponent(seg);
 }
 
+/** "?a=1&b=2" from the pairs that have a value, in the given order; "" when none do. */
+function query(pairs: [string, string | undefined][]): string {
+  const kept = pairs.filter(([, v]) => v);
+  return kept.length ? `?${kept.map(([k, v]) => `${k}=${enc(v!)}`).join('&')}` : '';
+}
+
 export function formatAppUrl(loc: AppLocation): string {
   switch (loc.view) {
     case 'SCHEDULE':
@@ -46,13 +59,19 @@ export function formatAppUrl(loc: AppLocation): string {
     case 'GAME':
       // The week makes a link to last week's game open last week's game, not
       // this week's matchup between the same teams.
-      return `/game/${enc(loc.away)}/${enc(loc.home)}${loc.week ? `?week=${loc.week}` : ''}`;
+      // A player card rides along as ?player=&tab=, so "the Jets game with AD
+      // Mitchell's stats open" is one address and Back closes the card.
+      return `/game/${enc(loc.away)}/${enc(loc.home)}${query([
+        ['week', loc.week ? String(loc.week) : undefined],
+        ['player', loc.player],
+        ['tab', loc.player && loc.card && loc.card !== 'log' ? loc.card : undefined],
+      ])}`;
     case 'LOOKUP':
       return '/lookup';
     case 'COMPARE':
       return loc.ids.length ? `/compare?ids=${loc.ids.map(enc).join(',')}` : '/compare';
     case 'HISTORY':
-      return `/player/${enc(loc.playerId)}`;
+      return `/player/${enc(loc.playerId)}${query([['view', loc.show]])}`;
     case 'TRENDING':
       return '/trending';
     case 'PICKS':
@@ -121,15 +140,25 @@ export function parseAppUrl(pathnameAndSearch: string): AppLocation | null {
     const away = segs[1].toUpperCase();
     const home = segs[2].toUpperCase();
     if (!TEAM_RE.test(away) || !TEAM_RE.test(home)) return null;
-    const week = Number(new URLSearchParams(search).get('week'));
-    return Number.isInteger(week) && week >= 1 && week <= 22 ? { view: 'GAME', away, home, week } : { view: 'GAME', away, home };
+    const params = new URLSearchParams(search);
+    const loc: AppLocation = { view: 'GAME', away, home };
+    const week = Number(params.get('week'));
+    if (Number.isInteger(week) && week >= 1 && week <= 22) loc.week = week;
+    const player = params.get('player');
+    if (player && PLAYER_ID_RE.test(player)) {
+      loc.player = player;
+      const tab = params.get('tab') as CardTab | null;
+      loc.card = tab && CARD_TABS.includes(tab) ? tab : 'log';
+    }
+    return loc;
   }
 
   // --- player history: /player/{playerId} ---
   if (first === 'player' && segs.length === 2) {
     const pid = segs[1];
     if (!PLAYER_ID_RE.test(pid)) return null;
-    return { view: 'HISTORY', playerId: pid };
+    const show = new URLSearchParams(search).get('view') as PlayerView | null;
+    return show && PLAYER_VIEWS.includes(show) ? { view: 'HISTORY', playerId: pid, show } : { view: 'HISTORY', playerId: pid };
   }
 
   // --- team page: /team/{TEAM} or /team/{TEAM}?tab=builder ---

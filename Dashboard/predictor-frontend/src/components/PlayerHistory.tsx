@@ -8,12 +8,15 @@ import { sizedPlayerImage } from '../utils/playerImage';
 
 interface Props {
   playerId: string;
+  /** Controlled tab, so a link or the assistant can open straight onto stats or charts. */
+  view?: 'table' | 'visual' | 'storylines';
+  onViewChange?: (view: 'table' | 'visual' | 'storylines') => void;
   onBack: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
 }
 
-export default function PlayerHistory({ playerId, compareList, onToggleCompare }: Props) {
+export default function PlayerHistory({ playerId, compareList, onToggleCompare, view, onViewChange }: Props) {
   const { history, loadingHistory } = usePlayerHistory(playerId);
   const { cardData } = usePlayerProfileById(playerId);
 
@@ -34,7 +37,12 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
 
   // Storylines first: opening a player is usually "what's going on with him", and
   // it is the one view with something to show before a player has game logs.
-  const [viewMode, setViewMode] = useState<'table' | 'visual' | 'storylines'>('storylines');
+  const [ownView, setOwnView] = useState<'table' | 'visual' | 'storylines'>('storylines');
+  const viewMode = view ?? ownView;
+  const setViewMode = (next: 'table' | 'visual' | 'storylines') => {
+    setOwnView(next);
+    onViewChange?.(next);
+  };
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   useEffect(() => {
     if (seasons.length === 0) {

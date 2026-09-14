@@ -24,7 +24,7 @@ import type { ScreenEntity } from './contexts/AgentScreenContext';
 import { useAgentChatContext } from './contexts/AgentChatContext';
 import type { AgentScreenAction } from './hooks/useAgentChat';
 import { formatAppUrl, parseAppUrl } from './lib/appUrl';
-import type { AppLocation } from './lib/appUrl';
+import type { AppLocation, CardTab, PlayerView } from './lib/appUrl';
 import type { Tab as SleeperTab } from './components/SleeperView';
 
 // --- HELPER: Status Badge Styles ---
@@ -203,6 +203,17 @@ export default function App() {
 
   const [compareList, setCompareList] = useState<string[]>([]);
 
+  // Which tab the player page shows, and which player card is open over a game.
+  // Each remembers what it belongs to, so it only applies to that player/game:
+  // clicking a different player or game (anywhere in the app) falls back to the
+  // defaults without every click site having to reset it.
+  const [historyView, setHistoryView] = useState<{ playerId: string; view: PlayerView } | null>(null);
+  const [gameCard, setGameCard] = useState<{ home: string; away: string; playerId: string; tab: CardTab } | null>(null);
+  const shownHistoryView: PlayerView =
+    historyView && historyView.playerId === selectedHistoryId ? historyView.view : 'storylines';
+  const openCard =
+    gameCard && selectedGame && gameCard.home === selectedGame.home && gameCard.away === selectedGame.away ? gameCard : null;
+
   // Tier list state — lifted here so it survives navigation to Compare / History
   // and back. Persisted to localStorage so reloads also restore.
   const [tierState, setTierState] = useState<TierListState>(() => {
@@ -254,13 +265,17 @@ export default function App() {
     switch (viewMode) {
       case 'GAME':
         return selectedGame
-          ? { view: 'GAME', home: selectedGame.home, away: selectedGame.away, ...(activeWeek ? { week: activeWeek } : {}) }
+          ? {
+              view: 'GAME', home: selectedGame.home, away: selectedGame.away,
+              ...(activeWeek ? { week: activeWeek } : {}),
+              ...(openCard ? { player: openCard.playerId, card: openCard.tab } : {}),
+            }
           : { view: 'SCHEDULE' };
       case 'COMPARE':
         return { view: 'COMPARE', ids: compareList };
       case 'HISTORY':
         return selectedHistoryId
-          ? { view: 'HISTORY', playerId: selectedHistoryId }
+          ? { view: 'HISTORY', playerId: selectedHistoryId, ...(shownHistoryView !== 'storylines' ? { show: shownHistoryView } : {}) }
           : { view: 'SCHEDULE' };
       case 'TEAM_PAGE':
         return teamModal
@@ -271,7 +286,7 @@ export default function App() {
       default:
         return { view: viewMode } as AppLocation;
     }
-  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab, activeWeek]);
+  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab, activeWeek, openCard, shownHistoryView]);
 
   // Map an AppLocation onto the app's state setters. `push` decides the view
   // setter: agent actions and buttons use setViewMode so the header Back button
@@ -288,6 +303,7 @@ export default function App() {
         case 'GAME':
           setSelectedGame({ home: loc.home, away: loc.away });
           if (loc.week) setActiveWeek(loc.week);
+          setGameCard(loc.player ? { home: loc.home, away: loc.away, playerId: loc.player, tab: loc.card ?? 'log' } : null);
           setView('GAME');
           break;
         case 'LOOKUP':
@@ -299,6 +315,7 @@ export default function App() {
           break;
         case 'HISTORY':
           setSelectedHistoryId(loc.playerId);
+          setHistoryView(loc.show ? { playerId: loc.playerId, view: loc.show } : null);
           setHistoryFrom('SCHEDULE');
           setView('HISTORY');
           break;
@@ -535,13 +552,14 @@ export default function App() {
           entities.push({ type: 'team', name: selectedGame.away, detail: 'away' });
           entities.push({ type: 'team', name: selectedGame.home, detail: 'home' });
         }
+        if (openCard) facts.push(`player card open for player id ${openCard.playerId} on its ${openCard.tab} tab`);
         break;
       case 'GAME_RANKS':
         title = 'the start/sit ranks board';
         break;
       case 'HISTORY':
         title = 'a player game log';
-        if (selectedHistoryId) facts.push(`player id ${selectedHistoryId}`);
+        if (selectedHistoryId) facts.push(`player id ${selectedHistoryId}`, `showing the ${shownHistoryView} tab`);
         break;
       case 'COMPARE':
         title = 'the player comparison view';
@@ -571,7 +589,7 @@ export default function App() {
     }
 
     setAgentScreen({ view: viewMode, title, week: activeWeek, facts, entities });
-  }, [viewMode, activeWeek, selectedGame, selectedHistoryId, compareList, teamModal, setAgentScreen]);
+  }, [viewMode, activeWeek, selectedGame, selectedHistoryId, compareList, teamModal, setAgentScreen, openCard, shownHistoryView]);
 
   if (isSyncing) {
     return (
@@ -1027,6 +1045,8 @@ export default function App() {
               onToggleCompare={toggleCompare}
               onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('GAME'); setViewMode('HISTORY'); }}
               onInnerNav={handleInnerNav}
+              card={openCard ? { playerId: openCard.playerId, tab: openCard.tab } : null}
+              onCardChange={(card) => setGameCard(card ? { home: selectedGame.home, away: selectedGame.away, ...card } : null)}
             />
           )}
 
@@ -1058,7 +1078,9 @@ export default function App() {
           {viewMode === 'HISTORY' && selectedHistoryId && (
             <div className="w-full max-w-5xl mx-auto">
                 <PlayerHistory 
-                    playerId={selectedHistoryId} 
+                    playerId={selectedHistoryId}
+                    view={shownHistoryView}
+                    onViewChange={(view) => setHistoryView({ playerId: selectedHistoryId, view })}
                     onBack={() => { if (navStack.length) goBack(); else setViewMode(historyFrom); }}
                     compareList={compareList}
                     onToggleCompare={toggleCompare}
@@ -1071,7 +1093,7 @@ export default function App() {
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside data-agent-region="right panel" className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="right panel" className={`w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col ${panelOpen ? "z-[60]" : "z-20"} shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300`}>
           {/* The agent panel slots into this rail rather than overlaying the page.
               Closing it restores the trending list exactly as it was -- the rail
               is the only thing that changes. */}

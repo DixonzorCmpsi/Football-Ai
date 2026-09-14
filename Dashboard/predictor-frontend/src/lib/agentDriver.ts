@@ -26,7 +26,13 @@
 
 export type UiCommand = {
   id: string;
-  op: 'snapshot' | 'click' | 'type' | 'key' | 'select' | 'scroll';
+  op: 'snapshot' | 'observe' | 'navigate' | 'click' | 'type' | 'key' | 'select' | 'scroll';
+  /** navigate: the app address to open, and the label/tool for the reopen button. */
+  url?: string;
+  label?: string;
+  tool?: string;
+  /** observe: what just happened, prefixed to the snapshot. */
+  note?: string;
   target?: string;
   text?: string;
   press_enter?: boolean;
@@ -69,6 +75,13 @@ let fetchPatched = false;
 function patchFetch() {
   if (fetchPatched || typeof window === 'undefined') return;
   fetchPatched = true;
+  // axios (the game log, history, schedule hooks) uses XMLHttpRequest, not fetch.
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, ...args: Parameters<XMLHttpRequest['send']>) {
+    inFlight++;
+    this.addEventListener('loadend', () => { inFlight--; }, { once: true });
+    return send.apply(this, args);
+  };
   const original = window.fetch.bind(window);
   window.fetch = async (...args: Parameters<typeof fetch>) => {
     // The assistant's own stream stays open for the whole answer; counting it
@@ -278,9 +291,16 @@ export function snapshot(note = '', full = false): string {
   }
   const lines: string[] = [];
   let budget = MAX_ELEMENTS;
+  const popupOpen = (byRegion.get('popup') || []).length > 0;
   for (const region of REGION_ORDER) {
     const els = byRegion.get(region);
     if (!els?.length || budget <= 0) continue;
+    // A popup covers the page: in the compact view list only the popup (and the
+    // header line), since nothing behind it can be clicked until it's closed.
+    if (!full && popupOpen && region !== 'popup' && region !== 'header') {
+      lines.push(`[${region}] hidden behind the popup`);
+      continue;
+    }
     if (!full && region === 'header') {
       const nav = els.map((el) => labelOf(el) && `${refFor(el)} ${labelOf(el)}`).filter(Boolean);
       lines.push(`[header] ${nav.join(' · ')}`);
@@ -400,6 +420,12 @@ function scrollContainer(): HTMLElement | Window {
 
 async function run(command: UiCommand): Promise<UiResult> {
   if (command.op === 'snapshot') return { ok: true, text: snapshot('', true) };
+
+  // After the app moved to a new page: wait for it to load, then describe it.
+  if (command.op === 'observe') {
+    await settle();
+    return { ok: true, text: snapshot(command.note || '') };
+  }
 
   if (command.op === 'scroll') {
     const box = scrollContainer();

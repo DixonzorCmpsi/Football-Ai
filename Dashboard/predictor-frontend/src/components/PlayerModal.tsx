@@ -12,9 +12,12 @@ import PlayerStorylines from './PlayerStorylines';
 interface PlayerModalProps {
   player: PlayerData | null;
   onClose: () => void;
+  /** Controlled tab, so a link or the assistant can open the card on stats, charts, news or odds. */
+  tab?: Tab;
+  onTabChange?: (tab: Tab) => void;
 }
 
-type Tab = 'log' | 'visuals' | 'storylines' | 'vegas';
+export type Tab = 'log' | 'visuals' | 'storylines' | 'vegas';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'log', label: 'Game Log', icon: <Table2 size={13} /> },
@@ -25,8 +28,13 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
 
 const fmtSigned = (n: number | null | undefined) => (n === null || n === undefined ? '-' : n > 0 ? `+${n}` : `${n}`);
 
-const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
-  const [tab, setTab] = useState<Tab>('log');
+const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose, tab: tabProp, onTabChange }) => {
+  const [ownTab, setOwnTab] = useState<Tab>('log');
+  const tab = tabProp ?? ownTab;
+  const setTab = (next: Tab) => {
+    setOwnTab(next);
+    onTabChange?.(next);
+  };
   const { history, loadingHistory } = usePlayerHistory(player?.player_id ?? null);
 
   // Grouped by season, each in week order. The API is newest-first across
@@ -40,7 +48,10 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // A story popup opened from this card sits on top; Escape closes that one first.
+      if (document.querySelectorAll('[role="dialog"]').length > 1) return;
+      onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

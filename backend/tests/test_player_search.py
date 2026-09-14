@@ -45,3 +45,18 @@ def test_exact_and_prefix_matches_rank_first_and_active_before_retired(profiles)
 def test_limit_is_honoured_and_bounded(profiles):
     assert len(search("allen", scope="all", limit=2)) == 2
     assert len(search("a", scope="all", limit=10_000)) <= 100
+
+
+def test_initials_and_a_dropped_letter_still_find_the_player(monkeypatch):
+    """"AD Mitchell" is how he's known and how a model will ask; the profile says Adonai."""
+    monkeypatch.setitem(model_data, "df_profile", pl.DataFrame([
+        {"player_id": "1", "player_name": "Adonai Mitchell", "position": "WR", "team_abbr": "NYJ", "headshot": "", "status": "ACT"},
+        {"player_id": "2", "player_name": "Keaton Mitchell", "position": "RB", "team_abbr": "LAC", "headshot": "", "status": "ACT"},
+        {"player_id": "3", "player_name": "C.J. Stroud", "position": "QB", "team_abbr": "HOU", "headshot": "", "status": "ACT"},
+    ]))
+    for q in ("AD Mitchell", "A.D. Mitchell", "ad mitchel"):
+        assert [p["player_name"] for p in search(q)] == ["Adonai Mitchell"], q
+    assert [p["player_name"] for p in search("CJ Stroud")] == ["C.J. Stroud"]
+    # A plain substring hit never falls through to the loose rule.
+    assert {p["player_name"] for p in search("mitchell")} == {"Adonai Mitchell", "Keaton Mitchell"}
+    assert search("zz mitchell") == []

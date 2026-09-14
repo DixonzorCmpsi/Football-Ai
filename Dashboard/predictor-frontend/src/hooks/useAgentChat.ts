@@ -210,9 +210,24 @@ export function useAgentChat() {
               // never interleave on the page.
               const command = event.command;
               uiChain.current = uiChain.current.then(async () => {
-                const result: UiResult = settings.allowNavigation === false
-                  ? { ok: false, text: 'The user has turned off "Let the assistant use my screen" in settings. Tell them what to click instead.' }
-                  : await executeUiCommand(command);
+                let result: UiResult;
+                if (command.op === 'navigate' && command.url) {
+                  // A page jump (open_player_card, open_game, ...). Keep a reopen
+                  // button on the answer either way; move only if allowed, then
+                  // report the loaded page so the model can keep going from it.
+                  const action: AgentScreenAction = { url: command.url, label: command.label || '', tool: command.tool || '' };
+                  patchLast((t) => ({ ...t, actions: [...(t.actions || []), action] }));
+                  if (settings.allowNavigation === false) {
+                    result = { ok: false, text: 'The user has turned off screen moves; a button to open it was added to your answer.' };
+                  } else {
+                    actionHandlerRef.current?.(action);
+                    result = await executeUiCommand({ id: command.id, op: 'observe', note: `Opened ${command.label || command.url}.` });
+                  }
+                } else {
+                  result = settings.allowNavigation === false
+                    ? { ok: false, text: 'The user has turned off "Let the assistant use my screen" in settings. Tell them what to click instead.' }
+                    : await executeUiCommand(command);
+                }
                 await fetch(`${API_BASE_URL}/agent/ui/result`, {
                   method: 'POST',
                   headers: { 'content-type': 'application/json', ...agentHeaders() },

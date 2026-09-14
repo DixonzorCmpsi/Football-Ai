@@ -86,3 +86,22 @@ describe('game links carry their week', () => {
     expect(parseAppUrl('/game/NE/SEA')).toEqual({ view: 'GAME', away: 'NE', home: 'SEA' });
   });
 });
+
+describe('player cards and player page tabs', () => {
+  it('opens a card over a game, on a tab', () => {
+    const loc: AppLocation = { view: 'GAME', away: 'NYJ', home: 'TEN', week: 1, player: '00-0039890', card: 'vegas' };
+    expect(formatAppUrl(loc)).toBe('/game/NYJ/TEN?week=1&player=00-0039890&tab=vegas');
+    expect(parseAppUrl('/game/NYJ/TEN?week=1&player=00-0039890&tab=vegas')).toEqual(loc);
+  });
+  it('defaults the card to its game log and drops a bad tab or player', () => {
+    expect(parseAppUrl('/game/NYJ/TEN?player=00-0039890')).toEqual({ view: 'GAME', away: 'NYJ', home: 'TEN', player: '00-0039890', card: 'log' });
+    expect(formatAppUrl({ view: 'GAME', away: 'NYJ', home: 'TEN', player: '00-0039890', card: 'log' })).toBe('/game/NYJ/TEN?player=00-0039890');
+    expect(parseAppUrl('/game/NYJ/TEN?player=00-0039890&tab=nope')).toMatchObject({ card: 'log' });
+    expect(parseAppUrl('/game/NYJ/TEN?player=<x>')).toEqual({ view: 'GAME', away: 'NYJ', home: 'TEN' });
+  });
+  it('opens the player page on a chosen view', () => {
+    expect(formatAppUrl({ view: 'HISTORY', playerId: '00-0039890', show: 'table' })).toBe('/player/00-0039890?view=table');
+    expect(parseAppUrl('/player/00-0039890?view=table')).toEqual({ view: 'HISTORY', playerId: '00-0039890', show: 'table' });
+    expect(parseAppUrl('/player/00-0039890?view=bogus')).toEqual({ view: 'HISTORY', playerId: '00-0039890' });
+  });
+});

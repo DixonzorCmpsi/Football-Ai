@@ -93,6 +93,30 @@ MAX_COMPARE_IDS = 4
 # through search.
 GSIS_ID_RE = re.compile(r"^00-\d{7}$")
 
+# What the user asks for -> the tab that shows it. The same words work for the
+# full player page and the card over a game, so "stats", "a chart", "what's going
+# on with him" and "his odds" land on the right tab either way.
+PLAYER_VIEW_WORDS = {
+    "stats": "stats", "table": "stats", "log": "stats", "game_log": "stats", "gamelog": "stats", "numbers": "stats",
+    "visuals": "visuals", "visual": "visuals", "charts": "visuals", "chart": "visuals", "graphs": "visuals", "trends": "visuals",
+    "storylines": "storylines", "storyline": "storylines", "news": "storylines", "situation": "storylines", "updates": "storylines",
+    "vegas": "vegas", "odds": "vegas", "props": "vegas", "lines": "vegas", "betting": "vegas",
+}
+PAGE_VIEW = {"stats": "table", "visuals": "visual", "storylines": "storylines"}
+CARD_TAB = {"stats": "log", "visuals": "visuals", "storylines": "storylines", "vegas": "vegas"}
+
+
+def _player_view(view: str) -> str | None:
+    """"stats", "a visual", "his game log", "latest news" -> the tab. None if no word fits."""
+    text = (view or "stats").strip().lower()
+    joined = re.sub(r"[\s-]+", "_", text)
+    if joined in PLAYER_VIEW_WORDS:
+        return PLAYER_VIEW_WORDS[joined]
+    for word in re.findall(r"[a-z]+", text):
+        if word in PLAYER_VIEW_WORDS:
+            return PLAYER_VIEW_WORDS[word]
+    return None
+
 SCREEN_LABELS = {
     "schedule": "the weekly schedule",
     "lookup": "player lookup",
@@ -209,7 +233,8 @@ def format_url(view: str, **kw: Any) -> str:
         ids = kw.get("ids", [])
         return f"/compare?ids={','.join(ids)}" if ids else "/compare"
     if v == "HISTORY":
-        return f"/player/{_enc(kw['player_id'])}"
+        show = kw.get("show")
+        return f"/player/{_enc(kw['player_id'])}" + (f"?view={show}" if show and show != "storylines" else "")
     if v == "TRENDING":
         return "/trending"
     if v == "PICKS":
@@ -233,8 +258,14 @@ def format_url(view: str, **kw: Any) -> str:
             return "/my-team/league"
         return "/my-team"
     if v == "GAME":
-        week = kw.get("week")
-        suffix = f"?week={int(week)}" if week else ""
+        params = []
+        if kw.get("week"):
+            params.append(f"week={int(kw['week'])}")
+        if kw.get("player"):
+            params.append(f"player={_enc(kw['player'])}")
+            if kw.get("card") and kw["card"] != "log":
+                params.append(f"tab={kw['card']}")
+        suffix = f"?{'&'.join(params)}" if params else ""
         return f"/game/{_enc(kw['away'])}/{_enc(kw['home'])}{suffix}"
     return "/"
 
@@ -345,23 +376,71 @@ def open_screen(screen: str, tab: str = "") -> ScreenResult:
     )
 
 
-def open_player(player: str) -> ScreenResult:
-    """Open a player's projection page (game log, props, injury status).
+def open_player(player: str, view: str = "stats") -> ScreenResult:
+    """Open a player's full page, on the tab that answers the question.
 
-    Accepts a name ("Brock Purdy") or a gsis id ("00-0037834"). If the name
-    matches more than one player, nothing opens — the text lists the matches
-    so you can disambiguate and call again.
+    ``view``: "stats" (game-log table, the default: "show me his stats"),
+    "visuals" (charts: "show me a visual", "his trend"), or "storylines" (news:
+    "what's going on with him", "any updates"). Accepts a name or a gsis id; an
+    ambiguous name opens nothing and lists the matches. If the user is on, or
+    asking about, a game, prefer open_player_card, which keeps them on the game.
     """
+    chosen = _player_view(view)
+    if chosen not in PAGE_VIEW:
+        return ScreenResult("view is stats, visuals or storylines. (Odds and props are on the card: use open_player_card with tab vegas.)")
     pid, resolved_name, note = _resolve_player(player)
     if not pid:
         return ScreenResult(note or f"Could not resolve '{player}'.")
-    path = format_url("HISTORY", player_id=pid)
+    path = format_url("HISTORY", player_id=pid, show=PAGE_VIEW[chosen])
     return ScreenResult(
-        text=f"Opened {resolved_name}'s page.",
+        text=f"Opened {resolved_name}'s page on {chosen}.",
         path=path,
-        label=f"{resolved_name}'s page",
+        label=f"{resolved_name} · {chosen}",
         tool="open_player",
     )
+
+
+def open_player_card(player: str, tab: str = "stats", week: int = 0) -> ScreenResult:
+    """Open a player's card over his game's page, on the tab that answers the question.
+
+    Use it for "take me to the Jets game and show me AD Mitchell's stats": the
+    user stays on the game with the card open. ``tab``: "stats" (game log),
+    "visuals" (charts), "storylines" (news, "what's his situation"), or "vegas"
+    (odds, props, the game line). ``week`` 0 is the current week. The game is
+    found from the player's team, so there's no need to open the game first.
+    """
+    chosen = _player_view(tab)
+    if chosen not in CARD_TAB:
+        return ScreenResult("tab is stats, visuals, storylines or vegas.")
+    pid, resolved_name, note = _resolve_player(player)
+    if not pid:
+        return ScreenResult(note or f"Could not resolve '{player}'.")
+    team = _team_of(pid, resolved_name)
+    if not team:
+        return ScreenResult(f"Couldn't tell which team {resolved_name} plays for; use open_player instead.")
+    wk = week or _current_week()
+    games = _get(f"/schedule/{wk}") or []
+    row = next((g for g in games if team in (g.get("home_team"), g.get("away_team"))), None)
+    if not row:
+        return ScreenResult(
+            f"{resolved_name}'s team ({team}) has no game in week {wk}; use open_player to show his page instead."
+        )
+    away, home = row.get("away_team"), row.get("home_team")
+    path = format_url("GAME", away=away, home=home, week=wk, player=pid, card=CARD_TAB[chosen])
+    return ScreenResult(
+        text=f"Opened {away} @ {home} (week {wk}) with {resolved_name}'s card on {chosen}.",
+        path=path,
+        label=f"{resolved_name} · {chosen} ({away} @ {home})",
+        tool="open_player_card",
+    )
+
+
+def _team_of(player_id: str, name: str) -> str | None:
+    """The player's current team, from the same search the name came from."""
+    for row in _get("/players/search", {"q": name}) or []:
+        if row.get("player_id") == player_id:
+            return row.get("team_abbr")
+    return None
 
 
 def open_compare(players: list[str]) -> ScreenResult:
@@ -495,6 +574,7 @@ SCREEN_ACTION_TOOLS: tuple[tuple[str, Any], ...] = (
     ("open_compare", open_compare),
     ("open_team", open_team),
     ("open_game", open_game),
+    ("open_player_card", open_player_card),
     ("add_to_compare", add_to_compare),
     ("go_back", go_back),
 )

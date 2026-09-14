@@ -199,7 +199,7 @@ class TestOpenPlayer:
             {"player_id": "00-0037834", "player_name": "Brock Purdy",
              "position": "QB", "team_abbr": "SF"}])
         out = sa.open_player("purdy")
-        assert out.path == "/player/00-0037834"
+        assert out.path == "/player/00-0037834?view=table", "stats is the default view"
         assert "Brock Purdy" in out.text
 
     def test_label_uses_resolved_name_not_model_spelling(self, monkeypatch):
@@ -207,12 +207,12 @@ class TestOpenPlayer:
             {"player_id": "00-0031234", "player_name": "Kyle Williams",
              "position": "WR", "team_abbr": "NE"}])
         out = sa.open_player("kyle wiliams")  # model's typo
-        assert out.path == "/player/00-0031234"
+        assert out.path == "/player/00-0031234?view=table"
         assert "Kyle Williams" in out.label
         assert "wiliams" not in out.label
 
     def test_gsis_id_short_circuits(self):
-        out = sa.open_player("00-0037834")
+        out = sa.open_player("00-0037834", view="storylines")
         assert out.path == "/player/00-0037834"
 
     def test_bare_digits_are_names_not_ids(self, monkeypatch):
@@ -336,12 +336,59 @@ class TestAddToCompare:
 
 # --- Registry ---------------------------------------------------------------
 
+class TestPlayerViews:
+    """What the user asks for decides the tab, on the page and on the card."""
+
+    @pytest.fixture(autouse=True)
+    def _purdy(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [{"away_team": "SF", "home_team": "LA"}] if path.startswith("/schedule/")
+            else [{"player_id": "00-0037834", "player_name": "Brock Purdy", "position": "QB", "team_abbr": "SF"}]
+        ))
+
+    @pytest.mark.parametrize("asked, path", [
+        ("stats", "/player/00-0037834?view=table"),
+        ("table", "/player/00-0037834?view=table"),
+        ("a visual", "/player/00-0037834?view=visual"),
+        ("his game log", "/player/00-0037834?view=table"),
+        ("dance", None),  # no word fits; the tool says which views exist
+        ("charts", "/player/00-0037834?view=visual"),
+        ("news", "/player/00-0037834"),
+        ("storylines", "/player/00-0037834"),
+    ])
+    def test_player_page_view(self, asked, path):
+        assert sa.open_player("Brock Purdy", view=asked).path == path
+
+    def test_odds_are_on_the_card_not_the_page(self):
+        out = sa.open_player("Brock Purdy", view="odds")
+        assert out.path is None and "open_player_card" in out.text
+
+    @pytest.mark.parametrize("asked, suffix", [
+        ("stats", ""),
+        ("visuals", "&tab=visuals"),
+        ("situation", "&tab=storylines"),
+        ("props", "&tab=vegas"),
+    ])
+    def test_card_over_the_players_game(self, asked, suffix):
+        out = sa.open_player_card("Brock Purdy", tab=asked, week=1)
+        assert out.path == f"/game/SF/LA?week=1&player=00-0037834{suffix}"
+        assert "Brock Purdy" in out.text and "SF @ LA" in out.text
+
+    def test_card_on_a_bye_opens_nothing_and_points_to_the_page(self, monkeypatch):
+        monkeypatch.setattr(sa, "_get", lambda path, params=None: (
+            [] if path.startswith("/schedule/")
+            else [{"player_id": "00-0037834", "player_name": "Brock Purdy", "position": "QB", "team_abbr": "SF"}]
+        ))
+        out = sa.open_player_card("Brock Purdy", week=9)
+        assert out.path is None and "open_player" in out.text
+
+
 class TestToolRegistry:
     def test_registered_names(self):
         names = {n for n, _ in sa.SCREEN_ACTION_TOOLS}
         assert names == {
             "open_screen", "open_player", "open_compare",
-            "open_team", "open_game", "add_to_compare", "go_back",
+            "open_team", "open_game", "open_player_card", "add_to_compare", "go_back",
         }
 
     def test_in_agent_tools_after_data_tools(self):
@@ -390,27 +437,54 @@ def client(monkeypatch):
 
 
 class TestToolsOverHttp:
-    def test_open_screen_queues_for_the_tokens_conversation(self, client, monkeypatch):
+    def test_open_screen_moves_the_tokens_conversation_and_returns_the_page(self, client, monkeypatch):
+        """The jump goes to conversation A's browser, which answers with the loaded page."""
+        import threading
+        import time
+        from agent import ui_control
         from applications.api.services import agent_tokens
 
-        cid_a = "conv-aaaaaaaa"
-        cid_b = "conv-bbbbbbbb"
-        sa.discard_actions(cid_a)
-        sa.discard_actions(cid_b)
+        cid_a, cid_b = "conv-aaaaaaaa", "conv-bbbbbbbb"
+        seen: dict = {}
 
+        def browser():
+            for _ in range(200):
+                commands = ui_control.outgoing(cid_a)
+                if commands:
+                    seen["a"] = commands[0]
+                    seen["b"] = ui_control.outgoing(cid_b)
+                    ui_control.resolve(cid_a, commands[0]["id"], True, "Page: /ranks\n--- screen start ---\nRanks\n--- screen end ---")
+                    return
+                time.sleep(0.02)
+
+        thread = threading.Thread(target=browser, daemon=True)
+        thread.start()
         response = client.post(
             "/agent/tools/open_screen",
             json={"arguments": {"screen": "ranks"}},
             headers={"authorization": f"Bearer {agent_tokens.mint(cid_a, 'test-client')}", "x-client-id": "t" * 8},
         )
+        thread.join(5)
         assert response.status_code == 200, response.text
-        assert "ranks" in response.json()["text"].lower()
+        assert seen["a"]["op"] == "navigate" and seen["a"]["url"] == "/ranks"
+        assert seen["b"] == []
+        text = response.json()["text"]
+        assert "Opened the start/sit ranks board." in text and "Page: /ranks" in text
 
-        # Conversation A holds exactly one action; B holds none.
-        a = sa.drain_actions(cid_a)
-        assert len(a) == 1
-        assert a[0].url == "/ranks"
-        assert sa.drain_actions(cid_b) == []
+    def test_a_browser_that_never_answers_is_reported_not_claimed(self, client, monkeypatch):
+        from agent import ui_control
+        from applications.api.services import agent_tokens
+
+        monkeypatch.setattr(ui_control, "RESULT_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(ui_control, "navigate", lambda cid, url, label, tool: ui_control.request(
+            cid, ui_control.UiCommand("navigate", {"url": url}), timeout=0.05))
+        response = client.post(
+            "/agent/tools/open_screen",
+            json={"arguments": {"screen": "ranks"}},
+            headers={"authorization": f"Bearer {agent_tokens.mint('conv-dddddddd', 'test-client')}", "x-client-id": "t" * 8},
+        )
+        text = response.json()["text"]
+        assert text.startswith("Did not move the screen") and "Opened" not in text
 
     def test_ambiguous_player_queues_nothing_over_http(self, client, monkeypatch):
         from applications.api.services import agent_tokens
@@ -431,7 +505,8 @@ class TestToolsOverHttp:
         )
         assert response.status_code == 200
         assert response.json()["text"]  # the model still gets the candidates
-        assert sa.drain_actions(cid) == []
+        from agent import ui_control
+        assert ui_control.outgoing(cid) == [], "an ambiguous name moves nothing"
 
     def test_bad_token_is_rejected(self, client):
         response = client.post(

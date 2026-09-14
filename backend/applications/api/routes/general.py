@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request
 import os
 import json
 import requests
+import re
+
 import polars as pl
 import subprocess
 from ..state import model_data
@@ -72,6 +74,41 @@ async def health_check():
 SKILL_POSITIONS = ['QB', 'RB', 'WR', 'TE']
 
 
+def _loose_name_matches(df: pl.DataFrame, q: str) -> pl.DataFrame:
+    """How people (and models) actually type names, when the literal search found nothing.
+
+    "AD Mitchell" and "A.D. Mitchell" are Adonai Mitchell; "ad mitchel" is a typo
+    of him. Rule: the last word is the start of the surname (so a dropped final
+    letter still matches) and the first word, dots removed, starts the first name
+    or is its initials. Kept narrow on purpose: it only runs when nothing matched,
+    and both halves have to agree.
+    """
+    words = [w for w in re.split(r"\s+", q.strip().lower().replace(".", " ").strip()) if w]
+    if len(words) < 2:
+        return df.head(0)
+    # "A.D." splits into single letters; rejoin a leading run of initials.
+    initials = []
+    while len(words) > 1 and len(words[0]) == 1:
+        initials.append(words.pop(0))
+    first = "".join(initials) or words[0]
+    last = words[-1]
+    if len(last) < 3 or not first:
+        return df.head(0)
+    parts = pl.col('player_name').str.to_lowercase().str.replace_all(r"\.", "").str.split(" ")
+    surname_ok = parts.list.slice(1).list.eval(pl.element().str.starts_with(last)).list.any()
+    given = parts.list.first()
+    first_ok = given.str.starts_with(first) | given.str.starts_with(first[0])
+    return (
+        df.filter(surname_ok & first_ok)
+        .with_columns(
+            # Prefer a first name that actually starts with what was typed ("ad" -> Adonai).
+            pl.when(given.str.starts_with(first)).then(0).otherwise(1).alias("_match"),
+            pl.when(pl.col('status') == 'ACT').then(0).otherwise(1).alias("_inactive"),
+        )
+        .sort(["_match", "_inactive", "player_name"])
+    )
+
+
 @router.get('/players/search')
 async def search_players(q: str, scope: str = "skill", limit: int = 20):
     """Players whose name contains `q`, best matches first.
@@ -101,6 +138,8 @@ async def search_players(q: str, scope: str = "skill", limit: int = 20):
             .sort(["_match", "_inactive", "player_name"])
         )
         cols = [c for c in ['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'] if c in df.columns]
+        if ranked.is_empty():
+            ranked = _loose_name_matches(df if scope == "all" else df.filter(pl.col('position').is_in(SKILL_POSITIONS)), q)
         return ranked.select(cols).head(max(1, min(int(limit), 100))).to_dicts()
     except Exception as exc:
         logger.warning(f"player search failed for {q!r}: {exc}")

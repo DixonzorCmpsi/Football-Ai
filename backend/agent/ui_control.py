@@ -71,6 +71,17 @@ _pending: dict[str, _Pending] = {}
 _guard = threading.Lock()
 
 
+def navigate(conversation_id: str, url: str, label: str, tool: str) -> dict[str, Any]:
+    """Move the user's screen and wait for the page to load, like any other UI action.
+
+    The page-jump tools used to fire and forget, so the model never saw where it
+    landed and couldn't click anything there without a separate read_screen.
+    Going through the same round trip returns the loaded page, so the next step
+    can act on it (open a storyline, switch a tab).
+    """
+    return request(conversation_id, UiCommand("navigate", {"url": url, "label": label, "tool": tool}))
+
+
 def request(conversation_id: str, command: UiCommand, timeout: float = RESULT_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Queue a command for this conversation's browser and wait for its result."""
     command_id = secrets.token_urlsafe(18)

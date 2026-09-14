@@ -26,6 +26,7 @@ const LABELS: Record<string, string> = {
   open_compare: 'opening the comparison',
   open_team: 'opening the team',
   open_game: 'opening the game',
+  open_player_card: 'opening the player card',
   add_to_compare: 'adding to the comparison',
   go_back: 'going back',
   read_screen: 'looking at your screen',

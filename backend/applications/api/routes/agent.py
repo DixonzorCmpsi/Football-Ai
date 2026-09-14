@@ -149,9 +149,10 @@ def call_agent_tool(name: str, call: ToolCall, request: Request):
         result = ui_control.request(grant.conversation_id, screen)
         return {"text": ui_control.result_text(result)}
     if screen is not None and screen.path:
-        screen_actions.push_action(
-            grant.conversation_id, screen.path, screen.label or screen.text, screen.tool or name
-        )
+        result = ui_control.navigate(grant.conversation_id, screen.path, screen.label or screen.text, screen.tool or name)
+        if result.get("ok"):
+            return {"text": f"{text}\n{ui_control.result_text(result)}"}
+        return {"text": f"Did not move the screen: {result.get('text') or 'no answer from the browser.'}"}
     return {"text": text}
 
 
