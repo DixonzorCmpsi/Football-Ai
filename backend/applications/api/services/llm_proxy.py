@@ -33,7 +33,9 @@ from .inference_providers import PROVIDERS, Provider, UnsafeUpstream, check_cust
 PI_PROVIDER = "spot"
 PI_MODEL = "assistant"
 
-MAX_CALLS_PER_QUESTION = int(os.getenv("AGENT_MAX_LLM_CALLS_PER_QUESTION", "8"))
+# 16, not 8: using the app by hand is one model call per click or keystroke batch,
+# and "search Purdy, open him, add him to compare" is already six.
+MAX_CALLS_PER_QUESTION = int(os.getenv("AGENT_MAX_LLM_CALLS_PER_QUESTION", "16"))
 # A BYOK setting nobody has used for this long is forgotten, taking the key with it.
 BYOK_TTL_SECONDS = float(os.getenv("AGENT_BYOK_TTL", "3600"))
 

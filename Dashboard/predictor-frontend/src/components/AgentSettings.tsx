@@ -308,10 +308,10 @@ export default function AgentSettings({
           data-testid="agent-allow-navigation"
         />
         <span>
-          Let the assistant move my screen
+          Let the assistant use my screen
           <span className="block text-[10px] text-slate-400">
-            When on, asking about a player or game opens that page automatically. When off, a button
-            appears in the chat for you to open it yourself.
+            When on, it can open pages, click, type and press keys in the app for you, and you can watch
+            it work. When off, it tells you what to click and page links appear as buttons.
           </span>
         </span>
       </label>

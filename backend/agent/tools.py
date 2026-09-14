@@ -18,6 +18,10 @@ Screen-action tools (open_player, open_game, ...) live in
 They return a ``ScreenResult`` rather than plain text: the route pushes its
 path onto the conversation's action queue, because only the route knows which
 conversation a call belongs to (from the session token).
+
+UI-control tools (read_screen, click, type_text, ...) live in
+``agent.ui_control`` and come last. They return a ``UiCommand``: the route
+sends it to the user's browser and waits for the page's answer.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import typing
 from typing import Any, Callable
 
 from agent.screen_actions import SCREEN_ACTION_TOOLS, SCREEN_TOOL_NAMES, ScreenResult
+from agent.ui_control import UI_CONTROL_TOOLS, UI_TOOL_NAMES, UiCommand
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +57,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "sleeper_analyze_roster",
     "sleeper_waiver_targets",
     "get_status",
-) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS)
+) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS) + tuple(name for name, _fn in UI_CONTROL_TOOLS)
 
 # Python annotation -> JSON Schema. The tool signatures only use these;
 # anything else should fail loudly at import rather than reach the model as an
@@ -94,6 +99,9 @@ def _load() -> dict[str, Callable[..., Any]]:
     for name in EXPOSED_TOOLS:
         if name in SCREEN_TOOL_NAMES:
             found[name] = dict(SCREEN_ACTION_TOOLS)[name]
+            continue
+        if name in UI_TOOL_NAMES:
+            found[name] = dict(UI_CONTROL_TOOLS)[name]
             continue
         fn = getattr(mcp_server, name, None)
         if not callable(fn):
@@ -169,12 +177,14 @@ def call_tool(name: str, arguments: dict | None = None) -> str:
     return text
 
 
-def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, ScreenResult | None]:
-    """Run one tool; also return its ScreenResult when it is a screen tool.
+def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, ScreenResult | UiCommand | None]:
+    """Run one tool; also return its ScreenResult or UiCommand when it has one.
 
     A screen tool that resolved a movement returns (text, ScreenResult) and the
-    route queues the path for the conversation. A data tool returns
-    (text, None). Raises KeyError for an unknown name.
+    route queues the path for the conversation. A UI tool returns
+    (text, UiCommand) for the route to run in the browser; its text is only the
+    fallback when there's no browser. A data tool returns (text, None). Raises
+    KeyError for an unknown name.
     """
     registry = _load()
     if name not in registry:
@@ -184,4 +194,6 @@ def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, Scr
     out = fn(**args)
     if isinstance(out, ScreenResult):
         return out.text, out
+    if isinstance(out, UiCommand):
+        return (out.error or "This needs the user's app open in a browser."), out
     return str(out), None

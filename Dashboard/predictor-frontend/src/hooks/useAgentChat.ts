@@ -14,6 +14,8 @@ import { API_BASE_URL } from '../lib/api';
 import type { ScreenDescriptor } from '../contexts/AgentScreenContext';
 import { agentHeaders, byokPayload } from '../lib/agentIdentity';
 import type { AgentSettings } from '../lib/agentIdentity';
+import { executeUiCommand } from '../lib/agentDriver';
+import type { UiCommand, UiResult } from '../lib/agentDriver';
 
 export type AgentQuota = {
   allowed: boolean;
@@ -96,6 +98,8 @@ export function useAgentChat() {
     void refreshQuota();
   }, [refreshQuota]);
   const abortRef = useRef<AbortController | null>(null);
+  // UI commands run one after another on the page, whatever order they arrive in.
+  const uiChain = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     try {
@@ -174,7 +178,7 @@ export function useAgentChat() {
             const line = frame.split('\n').find((l) => l.startsWith('data:'));
             if (!line) continue;
 
-            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota; url?: string; label?: string; tool?: string };
+            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota; url?: string; label?: string; tool?: string; command?: UiCommand };
             try {
               event = JSON.parse(line.slice(5).trim());
             } catch {
@@ -199,6 +203,22 @@ export function useAgentChat() {
               // Deliver now, as an event. The transcript copy is for the
               // reopen buttons only; nothing replays it on reload.
               actionHandlerRef.current?.(action);
+            } else if (event.type === 'ui_command' && event.command?.id) {
+              // The agent is using the app: click, type, read the screen. Run it
+              // on this page and report back; the model is waiting on the result.
+              // Not awaited, so the stream keeps flowing; chained, so two commands
+              // never interleave on the page.
+              const command = event.command;
+              uiChain.current = uiChain.current.then(async () => {
+                const result: UiResult = settings.allowNavigation === false
+                  ? { ok: false, text: 'The user has turned off "Let the assistant use my screen" in settings. Tell them what to click instead.' }
+                  : await executeUiCommand(command);
+                await fetch(`${API_BASE_URL}/agent/ui/result`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', ...agentHeaders() },
+                  body: JSON.stringify({ conversation_id: conversationId, command_id: command.id, ...result }),
+                }).catch(() => {});
+              });
             } else if (event.type === 'done') {
               // Authoritative: deltas can be dropped, this is the whole answer.
               if (event.text) patchLast((t) => ({ ...t, text: event.text! }));

@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field, SecretStr
 # Absolute: uvicorn runs from backend/ (`applications.server:app`), so `agent`
 # and `mcp_server` are top-level packages there, the same way mcp_server imports.
 from agent import tools as agent_tools
-from agent import screen_actions
+from agent import screen_actions, ui_control
 from agent.pi_runtime import RUNTIME_DIR, AgentBusy, AgentForbidden, AgentUnavailable, runtime
 
 from ..config import logger
@@ -141,11 +141,33 @@ def call_agent_tool(name: str, call: ToolCall, request: Request):
     except Exception as exc:
         logger.warning("agent tool %s failed: %s", name, exc)
         return {"error": f"{type(exc).__name__}: {exc}"}
+    if isinstance(screen, ui_control.UiCommand):
+        if screen.op is None:
+            return {"text": screen.error or text}
+        # Blocks this threadpool thread until the browser answers or the wait
+        # times out; the chat stream delivers the command meanwhile.
+        result = ui_control.request(grant.conversation_id, screen)
+        return {"text": ui_control.result_text(result)}
     if screen is not None and screen.path:
         screen_actions.push_action(
             grant.conversation_id, screen.path, screen.label or screen.text, screen.tool or name
         )
     return {"text": text}
+
+
+class UiResult(BaseModel):
+    conversation_id: str = Field(min_length=8, max_length=64)
+    command_id: str = Field(min_length=8, max_length=64)
+    ok: bool
+    text: str = Field(default="", max_length=60_000)
+
+
+@router.post("/ui/result")
+def agent_ui_result(body: UiResult):
+    """The browser's answer to a ui_command: whether it worked, and the fresh screen."""
+    if not ui_control.resolve(body.conversation_id, body.command_id, body.ok, body.text):
+        raise HTTPException(status_code=404, detail="No such pending command")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +429,14 @@ async def agent_chat(request: Request, body: ChatRequest):
                 yield _sse({"type": "quota", "quota": quota.as_dict()})
             yield _sse({"type": "tier", "tier": tier})
             while True:
-                event = await asyncio.to_thread(bridge.get)
+                # Poll rather than block: while pi waits inside a UI tool call it
+                # emits nothing, yet the command it's waiting on must go out now.
+                for command in ui_control.outgoing(body.conversation_id):
+                    yield _sse({"type": "ui_command", "command": command})
+                try:
+                    event = await asyncio.to_thread(bridge.get, True, 0.2)
+                except queue.Empty:
+                    continue
                 if event is _DONE:
                     break
                 model_error = _model_error(event) or model_error

@@ -621,7 +621,7 @@ export default function App() {
       
       {/* LEFT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="left panel" className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
                 {/* Title Area */}
@@ -677,7 +677,7 @@ export default function App() {
       <main className="flex-1 flex flex-col relative min-w-0 bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
         
         {/* HEADER */}
-        <header className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
+        <header data-agent-region="header" className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
           
           <div className="flex items-center gap-1 pr-8">
              <button
@@ -794,7 +794,7 @@ export default function App() {
         {/* Bottom padding clears the floating agent button: without it the last
             row of every view (the final game's moneyline, at any width) sat
             permanently underneath it with no way to scroll it into view. */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-28 md:pb-24 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        <div data-agent-region="page" className="flex-1 overflow-y-auto p-4 md:p-6 pb-28 md:pb-24 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
@@ -1069,11 +1069,11 @@ export default function App() {
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="right panel" className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
           {/* The agent panel slots into this rail rather than overlaying the page.
               Closing it restores the trending list exactly as it was -- the rail
               is the only thing that changes. */}
-          {panelOpen ? <AgentPanel headerExtra={railControls} /> : (
+          {panelOpen ? <div data-agent-ignore className="contents"><AgentPanel headerExtra={railControls} /></div> : (
           <>
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>

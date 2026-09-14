@@ -21,6 +21,19 @@ const LABELS: Record<string, string> = {
   sleeper_analyze_roster: 'analyzing your roster',
   sleeper_waiver_targets: 'scanning the waiver wire',
   get_status: 'checking data freshness',
+  open_screen: 'opening the page',
+  open_player: 'opening the player',
+  open_compare: 'opening the comparison',
+  open_team: 'opening the team',
+  open_game: 'opening the game',
+  add_to_compare: 'adding to the comparison',
+  go_back: 'going back',
+  read_screen: 'looking at your screen',
+  click: 'clicking',
+  type_text: 'typing',
+  press_key: 'pressing a key',
+  select_option: 'choosing an option',
+  scroll: 'scrolling',
 };
 
 export function toolLabel(name: string): string {

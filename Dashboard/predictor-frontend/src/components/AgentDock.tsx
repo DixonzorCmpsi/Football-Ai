@@ -102,6 +102,7 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
         type="button"
         onClick={() => setOpen(true)}
         data-testid="agent-dock-button"
+        data-agent-ignore
         aria-label="Ask the AI about this page"
         className={`fixed z-40 bottom-20 right-4 md:bottom-6 ${offsetClass} h-12 w-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-900/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95`}
       >
@@ -113,6 +114,8 @@ export default function AgentDock({ offsetClass = '' }: { offsetClass?: string }
   return (
     <div
       data-testid="agent-dock"
+      // The assistant can't see or touch its own dock: this is where API keys are typed.
+      data-agent-ignore
       className={`fixed z-40 bottom-20 right-4 md:bottom-6 ${offsetClass} w-[22rem] max-w-[calc(100vw-2rem)] rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xl shadow-slate-900/10 overflow-hidden`}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40">
