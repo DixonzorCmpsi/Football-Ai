@@ -317,12 +317,12 @@ def get_player_history(player: str, limit: int = 12) -> str:
 
 
 @mcp.tool()
-def get_player_storylines(player: str, limit: int = 5) -> str:
-    """Latest news storylines about a player."""
+def get_player_storylines(player: str, limit: int = 10) -> str:
+    """Latest news storylines about a player, newest first (up to 25)."""
     pid, note = _resolve_player(player)
     if not pid:
         return note
-    data = _get(f"/player/{pid}/storylines") or {}
+    data = _get(f"/player/{pid}/storylines", {"limit": max(1, min(limit, 25))}) or {}
     rows = data.get("storylines") if isinstance(data, dict) else data
     return summarize_storylines(rows or [], limit=limit)
 

@@ -156,3 +156,61 @@ def test_failed_searches_are_cached(espn):
     st.resolve_espn_id("00-lineman")
     st.resolve_espn_id("00-lineman")
     assert sum(1 for c in espn.calls if c.startswith(st.ESPN_SEARCH_URL)) == 1
+
+
+# --- recency, ten by default, and the refresh button ---------------------------------
+
+def test_newest_first_by_time_not_by_text(espn):
+    """Fractional seconds and offsets sort by the moment, not character by character."""
+    base = {"espn_id": "4361741", "description": "", "url": "", "image": "", "story_type": "", "fetched_at": "2026-09-01T00:00:00Z"}
+    st._merge_into_store([
+        {**base, "article_id": "a", "player_id": "00-purdy", "headline": "a", "published": "2026-09-12T09:00:00.500Z"},
+        {**base, "article_id": "b", "player_id": "00-purdy", "headline": "b", "published": "2026-09-12T10:30:00+02:00"},  # 08:30Z
+        {**base, "article_id": "c", "player_id": "00-purdy", "headline": "c", "published": "2026-09-12T09:15:00Z"},
+        {**base, "article_id": "d", "player_id": "00-purdy", "headline": "d", "published": ""},  # falls back to fetched_at
+    ], stamp_updated=False)
+    items = st.get_player_storylines("00-purdy", backfill=False)
+    assert [i["article_id"] for i in items] == ["c", "a", "b", "d"]
+
+
+def test_ten_by_default_or_all_there_are(espn):
+    espn.feeds["4361741"] = [_item(i, f"2026-08-{10 + i:02d}T12:00:00Z") for i in range(14)]
+    items = st.get_player_storylines("00-purdy")
+    assert len(items) == 10
+    assert items[0]["published"].startswith("2026-08-23")
+    st._backfilled_at.clear()
+    espn.feeds["4361741"] = espn.feeds["4361741"][:6]
+    model_data["df_storylines"] = None
+    import os
+    os.remove(st.STORYLINES_CSV)
+    assert len(st.get_player_storylines("00-purdy")) == 6
+
+
+def test_refresh_fetches_now_then_cools_down(espn, monkeypatch):
+    monkeypatch.setattr(st, "_manual_refresh_at", {})
+    monkeypatch.setattr(st, "_league_feed_at", [])
+    league_polls = []
+    monkeypatch.setattr(st, "refresh_storylines", lambda: league_polls.append(1) or {"new_rows": 0})
+    espn.feeds["4361741"] = [_item(1, "2026-09-10T00:00:00Z")]
+    st.get_player_storylines("00-purdy")  # a profile open already used the TTL
+
+    first = st.refresh_player_storylines("00-purdy")
+    assert first["refreshed"] and first["added"] == 0
+    assert sum(1 for c in espn.calls if c.startswith(st.PLAYER_NEWS_URL)) == 2, "the button bypasses the TTL"
+    assert league_polls == [1]
+
+    again = st.refresh_player_storylines("00-purdy")
+    assert not again["refreshed"] and 0 < again["retry_after"] <= st.MANUAL_REFRESH_COOLDOWN_SECONDS
+    assert sum(1 for c in espn.calls if c.startswith(st.PLAYER_NEWS_URL)) == 2
+
+
+def test_refresh_endpoint_returns_the_fresh_list(espn, monkeypatch, client):
+    monkeypatch.setattr(st, "_manual_refresh_at", {})
+    monkeypatch.setattr(st, "_league_feed_at", [])
+    monkeypatch.setattr(st, "refresh_storylines", lambda: {"new_rows": 0})
+    espn.feeds["4361741"] = [_item(i, f"2026-09-0{i}T12:00:00Z") for i in range(1, 4)]
+    response = client.post("/player/00-purdy/storylines/refresh")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["refreshed"] and body["added"] == 3 and body["count"] == 3
+    assert body["storylines"][0]["published"].startswith("2026-09-03")

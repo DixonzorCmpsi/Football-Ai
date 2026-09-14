@@ -45,9 +45,16 @@ STORYLINES_CSV = os.path.join(RAG_DIR, "player_storylines.csv")
 
 # Keep the store bounded; well past what any UI shows, but enough for history.
 MAX_ROWS_PER_PLAYER = 40
+# What a profile shows: the ten most recent, or as many as exist.
+DEFAULT_LIMIT = 10
+MAX_LIMIT = 25
 # How often one player's own feed is re-checked. Opening a profile repeatedly must
 # not mean a request to ESPN every time.
-BACKFILL_TTL_SECONDS = float(os.getenv("STORYLINES_BACKFILL_TTL", str(6 * 3600)))
+BACKFILL_TTL_SECONDS = float(os.getenv("STORYLINES_BACKFILL_TTL", str(2 * 3600)))
+# A refresh button press goes to ESPN right away, but not more than once a
+# minute per player, and the league feed not more than once every five minutes.
+MANUAL_REFRESH_COOLDOWN_SECONDS = float(os.getenv("STORYLINES_MANUAL_COOLDOWN", "60"))
+LEAGUE_FEED_MIN_INTERVAL_SECONDS = 300.0
 HTTP_TIMEOUT = 12
 
 _SCHEMA = {
@@ -68,6 +75,9 @@ _SCHEMA = {
 _store_lock = threading.Lock()
 # player_id -> monotonic time of the last per-player fetch attempt, successful or not.
 _backfilled_at: dict[str, float] = {}
+# player_id -> monotonic time of the last refresh the user asked for.
+_manual_refresh_at: dict[str, float] = {}
+_league_feed_at: list[float] = []
 
 
 def _now() -> str:
@@ -197,11 +207,10 @@ def _merge_into_store(rows: list, stamp_updated: bool) -> tuple[pl.DataFrame, in
         before = store.height
         if not rows:
             return store, 0
-        merged = (
+        merged = by_recency(
             pl.concat([store, pl.DataFrame(rows, schema=_SCHEMA)], how="diagonal_relaxed")
             # Newest fetch wins for a given (article, player) pair.
             .unique(subset=["article_id", "player_id"], keep="last")
-            .sort("published", descending=True)
         )
         # Bound per-player history so the file cannot grow without limit.
         merged = (
@@ -362,7 +371,22 @@ def backfill_player(player_id: str, force: bool = False) -> int:
     return added
 
 
-def get_player_storylines(player_id: str, limit: int = 5, backfill: bool = True) -> list:
+def by_recency(df: pl.DataFrame) -> pl.DataFrame:
+    """Newest first by the moment a story was published, not by its text.
+
+    Parsed rather than string-sorted, so a timestamp with fractional seconds or an
+    offset can't land out of order; a story with no usable date falls back to when
+    we fetched it, and anything still undated goes last.
+    """
+    if df.is_empty():
+        return df
+    def parsed(col: str) -> pl.Expr:
+        return pl.col(col).str.to_datetime(time_zone="UTC", strict=False)
+    when = pl.coalesce(parsed("published"), parsed("fetched_at")) if "fetched_at" in df.columns else parsed("published")
+    return df.with_columns(when.alias("_when")).sort("_when", descending=True, nulls_last=True).drop("_when")
+
+
+def get_player_storylines(player_id: str, limit: int = DEFAULT_LIMIT, backfill: bool = True) -> list:
     """The player's most recent storylines, newest first, however far back that goes.
 
     Tops up from the player's own feed first (at most once per TTL), so a player
@@ -374,15 +398,33 @@ def get_player_storylines(player_id: str, limit: int = 5, backfill: bool = True)
     df = _current_store()
     if df.is_empty():
         return []
-    rows = (
-        df.filter(pl.col("player_id") == player_id)
-        .sort("published", descending=True)
-        .head(max(1, limit))
-        .to_dicts()
-    )
+    rows = by_recency(df.filter(pl.col("player_id") == player_id)).head(max(1, min(limit, MAX_LIMIT))).to_dicts()
     for r in rows:
         r.pop("espn_id", None)
     return rows
+
+
+def refresh_player_storylines(player_id: str) -> dict:
+    """Fetch a player's news now, because the user asked.
+
+    Pulls the player's own ESPN feed, bypassing the backfill TTL, and the league
+    feed too when it hasn't been polled in the last few minutes. A second press
+    within the cooldown returns how long to wait instead of calling ESPN again.
+    """
+    now = time.monotonic()
+    last = _manual_refresh_at.get(player_id)
+    if last is not None and now - last < MANUAL_REFRESH_COOLDOWN_SECONDS:
+        return {"refreshed": False, "added": 0, "retry_after": round(MANUAL_REFRESH_COOLDOWN_SECONDS - (now - last))}
+    _manual_refresh_at[player_id] = now
+
+    added = 0
+    if not _league_feed_at or now - _league_feed_at[-1] >= LEAGUE_FEED_MIN_INTERVAL_SECONDS:
+        _league_feed_at[:] = [now]
+        league = refresh_storylines()
+        added += int(league.get("new_rows") or 0) if isinstance(league, dict) else 0
+    added += backfill_player(player_id, force=True)
+    model_data["storylines_updated_at"] = _now()
+    return {"refreshed": True, "added": added, "retry_after": 0}
 
 
 def storylines_updated_at() -> str | None:

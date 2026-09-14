@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Newspaper, RefreshCw, Sparkles } from 'lucide-react';
 import { API_BASE_URL } from '../lib/api';
 import StorylineModal from './StorylineModal';
@@ -33,6 +33,15 @@ function timeAgo(iso: string): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
 }
 
+/** How many a profile shows: the ten most recent, or as many as exist. */
+const STORY_LIMIT = 10;
+
+/** Newest first by the moment published. The API already sorts; this keeps it true after a merge. */
+const byRecency = (items: Storyline[]) =>
+  [...items].sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+
+type RefreshState = { busy: boolean; note: string | null };
+
 const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamColor?: string }> = ({
   playerId,
   playerName,
@@ -43,23 +52,55 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openStory, setOpenStory] = useState<Storyline | null>(null);
+  const [refresh, setRefresh] = useState<RefreshState>({ busy: false, note: null });
 
   useEffect(() => {
     if (!playerId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`${API_BASE_URL}/player/${playerId}/storylines?limit=5`)
+    fetch(`${API_BASE_URL}/player/${playerId}/storylines?limit=${STORY_LIMIT}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => {
         if (cancelled) return;
-        setItems(d.storylines || []);
+        setItems(byRecency(d.storylines || []));
         setUpdatedAt(d.updated_at || null);
       })
       .catch((e) => !cancelled && setError(String(e.message || e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [playerId]);
+
+  // Ask ESPN now instead of waiting for the hourly poll.
+  const refreshNow = useCallback(() => {
+    setRefresh({ busy: true, note: null });
+    fetch(`${API_BASE_URL}/player/${playerId}/storylines/refresh?limit=${STORY_LIMIT}`, { method: 'POST' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        setItems(byRecency(d.storylines || []));
+        setUpdatedAt(d.updated_at || null);
+        setError(null);
+        const note = !d.refreshed
+          ? `Just checked. Try again in ${d.retry_after}s`
+          : d.added > 0 ? `${d.added} new` : 'Up to date';
+        setRefresh({ busy: false, note });
+      })
+      .catch((e) => setRefresh({ busy: false, note: `Refresh failed (${String(e.message || e)})` }));
+  }, [playerId]);
+
+  const refreshButton = (
+    <button
+      type="button"
+      onClick={refreshNow}
+      disabled={refresh.busy}
+      data-testid="storylines-refresh"
+      title="Check ESPN for this player's latest news now"
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono normal-case tracking-normal text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-700/60 disabled:opacity-60"
+    >
+      <RefreshCw size={10} className={refresh.busy ? 'animate-spin' : ''} />
+      {refresh.busy ? 'checking…' : refresh.note ?? (updatedAt ? `feed ${timeAgo(updatedAt)}` : 'refresh')}
+    </button>
+  );
 
   if (loading) {
     return (
@@ -98,6 +139,7 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
           ESPN has no news on file for this player yet. Deep reserves and recent signings often
           have none until they see the field.
         </p>
+        <div className="mt-3 text-[10px] font-bold">{refreshButton}</div>
       </div>
     );
   }
@@ -107,11 +149,8 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
       <div className="px-4 py-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
         <Newspaper size={12} />
         <span>Latest storylines</span>
-        {updatedAt && (
-          <span className="ml-auto inline-flex items-center gap-1 font-mono normal-case tracking-normal">
-            <RefreshCw size={10} /> feed {timeAgo(updatedAt)}
-          </span>
-        )}
+        <span className="font-mono normal-case tracking-normal text-slate-300 dark:text-slate-600">{items.length}</span>
+        <span className="ml-auto">{refreshButton}</span>
       </div>
 
       {items.map((s) => {

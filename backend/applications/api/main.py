@@ -132,8 +132,10 @@ async def lifespan(app: FastAPI):
             )
         # Player storylines: ESPN's league feed is capped at 50 articles and only
         # covers the last several hours, so polling it a few times a day is what
-        # accumulates real per-player history. Tune with STORYLINE_REFRESH_HOURS.
-        storyline_hours = float(os.getenv('STORYLINE_REFRESH_HOURS', '3'))
+        # accumulates real per-player history. Hourly, since it's one small
+        # request; the profile's refresh button covers anything sooner.
+        # Tune with STORYLINE_REFRESH_HOURS.
+        storyline_hours = float(os.getenv('STORYLINE_REFRESH_HOURS', '1'))
         if storyline_hours > 0:
             scheduler.add_job(
                 storylines_wrapper, 'interval', hours=storyline_hours,

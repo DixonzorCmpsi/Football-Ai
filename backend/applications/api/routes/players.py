@@ -387,7 +387,7 @@ async def get_player_season_stats(player_id: str, seasons: int = 5):
 
 
 @router.get("/player/{player_id}/storylines")
-def get_storylines(player_id: str, limit: int = 5):
+def get_storylines(player_id: str, limit: int = 10):
     """A player's most recent storylines, newest first, going back as far as needed.
 
     Combines the polled league feed with the player's own ESPN news feed, fetched
@@ -397,9 +397,29 @@ def get_storylines(player_id: str, limit: int = 5):
     """
     from ..services.storylines import get_player_storylines, storylines_updated_at
 
-    items = get_player_storylines(player_id, limit=limit)
+    items = get_player_storylines(player_id, limit=max(1, min(limit, 25)))
     return {
         "player_id": player_id,
+        "count": len(items),
+        "updated_at": storylines_updated_at(),
+        "storylines": items,
+    }
+
+
+@router.post("/player/{player_id}/storylines/refresh")
+def refresh_storylines_now(player_id: str, limit: int = 10):
+    """Pull this player's news from ESPN now instead of waiting for the next poll.
+
+    Cooldown of a minute per player (see services/storylines.py); within it the
+    stored list comes back with `retry_after` seconds.
+    """
+    from ..services.storylines import get_player_storylines, refresh_player_storylines, storylines_updated_at
+
+    result = refresh_player_storylines(player_id)
+    items = get_player_storylines(player_id, limit=max(1, min(limit, 25)), backfill=False)
+    return {
+        "player_id": player_id,
+        **result,
         "count": len(items),
         "updated_at": storylines_updated_at(),
         "storylines": items,
