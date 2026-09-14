@@ -169,7 +169,12 @@ const PlayerPerformanceCharts: React.FC<Props> = ({ rows, position, season }) =>
     const raw = radarData[index]?.raw;
     if (raw == null) return null;
     return (
-      <text x={x} y={y} dy={-8} textAnchor="middle" fontSize={11} fontWeight={800} fill={ACCENT}>
+      // Light text with a dark halo: the accent-on-accent label vanished inside
+      // the red polygon. The halo keeps it readable on the fill and on either theme.
+      <text
+        x={x} y={y} dy={-8} textAnchor="middle" fontSize={11} fontWeight={800}
+        fill="#f8fafc" stroke="#0f172a" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke"
+      >
         {raw.toFixed(1)}
       </text>
     );

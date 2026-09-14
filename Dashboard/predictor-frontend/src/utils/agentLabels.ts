@@ -29,6 +29,8 @@ const LABELS: Record<string, string> = {
   open_player_card: 'opening the player card',
   add_to_compare: 'adding to the comparison',
   go_back: 'going back',
+  web_search: 'searching the web',
+  fetch_page: 'reading a web page',
   read_screen: 'looking at your screen',
   click: 'clicking',
   type_text: 'typing',

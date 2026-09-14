@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field, SecretStr
 # Absolute: uvicorn runs from backend/ (`applications.server:app`), so `agent`
 # and `mcp_server` are top-level packages there, the same way mcp_server imports.
 from agent import tools as agent_tools
-from agent import screen_actions, ui_control
+from agent import screen_actions, ui_control, web_tools
 from agent.pi_runtime import RUNTIME_DIR, AgentBusy, AgentForbidden, AgentUnavailable, runtime
 
 from ..config import logger
@@ -141,6 +141,14 @@ def call_agent_tool(name: str, call: ToolCall, request: Request):
     except Exception as exc:
         logger.warning("agent tool %s failed: %s", name, exc)
         return {"error": f"{type(exc).__name__}: {exc}"}
+    if isinstance(screen, web_tools.WebRequest):
+        upstream = None
+        if screen.kind == "search" and not screen.error:
+            try:
+                upstream = proxy.upstream_for(grant.conversation_id, grant.client_id)
+            except (proxy.HouseUnavailable, UnsafeUpstream):
+                upstream = None
+        return {"text": web_tools.run(screen, grant.conversation_id, upstream)}
     if isinstance(screen, ui_control.UiCommand):
         if screen.op is None:
             return {"text": screen.error or text}
@@ -395,6 +403,7 @@ async def agent_chat(request: Request, body: ChatRequest):
 
     prompt = build_prompt(body.message.strip(), body.screen)
     proxy.begin_question(body.conversation_id)
+    web_tools.begin_question(body.conversation_id)
     # Leftovers from an earlier question must never replay into this answer's
     # stream. The queue lives for the conversation; only its stale entries go.
     screen_actions.discard_actions(body.conversation_id)

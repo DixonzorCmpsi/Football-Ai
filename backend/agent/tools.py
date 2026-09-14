@@ -20,8 +20,12 @@ path onto the conversation's action queue, because only the route knows which
 conversation a call belongs to (from the session token).
 
 UI-control tools (read_screen, click, type_text, ...) live in
-``agent.ui_control`` and come last. They return a ``UiCommand``: the route
-sends it to the user's browser and waits for the page's answer.
+``agent.ui_control``. They return a ``UiCommand``: the route sends it to the
+user's browser and waits for the page's answer.
+
+Web tools (web_search, fetch_page) live in ``agent.web_tools`` and come last.
+They return a ``WebRequest`` the route runs with the conversation's key and
+per-question budget.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from typing import Any, Callable
 
 from agent.screen_actions import SCREEN_ACTION_TOOLS, SCREEN_TOOL_NAMES, ScreenResult
 from agent.ui_control import UI_CONTROL_TOOLS, UI_TOOL_NAMES, UiCommand
+from agent.web_tools import WEB_TOOL_NAMES, WEB_TOOLS, WebRequest
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +62,9 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "sleeper_analyze_roster",
     "sleeper_waiver_targets",
     "get_status",
-) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS) + tuple(name for name, _fn in UI_CONTROL_TOOLS)
+) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS) + tuple(name for name, _fn in UI_CONTROL_TOOLS) + tuple(
+    name for name, _fn in WEB_TOOLS
+)
 
 # Python annotation -> JSON Schema. The tool signatures only use these;
 # anything else should fail loudly at import rather than reach the model as an
@@ -102,6 +109,9 @@ def _load() -> dict[str, Callable[..., Any]]:
             continue
         if name in UI_TOOL_NAMES:
             found[name] = dict(UI_CONTROL_TOOLS)[name]
+            continue
+        if name in WEB_TOOL_NAMES:
+            found[name] = dict(WEB_TOOLS)[name]
             continue
         fn = getattr(mcp_server, name, None)
         if not callable(fn):
@@ -177,7 +187,7 @@ def call_tool(name: str, arguments: dict | None = None) -> str:
     return text
 
 
-def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, ScreenResult | UiCommand | None]:
+def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, ScreenResult | UiCommand | WebRequest | None]:
     """Run one tool; also return its ScreenResult or UiCommand when it has one.
 
     A screen tool that resolved a movement returns (text, ScreenResult) and the
@@ -196,4 +206,6 @@ def call_tool_result(name: str, arguments: dict | None = None) -> tuple[str, Scr
         return out.text, out
     if isinstance(out, UiCommand):
         return (out.error or "This needs the user's app open in a browser."), out
+    if isinstance(out, WebRequest):
+        return (out.error or "This needs a conversation to run in."), out
     return str(out), None
