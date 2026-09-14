@@ -50,6 +50,8 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
   const [showAlternates, setShowAlternates] = useState(false);
   const alternates = markets.filter((m) => m.alternate).length;
   const shownMarkets = showAlternates ? markets : markets.filter((m) => !m.alternate);
+  // Props saved by the old page scrape (before Sep 2026) only ever had the over.
+  const hasUnders = markets.some((m) => m.under);
 
   if (!player) return null;
   const teamColor = getTeamColor(player.team);
@@ -263,7 +265,7 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                           <th className="px-3 py-2 text-left">Market</th>
                           <th className="px-3 py-2 text-right">Line</th>
                           <th className="px-3 py-2 text-right">Over</th>
-                          <th className="px-3 py-2 text-right">Under</th>
+                          {hasUnders && <th className="px-3 py-2 text-right">Under</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -272,7 +274,7 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                             <td className="px-3 py-2 font-bold">{m.prop_type}</td>
                             <td className="px-3 py-2 text-right font-mono">{m.yes ? '-' : m.line ?? '-'}</td>
                             {m.yes ? (
-                              <td className="px-3 py-2 text-right font-mono" colSpan={2}>
+                              <td className="px-3 py-2 text-right font-mono" colSpan={hasUnders ? 2 : 1}>
                                 {formatOdds(m.yes.odds)} <span className="text-slate-400">· {m.yes.prob ?? '-'}%</span>
                               </td>
                             ) : (
@@ -280,9 +282,9 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                                 <td className="px-3 py-2 text-right font-mono">
                                   {m.over ? <>{formatOdds(m.over.odds)} <span className="text-slate-400">· {m.over.prob ?? '-'}%</span></> : '-'}
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono">
+                                {hasUnders && <td className="px-3 py-2 text-right font-mono">
                                   {m.under ? <>{formatOdds(m.under.odds)} <span className="text-slate-400">· {m.under.prob ?? '-'}%</span></> : '-'}
-                                </td>
+                                </td>}
                               </>
                             )}
                           </tr>
@@ -300,6 +302,9 @@ const PlayerModal: React.FC<PlayerModalProps> = ({ player, onClose }) => {
                   >
                     {showAlternates ? 'Hide alternate lines' : `Show ${alternates} alternate line${alternates === 1 ? '' : 's'}`}
                   </button>
+                )}
+                {markets.length > 0 && !hasUnders && (
+                  <p className="text-[10px] text-slate-400 mt-1.5">Only over prices were saved for this game; under prices are kept for games from mid-September 2026 on.</p>
                 )}
                 <p className="text-[10px] text-slate-400 mt-1.5">Percentages are the implied probability of each price, including the book's margin.</p>
               </div>

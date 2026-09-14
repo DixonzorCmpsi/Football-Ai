@@ -11,7 +11,7 @@
 
 export type AppLocation =
   | { view: 'SCHEDULE' }
-  | { view: 'GAME'; home: string; away: string }
+  | { view: 'GAME'; home: string; away: string; week?: number }
   | { view: 'LOOKUP' }
   | { view: 'COMPARE'; ids: string[] }
   | { view: 'HISTORY'; playerId: string }
@@ -44,7 +44,9 @@ export function formatAppUrl(loc: AppLocation): string {
     case 'SCHEDULE':
       return '/';
     case 'GAME':
-      return `/game/${enc(loc.away)}/${enc(loc.home)}`;
+      // The week makes a link to last week's game open last week's game, not
+      // this week's matchup between the same teams.
+      return `/game/${enc(loc.away)}/${enc(loc.home)}${loc.week ? `?week=${loc.week}` : ''}`;
     case 'LOOKUP':
       return '/lookup';
     case 'COMPARE':
@@ -119,7 +121,8 @@ export function parseAppUrl(pathnameAndSearch: string): AppLocation | null {
     const away = segs[1].toUpperCase();
     const home = segs[2].toUpperCase();
     if (!TEAM_RE.test(away) || !TEAM_RE.test(home)) return null;
-    return { view: 'GAME', away, home };
+    const week = Number(new URLSearchParams(search).get('week'));
+    return Number.isInteger(week) && week >= 1 && week <= 22 ? { view: 'GAME', away, home, week } : { view: 'GAME', away, home };
   }
 
   // --- player history: /player/{playerId} ---

@@ -28,12 +28,14 @@ const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join
     waiter?.();
   });
 
+  const sizes = [];
   async function act(command) {
     pending = command;
     const done = new Promise((res) => { waiter = res; });
     await p.getByTestId('agent-input').fill(`step ${n + 1}`);
     await p.getByTestId('agent-send').click();
     await Promise.race([done, new Promise((_, rej) => setTimeout(() => rej(new Error('no result in 20s')), 20000))]);
+    sizes.push(`${command.op}:${lastResult.text.length}`);
     return lastResult;
   }
   const refFor = (snap, re) => (snap.split('\n').find((l) => re.test(l)) || '').split(' ')[0];
@@ -78,6 +80,7 @@ const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join
   const t0 = Date.now();
   await p.evaluate(() => import('/src/lib/agentDriver.ts').then((m) => m.snapshot()));
   console.log('snapshot time on this page (ms):', Date.now() - t0);
+  console.log('result sizes (chars):', sizes.join('  '));
   console.log('page errors:', errors.length ? errors : 'none');
   await b.close();
 })();

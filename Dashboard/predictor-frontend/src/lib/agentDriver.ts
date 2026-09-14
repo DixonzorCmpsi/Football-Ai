@@ -39,6 +39,7 @@ export type UiResult = { ok: boolean; text: string };
 
 const MAX_ELEMENTS = 150;
 const MAX_SCREEN_TEXT = 3500;
+const COMPACT_SCREEN_TEXT = 1800;
 const MAX_LABEL = 80;
 
 const INTERACTIVE =
@@ -262,7 +263,14 @@ function screenText(): string {
   return joined.length > MAX_SCREEN_TEXT ? `${joined.slice(0, MAX_SCREEN_TEXT)}\n…(more text below)` : joined;
 }
 
-export function snapshot(note = ''): string {
+/**
+ * The screen as text. `full` (read_screen) lists every area. After an action the
+ * model mostly needs what changed, which is the page and any popup, so the
+ * default is compact: header as one line of labels, side panels left out, less
+ * page text. Every step is re-read by the model on each later call, so this is
+ * most of what a multi-step task costs in tokens.
+ */
+export function snapshot(note = '', full = false): string {
   const byRegion = new Map<string, Element[]>();
   for (const el of actionable()) {
     const region = regionOf(el);
@@ -273,6 +281,12 @@ export function snapshot(note = ''): string {
   for (const region of REGION_ORDER) {
     const els = byRegion.get(region);
     if (!els?.length || budget <= 0) continue;
+    if (!full && region === 'header') {
+      const nav = els.map((el) => labelOf(el) && `${refFor(el)} ${labelOf(el)}`).filter(Boolean);
+      lines.push(`[header] ${nav.join(' · ')}`);
+      continue;
+    }
+    if (!full && (region === 'left panel' || region === 'right panel')) continue;
     // What's in view first, then what scrolling reaches.
     const ordered = [...els.filter(inViewport), ...els.filter((el) => !inViewport(el))];
     const shown = ordered.slice(0, Math.min(REGION_CAP[region] ?? 20, budget));
@@ -292,8 +306,9 @@ export function snapshot(note = ''): string {
     `Page: ${location.pathname}${location.search} · ${document.title}`,
     'Elements you can act on, by area:',
     ...lines,
+    full ? '' : '(Side panels not shown; call read_screen for everything.)',
     '--- screen start ---',
-    screenText(),
+    full ? screenText() : screenText().slice(0, COMPACT_SCREEN_TEXT),
     '--- screen end ---',
   ].filter(Boolean).join('\n');
 }
@@ -384,7 +399,7 @@ function scrollContainer(): HTMLElement | Window {
 }
 
 async function run(command: UiCommand): Promise<UiResult> {
-  if (command.op === 'snapshot') return { ok: true, text: snapshot() };
+  if (command.op === 'snapshot') return { ok: true, text: snapshot('', true) };
 
   if (command.op === 'scroll') {
     const box = scrollContainer();

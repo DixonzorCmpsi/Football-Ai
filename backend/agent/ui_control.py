@@ -142,8 +142,9 @@ def read_screen() -> UiCommand:
     Each actionable element is listed with a ref like e12, its kind and its label
     (e.g. `e12 button "Compare"`, `e7 textbox "Search players" value=""`). Pass the
     ref to click, type_text, select_option or press_key. Call this before acting on
-    a page you haven't seen in this answer; every action also returns a fresh
-    snapshot, so you don't need to call it again after acting.
+    a page you haven't seen in this answer. Every action returns a compact snapshot
+    (the page and any popup, header as one line, side panels left out), so you only
+    need this again to see the side panels or the full page text.
     """
     return UiCommand("snapshot")
 

@@ -134,7 +134,8 @@ export default function App() {
     // Only update if we have a valid positive week number
     if (currentWeek && currentWeek > 0) {
         // Schedule setState as a microtask to avoid sync setState-in-effect lint error
-        Promise.resolve().then(() => setActiveWeek(currentWeek));
+        // Keep a week a deep link already chose (/game/NE/SEA?week=1).
+        Promise.resolve().then(() => setActiveWeek((prev) => prev ?? currentWeek));
     }
   }, [currentWeek]);
 
@@ -253,7 +254,7 @@ export default function App() {
     switch (viewMode) {
       case 'GAME':
         return selectedGame
-          ? { view: 'GAME', home: selectedGame.home, away: selectedGame.away }
+          ? { view: 'GAME', home: selectedGame.home, away: selectedGame.away, ...(activeWeek ? { week: activeWeek } : {}) }
           : { view: 'SCHEDULE' };
       case 'COMPARE':
         return { view: 'COMPARE', ids: compareList };
@@ -270,7 +271,7 @@ export default function App() {
       default:
         return { view: viewMode } as AppLocation;
     }
-  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab]);
+  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab, activeWeek]);
 
   // Map an AppLocation onto the app's state setters. `push` decides the view
   // setter: agent actions and buttons use setViewMode so the header Back button
@@ -286,6 +287,7 @@ export default function App() {
           break;
         case 'GAME':
           setSelectedGame({ home: loc.home, away: loc.away });
+          if (loc.week) setActiveWeek(loc.week);
           setView('GAME');
           break;
         case 'LOOKUP':

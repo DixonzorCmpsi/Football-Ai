@@ -274,35 +274,40 @@ class TestOpenGame:
     def test_resolves_from_schedule(self, monkeypatch):
         monkeypatch.setattr(sa, "_get", lambda path, params=None: (
             [{"away_team": "BUF", "home_team": "HOU"}]
-            if path == "/schedule" else {"week": 1}
+            if path.startswith("/schedule/") else {"week": 1}
         ))
         out = sa.open_game("Bills", 1)
-        assert out.path == "/game/BUF/HOU"
+        assert out.path == "/game/BUF/HOU?week=1"
         assert "BUF @ HOU" in out.text
 
     def test_rams_open_as_la(self, monkeypatch):
         monkeypatch.setattr(sa, "_get", lambda path, params=None: (
             [{"away_team": "LA", "home_team": "SEA"}]
-            if path == "/schedule" else {"week": 1}
+            if path.startswith("/schedule/") else {"week": 1}
         ))
         out = sa.open_game("Rams", 1)
-        assert out.path == "/game/LA/SEA"
+        assert out.path == "/game/LA/SEA?week=1"
 
     def test_bye_week_queues_nothing(self, monkeypatch):
         monkeypatch.setattr(sa, "_get", lambda path, params=None: (
-            [] if path == "/schedule" else {"week": 1}
+            [] if path.startswith("/schedule/") else {"week": 1}
         ))
         out = sa.open_game("BUF", 1)
         assert out.path is None
         assert "no game" in out.text.lower()
 
     def test_week_zero_uses_current_week(self, monkeypatch):
+        # The autouse fixture pins the current week to 1, so this test used to
+        # pass whatever week open_game picked. Make the current week distinct.
+        monkeypatch.setattr(sa, "_current_week", lambda: 7)
+        asked = []
         monkeypatch.setattr(sa, "_get", lambda path, params=None: (
-            [{"away_team": "BUF", "home_team": "HOU"}]
-            if path == "/schedule" else {"week": 7}
+            asked.append(path) or [{"away_team": "BUF", "home_team": "HOU"}]
         ))
         out = sa.open_game("BUF")
-        assert out.path == "/game/BUF/HOU"
+        assert out.path == "/game/BUF/HOU?week=7"
+        # The real route is /schedule/{week}; the ?week= form 404s.
+        assert asked == ["/schedule/7"]
 
 
 class TestOpenTeam:

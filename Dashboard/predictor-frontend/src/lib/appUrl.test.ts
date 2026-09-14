@@ -78,3 +78,11 @@ describe('appUrl tolerances', () => {
     expect(parseAppUrl('/Ranks')).toEqual({ view: 'GAME_RANKS' });
   });
 });
+describe('game links carry their week', () => {
+  it('round-trips the week and ignores a bad one', () => {
+    expect(formatAppUrl({ view: 'GAME', away: 'NE', home: 'SEA', week: 1 })).toBe('/game/NE/SEA?week=1');
+    expect(parseAppUrl('/game/NE/SEA?week=1')).toEqual({ view: 'GAME', away: 'NE', home: 'SEA', week: 1 });
+    expect(parseAppUrl('/game/NE/SEA?week=99')).toEqual({ view: 'GAME', away: 'NE', home: 'SEA' });
+    expect(parseAppUrl('/game/NE/SEA')).toEqual({ view: 'GAME', away: 'NE', home: 'SEA' });
+  });
+});

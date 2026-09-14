@@ -233,7 +233,9 @@ def format_url(view: str, **kw: Any) -> str:
             return "/my-team/league"
         return "/my-team"
     if v == "GAME":
-        return f"/game/{_enc(kw['away'])}/{_enc(kw['home'])}"
+        week = kw.get("week")
+        suffix = f"?week={int(week)}" if week else ""
+        return f"/game/{_enc(kw['away'])}/{_enc(kw['home'])}{suffix}"
     return "/"
 
 
@@ -430,7 +432,8 @@ def open_game(team: str, week: int = 0) -> ScreenResult:
             f"'{team}' is not a recognized team. Use an abbreviation like BUF, KC, or SF."
         )
     wk = week or _current_week()
-    games = _get("/schedule", {"week": wk}) or []
+    # /schedule/{week}, not ?week=: the query form 404s, which read as "bye week".
+    games = _get(f"/schedule/{wk}") or []
     row = next(
         (g for g in games if g.get("home_team") == abbr or g.get("away_team") == abbr),
         None,
@@ -438,7 +441,7 @@ def open_game(team: str, week: int = 0) -> ScreenResult:
     if not row:
         return ScreenResult(f"The {abbr} have no game in week {wk} (bye week).")
     away, home = row.get("away_team"), row.get("home_team")
-    path = format_url("GAME", away=away, home=home)
+    path = format_url("GAME", away=away, home=home, week=wk)
     return ScreenResult(
         text=f"Opened {away} @ {home} (week {wk}).",
         path=path,
