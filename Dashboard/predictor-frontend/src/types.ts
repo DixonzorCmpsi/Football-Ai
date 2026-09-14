@@ -1,3 +1,12 @@
+export interface PlayerProp {
+  prop_type: string;
+  line: number | null;
+  odds: string | number | null;
+  implied_prob: number | null;
+  /** "over" / "under" for lines; "Yes" for scorer markets. */
+  side?: string | null;
+}
+
 export interface PlayerData {
   player_name: string;
   player_id: string;
@@ -9,6 +18,12 @@ export interface PlayerData {
   prediction: number;
   floor_prediction: number;
   average_points: number;
+  /** Full-PPR points scored that week, once the stat line exists (0 for a final game with none). */
+  actual_points?: number | null;
+  /** The player's game for this week is over. */
+  game_final?: boolean;
+  /** What happened, keyed by prop label ("Pass Yds", "Receptions", "TDs", ...); null before the game. */
+  actual_stats?: Record<string, number | null> | null;
   snap_percentage?: number;
   is_injury_boosted?: boolean; // <-- Add this line
   // Depth-chart starter (pos_rank == 1). Drives roster ordering so the
@@ -18,6 +33,12 @@ export interface PlayerData {
   overunder: number | null;
   spread: number | null;
   implied_total?: number | null;
+  /** This team's moneyline, e.g. "-135". */
+  moneyline?: string | null;
+  /** Where the game line came from: Bovada, or the schedule when Bovada has none. */
+  lines_source?: 'bovada' | 'schedule' | null;
+  /** Every Bovada market for the player this week, both sides. */
+  props?: PlayerProp[];
   // Props
   prop_line: number | null; 
   prop_prob: number | null;
@@ -39,6 +60,9 @@ export interface PlayerData {
 export interface MatchupData {
   matchup: string;
   week: number;
+  /** Final score once the game is played; null before. */
+  home_score?: number | null;
+  away_score?: number | null;
   over_under: number | null;
   home_win_prob: number | null;
   away_win_prob: number | null;

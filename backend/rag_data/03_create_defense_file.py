@@ -77,37 +77,35 @@ def refresh_schedule_with_spread(season):
         def get_val(team, key):
             return odds_map.get(team, {}).get(key, None)
 
-        # Apply Columns
-        final_sched = schedules.with_columns([
-            pl.col("home_team").map_elements(lambda x: get_val(x, "spread"), return_dtype=pl.Float64).alias("spread_line"),
-            pl.col("home_team").map_elements(lambda x: get_val(x, "total"), return_dtype=pl.Float64).alias("total_line"),
-            pl.col("home_team").map_elements(lambda x: get_val(x, "home_ml"), return_dtype=pl.Int64).alias("moneyline_home"),
-            pl.col("home_team").map_elements(lambda x: get_val(x, "away_ml"), return_dtype=pl.Int64).alias("moneyline_away")
-        ])
+        # nflverse already carries closing/current lines for every game
+        # (spread_line: positive = home favored). SportsDataIO only overrides
+        # when it actually returned a value: without a key it returns nothing,
+        # and overwriting used to null every line in the schedule.
+        for col, dtype in (("spread_line", pl.Float64), ("total_line", pl.Float64),
+                           ("home_moneyline", pl.Int64), ("away_moneyline", pl.Int64)):
+            if col not in schedules.columns:
+                schedules = schedules.with_columns(pl.lit(None, dtype=dtype).alias(col))
+        if odds_map:
+            api = lambda key, dtype: pl.col("home_team").map_elements(lambda x: get_val(x, key), return_dtype=dtype)
+            schedules = schedules.with_columns([
+                # SportsDataIO's PointSpread is the home side's handicap (negative = favored).
+                pl.coalesce([-api("spread", pl.Float64), pl.col("spread_line")]).alias("spread_line"),
+                pl.coalesce([api("total", pl.Float64), pl.col("total_line")]).alias("total_line"),
+                pl.coalesce([api("home_ml", pl.Int64), pl.col("home_moneyline")]).alias("home_moneyline"),
+                pl.coalesce([api("away_ml", pl.Int64), pl.col("away_moneyline")]).alias("away_moneyline"),
+            ])
 
-        # Safeguard: Ensure columns exist
-        for col in ["spread_line", "total_line"]:
-            if col not in final_sched.columns:
-                final_sched = final_sched.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
-        for col in ["moneyline_home", "moneyline_away"]:
-            if col not in final_sched.columns:
-                final_sched = final_sched.with_columns(pl.lit(None).cast(pl.Int64).alias(col))
-
-        # Select Final Columns
-        output_cols = [
-            pl.col('game_id'), pl.col('week'), pl.col('season'), 
-            pl.col('home_team'), pl.col('away_team'), 
-            pl.col('home_score'), pl.col('away_score'), 
-            pl.col('spread_line').alias('spread'),
-            pl.col('total_line').alias('over_under'),
-            pl.col('moneyline_home'),
-            pl.col('moneyline_away'),
-            pl.col('gameday') 
+        # Select Final Columns. Names are checked against the SOURCE columns;
+        # checking an alias ("spread") against them silently dropped the lines.
+        wanted = [
+            ('game_id', 'game_id'), ('week', 'week'), ('season', 'season'), ('game_type', 'game_type'),
+            ('home_team', 'home_team'), ('away_team', 'away_team'),
+            ('home_score', 'home_score'), ('away_score', 'away_score'), ('result', 'result'),
+            ('spread_line', 'spread_line'), ('total_line', 'total_line'),
+            ('home_moneyline', 'moneyline_home'), ('away_moneyline', 'moneyline_away'),
+            ('gameday', 'gameday'), ('gametime', 'gametime'),
         ]
-        
-        # Filter and Save
-        available = [c for c in output_cols if c.meta.output_name() in final_sched.columns]
-        final_sched = final_sched.select(available)
+        final_sched = schedules.select([pl.col(src).alias(dst) for src, dst in wanted if src in schedules.columns])
         
         final_sched.write_csv(SCHEDULE_FILE)
         print(f"✅ Schedule refreshed with Moneyline/Spread: {SCHEDULE_FILE}")

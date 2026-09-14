@@ -26,7 +26,16 @@ import time
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:  # pragma: no cover - depends on the interpreter
+    # The tool functions below are also imported by the API process (see
+    # backend/agent/tools.py), which serves them to the in-app agent over HTTP
+    # and has no business requiring the MCP SDK. @mcp.tool() returns the
+    # undecorated function either way, so a no-op registrar changes nothing
+    # except that `main()` refuses to start a server it cannot build.
+    FastMCP = None  # type: ignore[assignment]
 
 from .formatting import (
     player_line,
@@ -73,7 +82,20 @@ _CACHE_TTL = (
 )
 _DEFAULT_TTL = 30.0
 
-mcp = FastMCP("football-ai")
+class _NoRegistrar:
+    """Stands in for FastMCP when the SDK is absent. Registers nothing."""
+
+    def tool(self, *args, **kwargs):
+        return lambda fn: fn
+
+    def run(self, *args, **kwargs):
+        raise RuntimeError(
+            "The MCP SDK is not installed in this interpreter. "
+            "Install it with `pip install 'mcp>=1.9,<2'` to run the MCP server."
+        )
+
+
+mcp = FastMCP("football-ai") if FastMCP is not None else _NoRegistrar()
 
 # One pooled client for the process. The first version built a new httpx.Client
 # per call, so every request paid a fresh TCP handshake on top of the name
@@ -295,12 +317,12 @@ def get_player_history(player: str, limit: int = 12) -> str:
 
 
 @mcp.tool()
-def get_player_storylines(player: str, limit: int = 5) -> str:
-    """Latest news storylines about a player."""
+def get_player_storylines(player: str, limit: int = 10) -> str:
+    """Latest news storylines about a player, newest first (up to 25)."""
     pid, note = _resolve_player(player)
     if not pid:
         return note
-    data = _get(f"/player/{pid}/storylines") or {}
+    data = _get(f"/player/{pid}/storylines", {"limit": max(1, min(limit, 25))}) or {}
     rows = data.get("storylines") if isinstance(data, dict) else data
     return summarize_storylines(rows or [], limit=limit)
 
@@ -434,6 +456,64 @@ def sleeper_analyze_roster(league_id: str, roster_id: int, week: int = 0) -> str
     if not data:
         return f"No analysis returned for roster {roster_id} in league {league_id}."
     return summarize_roster_analysis(data)
+
+
+@mcp.tool()
+def sleeper_matchup(league_id: str, roster_id: int, week: int = 0) -> str:
+    """This week's fantasy opponent, head to head, for a Sleeper roster.
+
+    Both set lineups slot by slot with projection range, game script (spread,
+    total, team implied points), touchdown chance, defense-vs-position rank and
+    injury flags; plus win probability, position-group edges, swing players,
+    and bench fixes for injured or bye-week starters. Use sleeper_list_teams
+    first to get the roster_id.
+    """
+    wk = week or _current_week()
+    data = _get(f"/sleeper/league/{league_id.strip()}/roster/{roster_id}/matchup", {"week": wk})
+    if not data:
+        return f"No matchup returned for roster {roster_id} in league {league_id}."
+    return summarize_matchup(data)
+
+
+def summarize_matchup(data: dict) -> str:
+    you, them = data.get("you") or {}, data.get("opponent")
+    lines = [f"Week {data.get('league', {}).get('week')}: {you.get('team_name')} ({you.get('record')})"]
+    if not them:
+        lines.append(data.get("message") or "No opponent this week.")
+    else:
+        lines[0] += (f" vs {them.get('team_name')} ({them.get('record')}). Projected {you.get('projected_total')}"
+                     f" to {them.get('projected_total')}, win probability {round(100 * (data.get('live_win_probability') or 0))}%.")
+        edges = ", ".join(f"{e['group']} {e['edge']:+.1f}" for e in data.get("group_edges") or [])
+        lines.append(f"Position edges (you minus them): {edges}")
+
+    def player(p: dict) -> str:
+        if p.get("empty"):
+            return f"  {p.get('slot')}: EMPTY"
+        bits = [f"  {p.get('slot')}: {p.get('player_name')} {p.get('team') or ''} vs {p.get('opponent') or '?'}",
+                f"proj {p.get('projection')}"]
+        if p.get("floor") is not None:
+            bits.append(f"range {p['floor']}-{p['ceiling']}")
+        if p.get("injury_flag"):
+            bits.append(f"injury {p['injury_flag']}")
+        if p.get("script"):
+            bits.append(f"script {p['script']['summary']}")
+        if p.get("td"):
+            bits.append(f"TD {round(100 * p['td']['probability'])}% ({p['td']['source']})")
+        if p.get("defense_rank"):
+            d = p["defense_rank"]
+            bits.append(f"defense #{d['rank']}/{d['teams']} vs position (1 = softest)")
+        return "; ".join(bits)
+
+    for label, side in (("Your lineup", you), ("Their lineup", them)):
+        if side:
+            lines.append(f"{label}:")
+            lines.extend(player(p) for p in side.get("starters") or [])
+    for f in data.get("bench_fixes") or []:
+        rep = f.get("replace_with")
+        lines.append(f"Fix: {f['out']} ({f['reason']}) -> " + (f"start {rep['player_name']} ({rep['projection']})" if rep else "no bench fit"))
+    for s in data.get("swing_players") or []:
+        lines.append(f"Swing ({s['side']}): {s['player_name']} {s['floor']}-{s['ceiling']}")
+    return "\n".join(lines)[:6000]
 
 
 @mcp.tool()

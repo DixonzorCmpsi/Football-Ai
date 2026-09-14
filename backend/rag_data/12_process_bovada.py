@@ -3,6 +3,10 @@ import re
 import os
 import math
 import polars as pl
+import sys
+# backend/ itself, for db_read: reads that survive a blocked pyarrow DLL.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
+from db_read import read_db_uri
 from datetime import datetime
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer, util
@@ -133,7 +137,7 @@ def load_data_source(query: str, csv_path: str, context_name: str) -> pl.DataFra
     if DB_CONNECTION_STRING:
         try:
             print(f"   Attempting DB load for {context_name}...")
-            df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+            df = read_db_uri(query, DB_CONNECTION_STRING)
             if not df.is_empty(): 
                 print(f"   ✅ Loaded {len(df)} rows from DB for {context_name}")
                 return df

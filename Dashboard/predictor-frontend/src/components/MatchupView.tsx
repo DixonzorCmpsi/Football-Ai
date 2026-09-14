@@ -11,6 +11,8 @@ import { getTeamColor } from '../utils/nflColors';
 import { sizedPlayerImage } from '../utils/playerImage';
 import type { MatchupData, InjuryData, ScheduleGame } from '../hooks/useNflData';
 import type { PlayerData } from '../types';
+import type { CardTab } from '../lib/appUrl';
+import { useAgentScreen } from '../contexts/AgentScreenContext';
 
 interface MatchupViewProps {
   week: number;
@@ -22,6 +24,13 @@ interface MatchupViewProps {
   compareList: string[];
   onToggleCompare: (id: string) => void;
   onOpenHistory?: (id: string) => void;
+  /**
+   * The open player card, owned by the host so it lives in the URL
+   * (/game/NYJ/TEN?player=...&tab=...). Without these props the view keeps
+   * its own state as before.
+   */
+  card?: { playerId: string; tab: CardTab } | null;
+  onCardChange?: (card: { playerId: string; tab: CardTab } | null) => void;
 }
 
 type PositionFilter = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE';
@@ -71,9 +80,20 @@ const InjuryCard = React.memo(({ player }: { player: InjuryData }) => {
     );
 });
 
-const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory, onInnerNav }) => {
+const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList, onToggleCompare, onOpenHistory, onInnerNav, card, onCardChange }) => {
   const [data, setData] = useState<MatchupData | null>(null);
-  const [selectedPlayer, setSelectedPlayer] = useState<PlayerData | null>(null);
+  const [ownCard, setOwnCard] = useState<{ playerId: string; tab: CardTab } | null>(null);
+  const controlled = onCardChange !== undefined;
+  const shownCard = controlled ? card ?? null : ownCard;
+  const setCard = useCallback((next: { playerId: string; tab: CardTab } | null) => {
+    if (controlled) onCardChange?.(next);
+    else setOwnCard(next);
+  }, [controlled, onCardChange]);
+  const setSelectedPlayer = useCallback((p: PlayerData | null) => setCard(p ? { playerId: p.player_id, tab: 'log' } : null), [setCard]);
+  const selectedPlayer = useMemo(() => {
+    if (!shownCard || !data) return null;
+    return [...(data.home_roster ?? []), ...(data.away_roster ?? [])].find((p) => p.player_id === shownCard.playerId) ?? null;
+  }, [shownCard, data]);
   const [loading, setLoading] = useState(true);
   const [filterPos, setFilterPos] = useState<PositionFilter>('ALL');
   const [activeTab, setActiveTab] = useState<ViewTab>('ROSTER');
@@ -109,14 +129,22 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
   const [injuredOnly, setInjuredOnly] = useState(true);
 
   useEffect(() => {
+    // Week 0 means the current week isn't known yet (a deep link opens before it
+    // loads). Asking for it returned every player on a BYE, and if that slower
+    // response landed after the real one it replaced the real roster. So: wait
+    // for a week, and drop any answer for a request that's been superseded.
+    if (!week) return;
+    let current = true;
     import('../lib/api').then(({ fetchMatchup }) => {
       fetchMatchup(week, home, away)
         .then(d => {
+          if (!current) return;
           setData(d);
           setLoading(false);
         })
-        .catch(err => { console.error("Matchup Fetch Error:", err); setLoading(false); });
-    }).catch(err => { console.error(err); setLoading(false); });
+        .catch(err => { console.error("Matchup Fetch Error:", err); if (current) setLoading(false); });
+    }).catch(err => { console.error(err); if (current) setLoading(false); });
+    return () => { current = false; };
   }, [week, home, away]);
 
   // Hooks must run unconditionally, before the loading/empty-data early
@@ -160,6 +188,28 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
     if (filterPos !== 'ALL') processed = processed.filter(p => p.position === filterPos);
     return processed.sort(byRosterOrder);
   }, [data?.away_roster, filterPos]);
+
+  // Refine what the agent thinks is on screen. App already knows this is the
+  // game page for these two teams; this adds the tab, the position filter and
+  // the starters actually rendered, so "who should I start here" and "is he
+  // playing" resolve without the model guessing.
+  const agentEntities = useMemo(() => {
+    const starters = [...awayRoster, ...homeRoster].filter(p => p.is_starter).slice(0, 10);
+    return starters.map(p => ({
+      type: 'player' as const,
+      name: p.player_name,
+      id: p.player_id,
+      detail: [p.position, p.team, p.injury_status].filter(Boolean).join(', '),
+    }));
+  }, [homeRoster, awayRoster]);
+
+  useAgentScreen({
+    view: 'GAME',
+    title: `the ${away} at ${home} game page, ${activeTab.toLowerCase()} tab`,
+    week,
+    facts: filterPos === 'ALL' ? [] : [`filtered to ${filterPos}`],
+    entities: agentEntities,
+  });
 
   // Mirrors the backend ordering (see _injury_sort_key in prediction.py) so the
   // list reads like a depth chart: starters first, skill offense then the line
@@ -290,6 +340,8 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
           gameTime={data.gametime}
           gameDay={data.gameday}
           overUnder={data.over_under || null}
+          homeScore={data.home_score ?? null}
+          awayScore={data.away_score ?? null}
           spread={data.spread || null}
           homeWinProb={data.home_win_prob || null}
           awayWinProb={data.away_win_prob || null}
@@ -300,7 +352,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
       </div>
 
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
-        <div className={`flex-1 overflow-y-auto overscroll-contain pb-4 ${activeTab === 'ROSTER' ? 'pr-10 lg:pr-12 xl:pr-14' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div className={`flex-1 overflow-y-auto overscroll-contain pb-28 md:pb-24 ${activeTab === 'ROSTER' ? 'pr-10 lg:pr-12 xl:pr-14' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
           <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
           
           {activeTab === 'ROSTER' ? (
@@ -455,7 +507,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
         )}
       </div>
 
-      {selectedPlayer && <PlayerModal player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />}
+      {selectedPlayer && shownCard && (
+        <PlayerModal
+          player={selectedPlayer}
+          onClose={() => setSelectedPlayer(null)}
+          tab={shownCard.tab}
+          onTabChange={(tab) => setCard({ playerId: shownCard.playerId, tab })}
+        />
+      )}
     </div>
   );
 };

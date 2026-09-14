@@ -7,6 +7,7 @@ from ..services.prediction import get_player_card
 from ..services.utils import calculate_fantasy_points, get_team_abbr
 from ..config import logger, DB_CONNECTION_STRING, CURRENT_SEASON
 from .tier_list import _fetch_team_weekly_from_nflreadpy, _load_team_weekly_table, _rank_asc, _rank_desc
+from ..db import read_db
 
 router = APIRouter()
 
@@ -386,18 +387,39 @@ async def get_player_season_stats(player_id: str, seasons: int = 5):
 
 
 @router.get("/player/{player_id}/storylines")
-async def get_storylines(player_id: str, limit: int = 5):
-    """Recent news storylines for one player, newest first.
+def get_storylines(player_id: str, limit: int = 10):
+    """A player's most recent storylines, newest first, going back as far as needed.
 
-    Fed by a scheduled poll of ESPN's league news feed (see
-    services/storylines.py) - per-player queries are not possible against that
-    API, so the feed is accumulated locally and indexed by player.
+    Combines the polled league feed with the player's own ESPN news feed, fetched
+    here at most once per few hours per player (see services/storylines.py).
+    Declared `def`, not `async def`: that fetch is blocking network I/O and must
+    run in the threadpool, not stall the event loop for every other request.
     """
     from ..services.storylines import get_player_storylines, storylines_updated_at
 
-    items = get_player_storylines(player_id, limit=limit)
+    items = get_player_storylines(player_id, limit=max(1, min(limit, 25)))
     return {
         "player_id": player_id,
+        "count": len(items),
+        "updated_at": storylines_updated_at(),
+        "storylines": items,
+    }
+
+
+@router.post("/player/{player_id}/storylines/refresh")
+def refresh_storylines_now(player_id: str, limit: int = 10):
+    """Pull this player's news from ESPN now instead of waiting for the next poll.
+
+    Cooldown of a minute per player (see services/storylines.py); within it the
+    stored list comes back with `retry_after` seconds.
+    """
+    from ..services.storylines import get_player_storylines, refresh_player_storylines, storylines_updated_at
+
+    result = refresh_player_storylines(player_id)
+    items = get_player_storylines(player_id, limit=max(1, min(limit, 25)), backfill=False)
+    return {
+        "player_id": player_id,
+        **result,
         "count": len(items),
         "updated_at": storylines_updated_at(),
         "storylines": items,
@@ -419,7 +441,7 @@ async def get_player_history(player_id: str):
         if cur.is_empty() and DB_CONNECTION_STRING:
             try:
                 q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}'"
-                cur = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                cur = read_db(q)
             except Exception:
                 cur = pl.DataFrame()
         if not cur.is_empty():

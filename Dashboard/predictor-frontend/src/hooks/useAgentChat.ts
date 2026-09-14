@@ -1,0 +1,288 @@
+/**
+ * Conversation state for the in-app agent.
+ *
+ * Uses fetch + a streamed body rather than EventSource: the prompt carries the
+ * screen descriptor, so it has to be a POST, and EventSource is GET-only.
+ *
+ * The transcript lives here and in sessionStorage, not on the server. The
+ * backend keeps pi's own context per conversation id; this is what the user
+ * sees, and it should survive a tab reload without outliving the tab.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { API_BASE_URL } from '../lib/api';
+import type { ScreenDescriptor } from '../contexts/AgentScreenContext';
+import { agentHeaders, byokPayload } from '../lib/agentIdentity';
+import type { AgentSettings } from '../lib/agentIdentity';
+import { executeUiCommand } from '../lib/agentDriver';
+import type { UiCommand, UiResult } from '../lib/agentDriver';
+
+export type AgentQuota = {
+  allowed: boolean;
+  used: number;
+  limit: number;
+  remaining: number;
+  resets_at: string;
+  owner: boolean;
+  blocked_by: string | null;
+};
+
+export type AgentTurn = {
+  role: 'user' | 'agent';
+  text: string;
+  /** Tools the agent called for this answer, in order, deduped. */
+  tools?: string[];
+  /** Screen actions in this answer, kept for the reopen buttons. */
+  actions?: { url: string; label: string; tool: string }[];
+  error?: boolean;
+};
+
+/** One movement the browser should perform, as sent by the screen_action event. */
+export type AgentScreenAction = { url: string; label: string; tool: string };
+
+const STORE_KEY = 'spotai.agent.session.v1';
+
+type Stored = { conversationId: string; turns: AgentTurn[] };
+
+function newConversationId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `c-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+function load(): Stored {
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Stored;
+      if (parsed.conversationId) return { conversationId: parsed.conversationId, turns: parsed.turns || [] };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { conversationId: newConversationId(), turns: [] };
+}
+
+export function useAgentChat() {
+  const initial = useRef<Stored>(load());
+  const [conversationId, setConversationId] = useState(initial.current.conversationId);
+  const [turns, setTurns] = useState<AgentTurn[]>(initial.current.turns);
+  const [streaming, setStreaming] = useState(false);
+  const [activeTool, setActiveTool] = useState<string | null>(null);
+  // Free-tier allowance, refreshed by every answer and by refreshQuota().
+  const [quota, setQuota] = useState<AgentQuota | null>(null);
+  const [houseConfigured, setHouseConfigured] = useState<boolean | null>(null);
+  // The host's action handler, held in a ref so registering it never makes
+  // `send` (or anything else) stale. Actions are delivered as events the
+  // moment they arrive — never replayed from the transcript on reload.
+  const actionHandlerRef = useRef<((a: AgentScreenAction) => void) | null>(null);
+  const setActionHandler = useCallback((fn: ((a: AgentScreenAction) => void) | null) => {
+    actionHandlerRef.current = fn;
+  }, []);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/agent/quota`, { headers: agentHeaders() });
+      if (!response.ok) return;
+      const data = (await response.json()) as { quota: AgentQuota; house_configured: boolean };
+      setQuota(data.quota);
+      setHouseConfigured(data.house_configured);
+    } catch {
+      /* offline: keep the last known numbers */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshQuota();
+  }, [refreshQuota]);
+  const abortRef = useRef<AbortController | null>(null);
+  // UI commands run one after another on the page, whatever order they arrive in.
+  const uiChain = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({ conversationId, turns }));
+    } catch {
+      /* quota or private mode; the transcript is still in memory */
+    }
+  }, [conversationId, turns]);
+
+  /** Replace the trailing agent turn, which is the one being streamed. */
+  const patchLast = useCallback((patch: (turn: AgentTurn) => AgentTurn) => {
+    setTurns((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.slice();
+      next[next.length - 1] = patch(next[next.length - 1]);
+      return next;
+    });
+  }, []);
+
+  const send = useCallback(
+    async (message: string, screen: ScreenDescriptor | null, settings: AgentSettings) => {
+      const text = message.trim();
+      if (!text || streaming) return;
+
+      setTurns((prev) => [...prev, { role: 'user', text }, { role: 'agent', text: '', tools: [] }]);
+      setStreaming(true);
+      setActiveTool(null);
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...agentHeaders() },
+          body: JSON.stringify({
+            conversation_id: conversationId,
+            message: text,
+            screen,
+            byok: byokPayload(settings),
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          // Refusals (quota spent, free tier not set up, a bad key) come back as JSON
+          // with a sentence meant for the user. Show that, not a status code.
+          let detail = response.ok ? 'The assistant sent an empty response.' : `The assistant is unavailable (HTTP ${response.status}).`;
+          try {
+            const body = (await response.json()) as { detail?: unknown; quota?: AgentQuota; code?: string };
+            if (typeof body.detail === 'string') detail = body.detail;
+            if (body.quota) setQuota(body.quota);
+            if (body.code === 'house_unconfigured') setHouseConfigured(false);
+          } catch {
+            /* not JSON */
+          }
+          patchLast((t) => ({ ...t, text: detail, error: true }));
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        // SSE frames are separated by a blank line. Chunk boundaries land
+        // anywhere, so hold the tail until the next read completes it.
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let split: number;
+          while ((split = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            const line = frame.split('\n').find((l) => l.startsWith('data:'));
+            if (!line) continue;
+
+            let event: { type: string; text?: string; name?: string; state?: string; message?: string; quota?: AgentQuota; url?: string; label?: string; tool?: string; command?: UiCommand };
+            try {
+              event = JSON.parse(line.slice(5).trim());
+            } catch {
+              continue;
+            }
+
+            if (event.type === 'quota' && event.quota) {
+              setQuota(event.quota);
+            } else if (event.type === 'delta' && event.text) {
+              patchLast((t) => ({ ...t, text: t.text + event.text }));
+            } else if (event.type === 'tool' && event.state === 'start' && event.name) {
+              setActiveTool(event.name);
+              patchLast((t) => ({
+                ...t,
+                tools: t.tools?.includes(event.name!) ? t.tools : [...(t.tools || []), event.name!],
+              }));
+            } else if (event.type === 'tool' && event.state === 'end') {
+              setActiveTool(null);
+            } else if (event.type === 'screen_action' && event.url) {
+              const action: AgentScreenAction = { url: event.url, label: event.label || '', tool: event.tool || '' };
+              patchLast((t) => ({ ...t, actions: [...(t.actions || []), action] }));
+              // Deliver now, as an event. The transcript copy is for the
+              // reopen buttons only; nothing replays it on reload.
+              actionHandlerRef.current?.(action);
+            } else if (event.type === 'ui_command' && event.command?.id) {
+              // The agent is using the app: click, type, read the screen. Run it
+              // on this page and report back; the model is waiting on the result.
+              // Not awaited, so the stream keeps flowing; chained, so two commands
+              // never interleave on the page.
+              const command = event.command;
+              uiChain.current = uiChain.current.then(async () => {
+                let result: UiResult;
+                if (command.op === 'navigate' && command.url) {
+                  // A page jump (open_player_card, open_game, ...). Keep a reopen
+                  // button on the answer either way; move only if allowed, then
+                  // report the loaded page so the model can keep going from it.
+                  const action: AgentScreenAction = { url: command.url, label: command.label || '', tool: command.tool || '' };
+                  patchLast((t) => ({ ...t, actions: [...(t.actions || []), action] }));
+                  if (settings.allowNavigation === false) {
+                    result = { ok: false, text: 'The user has turned off screen moves; a button to open it was added to your answer.' };
+                  } else {
+                    actionHandlerRef.current?.(action);
+                    result = await executeUiCommand({ id: command.id, op: 'observe', note: `Opened ${command.label || command.url}.` });
+                  }
+                } else {
+                  result = settings.allowNavigation === false
+                    ? { ok: false, text: 'The user has turned off "Let the assistant use my screen" in settings. Tell them what to click instead.' }
+                    : await executeUiCommand(command);
+                }
+                await fetch(`${API_BASE_URL}/agent/ui/result`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json', ...agentHeaders() },
+                  body: JSON.stringify({ conversation_id: conversationId, command_id: command.id, ...result }),
+                }).catch(() => {});
+              });
+            } else if (event.type === 'done') {
+              // Authoritative: deltas can be dropped, this is the whole answer.
+              if (event.text) patchLast((t) => ({ ...t, text: event.text! }));
+            } else if (event.type === 'error') {
+              patchLast((t) => ({ ...t, text: event.message || 'The agent failed.', error: true }));
+            }
+          }
+        }
+      } catch (err) {
+        if ((err as Error)?.name !== 'AbortError') {
+          patchLast((t) => ({ ...t, text: `Could not reach the agent (${(err as Error).message}).`, error: true }));
+        }
+      } finally {
+        setStreaming(false);
+        setActiveTool(null);
+        abortRef.current = null;
+        // An aborted or empty run must not leave a blank bubble behind.
+        patchLast((t) => (t.role === 'agent' && !t.text ? { ...t, text: 'Stopped.', error: true } : t));
+        // The server refunds a question that failed before answering; pick that up.
+        if (settings.mode === 'free') void refreshQuota();
+      }
+    },
+    [conversationId, streaming, patchLast, refreshQuota],
+  );
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    // Tell the backend too, or pi keeps burning tokens on an answer nobody reads.
+    fetch(`${API_BASE_URL}/agent/abort`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }).catch(() => {});
+  }, [conversationId]);
+
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    const previous = conversationId;
+    const fresh = newConversationId();
+    setTurns([]);
+    setConversationId(fresh);
+    fetch(`${API_BASE_URL}/agent/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ conversation_id: previous }),
+    }).catch(() => {});
+  }, [conversationId]);
+
+  const lastAnswer = [...turns].reverse().find((t) => t.role === 'agent') || null;
+
+  return { turns, send, stop, reset, streaming, activeTool, lastAnswer, quota, houseConfigured, refreshQuota, setActionHandler };
+}

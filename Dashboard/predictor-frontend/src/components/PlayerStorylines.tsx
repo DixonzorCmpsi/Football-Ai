@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Newspaper, ExternalLink, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Newspaper, RefreshCw, Sparkles } from 'lucide-react';
 import { API_BASE_URL } from '../lib/api';
+import StorylineModal from './StorylineModal';
 
 export interface Storyline {
   article_id: string;
@@ -13,7 +14,11 @@ export interface Storyline {
   fetched_at: string;
 }
 
-/** "3h ago" / "2d ago" - storylines are only useful with their age attached. */
+/**
+ * "3h ago" / "2d ago" - storylines are only useful with their age attached.
+ * Past two weeks a date reads better: a player with little recent coverage now
+ * shows older items (from their own ESPN feed), and "143d ago" makes you do math.
+ */
 function timeAgo(iso: string): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return '';
@@ -21,8 +26,21 @@ function timeAgo(iso: string): string {
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
+  const days = Math.round(hrs / 24);
+  if (days <= 14) return `${days}d ago`;
+  const date = new Date(then);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
 }
+
+/** How many a profile shows: the ten most recent, or as many as exist. */
+const STORY_LIMIT = 10;
+
+/** Newest first by the moment published. The API already sorts; this keeps it true after a merge. */
+const byRecency = (items: Storyline[]) =>
+  [...items].sort((a, b) => (Date.parse(b.published) || 0) - (Date.parse(a.published) || 0));
+
+type RefreshState = { busy: boolean; note: string | null };
 
 const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamColor?: string }> = ({
   playerId,
@@ -33,23 +51,56 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [openStory, setOpenStory] = useState<Storyline | null>(null);
+  const [refresh, setRefresh] = useState<RefreshState>({ busy: false, note: null });
 
   useEffect(() => {
     if (!playerId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`${API_BASE_URL}/player/${playerId}/storylines?limit=5`)
+    fetch(`${API_BASE_URL}/player/${playerId}/storylines?limit=${STORY_LIMIT}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => {
         if (cancelled) return;
-        setItems(d.storylines || []);
+        setItems(byRecency(d.storylines || []));
         setUpdatedAt(d.updated_at || null);
       })
       .catch((e) => !cancelled && setError(String(e.message || e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [playerId]);
+
+  // Ask ESPN now instead of waiting for the hourly poll.
+  const refreshNow = useCallback(() => {
+    setRefresh({ busy: true, note: null });
+    fetch(`${API_BASE_URL}/player/${playerId}/storylines/refresh?limit=${STORY_LIMIT}`, { method: 'POST' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        setItems(byRecency(d.storylines || []));
+        setUpdatedAt(d.updated_at || null);
+        setError(null);
+        const note = !d.refreshed
+          ? `Just checked. Try again in ${d.retry_after}s`
+          : d.added > 0 ? `${d.added} new` : 'Up to date';
+        setRefresh({ busy: false, note });
+      })
+      .catch((e) => setRefresh({ busy: false, note: `Refresh failed (${String(e.message || e)})` }));
+  }, [playerId]);
+
+  const refreshButton = (
+    <button
+      type="button"
+      onClick={refreshNow}
+      disabled={refresh.busy}
+      data-testid="storylines-refresh"
+      title="Check ESPN for this player's latest news now"
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono normal-case tracking-normal text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-700/60 disabled:opacity-60"
+    >
+      <RefreshCw size={10} className={refresh.busy ? 'animate-spin' : ''} />
+      {refresh.busy ? 'checking…' : refresh.note ?? (updatedAt ? `feed ${timeAgo(updatedAt)}` : 'refresh')}
+    </button>
+  );
 
   if (loading) {
     return (
@@ -85,9 +136,10 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
           No storylines yet{playerName ? ` for ${playerName}` : ''}
         </p>
         <p className="text-xs text-slate-400 dark:text-slate-500 mt-1 max-w-md mx-auto">
-          The news feed is polled a few times a day and only carries the last several hours of
-          league coverage, so players build up storylines as they get written about.
+          ESPN has no news on file for this player yet. Deep reserves and recent signings often
+          have none until they see the field.
         </p>
+        <div className="mt-3 text-[10px] font-bold">{refreshButton}</div>
       </div>
     );
   }
@@ -97,11 +149,8 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
       <div className="px-4 py-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500">
         <Newspaper size={12} />
         <span>Latest storylines</span>
-        {updatedAt && (
-          <span className="ml-auto inline-flex items-center gap-1 font-mono normal-case tracking-normal">
-            <RefreshCw size={10} /> feed {timeAgo(updatedAt)}
-          </span>
-        )}
+        <span className="font-mono normal-case tracking-normal text-slate-300 dark:text-slate-600">{items.length}</span>
+        <span className="ml-auto">{refreshButton}</span>
       </div>
 
       {items.map((s) => {
@@ -128,12 +177,11 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
                 <h4 className="text-sm font-black text-slate-800 dark:text-slate-100 leading-snug">
                   {s.headline}
                 </h4>
-                {s.url && (
-                  <ExternalLink
-                    size={12}
-                    className="shrink-0 mt-1 text-slate-300 dark:text-slate-600 group-hover:text-blue-500"
-                  />
-                )}
+                <Sparkles
+                  size={12}
+                  aria-label="Open summary"
+                  className="shrink-0 mt-1 text-slate-300 dark:text-slate-600 group-hover:text-blue-500"
+                />
               </div>
               {s.description && (
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2">
@@ -153,22 +201,29 @@ const PlayerStorylines: React.FC<{ playerId: string; playerName?: string; teamCo
           </>
         );
 
-        return s.url ? (
-          <a
+        // Opens in the app with a summary; the ESPN link lives inside the popup.
+        return (
+          <button
             key={s.article_id}
-            href={s.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group flex gap-3 p-4 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/40"
+            type="button"
+            onClick={() => setOpenStory(s)}
+            data-testid="storyline-item"
+            className="group w-full text-left flex gap-3 p-4 transition-colors hover:bg-slate-50 dark:hover:bg-slate-700/40"
           >
             {body}
-          </a>
-        ) : (
-          <div key={s.article_id} className="flex gap-3 p-4">
-            {body}
-          </div>
+          </button>
         );
       })}
+
+      {openStory && (
+        <StorylineModal
+          playerId={playerId}
+          playerName={playerName}
+          story={openStory}
+          teamColor={teamColor}
+          onClose={() => setOpenStory(null)}
+        />
+      )}
     </div>
   );
 };

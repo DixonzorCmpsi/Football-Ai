@@ -8,12 +8,15 @@ import { sizedPlayerImage } from '../utils/playerImage';
 
 interface Props {
   playerId: string;
+  /** Controlled tab, so a link or the assistant can open straight onto stats or charts. */
+  view?: 'table' | 'visual' | 'storylines';
+  onViewChange?: (view: 'table' | 'visual' | 'storylines') => void;
   onBack: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
 }
 
-export default function PlayerHistory({ playerId, compareList, onToggleCompare }: Props) {
+export default function PlayerHistory({ playerId, compareList, onToggleCompare, view, onViewChange }: Props) {
   const { history, loadingHistory } = usePlayerHistory(playerId);
   const { cardData } = usePlayerProfileById(playerId);
 
@@ -32,7 +35,14 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
       .sort((a, b) => b.season - a.season);
   }, [history]);
 
-  const [viewMode, setViewMode] = useState<'table' | 'visual' | 'storylines'>('table');
+  // Storylines first: opening a player is usually "what's going on with him", and
+  // it is the one view with something to show before a player has game logs.
+  const [ownView, setOwnView] = useState<'table' | 'visual' | 'storylines'>('storylines');
+  const viewMode = view ?? ownView;
+  const setViewMode = (next: 'table' | 'visual' | 'storylines') => {
+    setOwnView(next);
+    onViewChange?.(next);
+  };
   const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
   useEffect(() => {
     if (seasons.length === 0) {
@@ -161,9 +171,14 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
         </div>
       </div>
 
-      {/* SEASON SELECTOR */}
-      {seasons.length > 0 && currentSeason && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
+      {/* VIEW TABS + SEASON SELECTOR
+          The tabs always render. They used to sit inside the season-data guard, so a
+          player with no game logs (rookies, backups, anyone pre-kickoff) got no tabs
+          at all, and with them no way to reach Storylines. The season picker only
+          applies to Table and Visual, so it hides on Storylines. */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {viewMode !== 'storylines' && seasons.length > 0 && currentSeason && (
+        <>
           <button
             onClick={() => canPrev && setSelectedSeason(seasons[idx + 1].season)}
             disabled={!canPrev}
@@ -206,7 +221,19 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
             ← → to cycle · {rows.length} games
           </span>
 
+        </>
+        )}
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700 ml-auto">
+            <button
+              onClick={() => setViewMode('storylines')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
+                viewMode === 'storylines'
+                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <Newspaper size={13} /> Storylines
+            </button>
             <button
               onClick={() => setViewMode('table')}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
@@ -227,19 +254,8 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare }
             >
               <LineChart size={13} /> Visual
             </button>
-            <button
-              onClick={() => setViewMode('storylines')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
-                viewMode === 'storylines'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
-            >
-              <Newspaper size={13} /> Storylines
-            </button>
           </div>
-        </div>
-      )}
+      </div>
 
       {/* HISTORY TABLE / VISUAL */}
       <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col transition-colors duration-300">

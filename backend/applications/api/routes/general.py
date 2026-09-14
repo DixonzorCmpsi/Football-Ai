@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request
 import os
 import json
 import requests
+import re
+
 import polars as pl
 import subprocess
 from ..state import model_data
@@ -9,6 +11,7 @@ from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE, RAG_
 from ..rate_limit import limiter
 from ..services.data_loader import refresh_app_state, refresh_db_data
 from ..services.prediction import get_player_card
+from ..db import read_db, driver_status
 
 router = APIRouter()
 
@@ -52,26 +55,95 @@ async def health_check():
     if DB_CONNECTION_STRING:
         try:
             # Run a minimal probe query; some DB drivers may require a small table
-            _ = pl.read_database_uri("SELECT 1", DB_CONNECTION_STRING)
+            _ = read_db("SELECT 1")
             status["db_responding"] = True
         except Exception as e:
             status["db_responding"] = False
             status["db_error"] = str(e)
     else:
         status["db_responding"] = False
+    # "arrow" normally; "sqlalchemy-fallback" means pyarrow could not load. Data is
+    # still live either way -- this exists so the state is visible, not discovered.
+    status.update(driver_status())
 
     if not status["ready"]:
         status["status"] = "starting"
 
     return status
 
+SKILL_POSITIONS = ['QB', 'RB', 'WR', 'TE']
+
+
+def _loose_name_matches(df: pl.DataFrame, q: str) -> pl.DataFrame:
+    """How people (and models) actually type names, when the literal search found nothing.
+
+    "AD Mitchell" and "A.D. Mitchell" are Adonai Mitchell; "ad mitchel" is a typo
+    of him. Rule: the last word is the start of the surname (so a dropped final
+    letter still matches) and the first word, dots removed, starts the first name
+    or is its initials. Kept narrow on purpose: it only runs when nothing matched,
+    and both halves have to agree.
+    """
+    words = [w for w in re.split(r"\s+", q.strip().lower().replace(".", " ").strip()) if w]
+    if len(words) < 2:
+        return df.head(0)
+    # "A.D." splits into single letters; rejoin a leading run of initials.
+    initials = []
+    while len(words) > 1 and len(words[0]) == 1:
+        initials.append(words.pop(0))
+    first = "".join(initials) or words[0]
+    last = words[-1]
+    if len(last) < 3 or not first:
+        return df.head(0)
+    parts = pl.col('player_name').str.to_lowercase().str.replace_all(r"\.", "").str.split(" ")
+    surname_ok = parts.list.slice(1).list.eval(pl.element().str.starts_with(last)).list.any()
+    given = parts.list.first()
+    first_ok = given.str.starts_with(first) | given.str.starts_with(first[0])
+    return (
+        df.filter(surname_ok & first_ok)
+        .with_columns(
+            # Prefer a first name that actually starts with what was typed ("ad" -> Adonai).
+            pl.when(given.str.starts_with(first)).then(0).otherwise(1).alias("_match"),
+            pl.when(pl.col('status') == 'ACT').then(0).otherwise(1).alias("_inactive"),
+        )
+        .sort(["_match", "_inactive", "player_name"])
+    )
+
+
 @router.get('/players/search')
-async def search_players(q: str):
+async def search_players(q: str, scope: str = "skill", limit: int = 20):
+    """Players whose name contains `q`, best matches first.
+
+    `scope=skill` (the default) is for places that need a projection, such as
+    Compare. `scope=all` also finds linemen, defenders and specialists, whose
+    profiles and stats exist even though the model does not project them; without
+    it the lookup page could not reach them at all.
+    """
     if not q: return []
     try:
-        expr = (pl.col('player_name').str.to_lowercase().str.contains(q.lower()) & (pl.col('position').is_in(['QB', 'RB', 'WR', 'TE'])))
-        return model_data["df_profile"].filter(expr).select(['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status']).head(20).to_dicts()
-    except: return []
+        needle = q.strip().lower()
+        df = model_data["df_profile"]
+        expr = pl.col('player_name').str.to_lowercase().str.contains(needle, literal=True)
+        if scope != "all":
+            expr = expr & pl.col('position').is_in(SKILL_POSITIONS)
+        name = pl.col('player_name').str.to_lowercase()
+        ranked = (
+            df.filter(expr)
+            .with_columns(
+                # exact name, then a name or surname starting with the query, then anywhere
+                pl.when(name == needle).then(0)
+                .when(name.str.starts_with(needle) | name.str.contains(f" {needle}", literal=True)).then(1)
+                .otherwise(2).alias("_match"),
+                pl.when(pl.col('status') == 'ACT').then(0).otherwise(1).alias("_inactive"),
+            )
+            .sort(["_match", "_inactive", "player_name"])
+        )
+        cols = [c for c in ['player_id', 'player_name', 'position', 'team_abbr', 'headshot', 'status'] if c in df.columns]
+        if ranked.is_empty():
+            ranked = _loose_name_matches(df if scope == "all" else df.filter(pl.col('position').is_in(SKILL_POSITIONS)), q)
+        return ranked.select(cols).head(max(1, min(int(limit), 100))).to_dicts()
+    except Exception as exc:
+        logger.warning(f"player search failed for {q!r}: {exc}")
+        return []
 
 async def fetch_sleeper_trends(trend_type: str, limit: int = 10, week: int = 1):
     if not model_data.get("sleeper_map"): refresh_app_state() 

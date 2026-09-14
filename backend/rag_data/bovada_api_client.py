@@ -243,6 +243,76 @@ def parse_event_player_props(event: dict, season: int, week: int | None,
     return rows
 
 
+# Column order of bovada_game_lines. The ETL loads the CSV with COPY, which maps
+# columns by POSITION, not by header, so this order must never change.
+GAME_LINE_COLUMNS = [
+    "game_id", "week", "season", "home_team", "away_team",
+    "total_over", "total_over_odds", "total_over_prob",
+    "away_ml", "away_ml_prob", "home_ml", "home_ml_prob",
+    "total_under", "total_under_odds", "total_under_prob",
+    "away_spread", "away_spread_odds", "away_spread_prob",
+    "home_spread", "home_spread_odds", "home_spread_prob",
+    "processed_at",
+]
+
+
+def _signed(handicap) -> str | None:
+    """Bovada's '2.0' -> '+2.0', the form the old text scrape stored."""
+    if handicap in (None, ""):
+        return None
+    try:
+        value = float(handicap)
+    except (TypeError, ValueError):
+        return None
+    return f"{value:+.1f}"
+
+
+def parse_event_game_lines(event: dict, season: int, week: int | None,
+                           game_id: str | None, processed_at: str | None = None) -> dict | None:
+    """Full-game spread, moneyline and total for one event, or None if it has none.
+
+    The JSON names each side (H/A for spread and moneyline, O/U for the total),
+    so nothing depends on the order lines happen to render in. The text scrape
+    did depend on it, and when Bovada split "O 41 (-110)" into separate lines it
+    silently stored spread prices as moneylines and lost every total.
+    """
+    row: dict = {c: None for c in GAME_LINE_COLUMNS}
+    home, away = event_teams(event)
+    row.update({
+        "game_id": game_id, "week": week, "season": season, "home_team": home, "away_team": away,
+        "processed_at": processed_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    found = False
+    for group in event.get("displayGroups") or []:
+        for market in group.get("markets") or []:
+            period = ((market.get("period") or {}).get("description") or "").strip()
+            if period and period not in ("Game", "Regulation Time"):
+                continue
+            kind = (market.get("description") or "").strip()
+            if kind not in ("Point Spread", "Moneyline", "Total"):
+                continue
+            for outcome in market.get("outcomes") or []:
+                price = outcome.get("price") or {}
+                odds = price.get("american")
+                side = (outcome.get("type") or "").upper()
+                prob = american_to_implied_prob(odds)
+                if kind == "Moneyline" and side in ("H", "A") and odds:
+                    prefix = "home" if side == "H" else "away"
+                    row[f"{prefix}_ml"], row[f"{prefix}_ml_prob"] = odds, prob
+                    found = True
+                elif kind == "Point Spread" and side in ("H", "A") and _signed(price.get("handicap")):
+                    prefix = "home" if side == "H" else "away"
+                    row[f"{prefix}_spread"] = _signed(price.get("handicap"))
+                    row[f"{prefix}_spread_odds"], row[f"{prefix}_spread_prob"] = odds, prob
+                    found = True
+                elif kind == "Total" and side in ("O", "U") and price.get("handicap") not in (None, ""):
+                    prefix = "total_over" if side == "O" else "total_under"
+                    row[prefix] = float(price["handicap"])
+                    row[f"{prefix}_odds"], row[f"{prefix}_prob"] = odds, prob
+                    found = True
+    return row if found else None
+
+
 # --------------------------------------------------------------------------
 # Network
 # --------------------------------------------------------------------------

@@ -49,10 +49,12 @@ export const fetchPlayers = async () => {
 };
 
 // --- 3. Search Players (Used by Lookup) ---
-export const searchPlayers = async (query: string) => {
+// `all` also returns linemen, defenders and specialists: they have profiles and
+// stats but no projection. `skill` is for places that need a projection.
+export const searchPlayers = async (query: string, scope: 'skill' | 'all' = 'skill') => {
   if (!query) return [];
   try {
-    const response = await fetch(`${API_BASE_URL}/players/search?q=${query}`);
+    const response = await fetch(`${API_BASE_URL}/players/search?q=${encodeURIComponent(query)}&scope=${scope}`);
     if (!response.ok) return [];
     return await response.json();
   } catch (e) {
@@ -129,5 +131,11 @@ export const fetchSleeperLeague = (leagueId: string) =>
 export const fetchSleeperRosterAnalysis = (leagueId: string, rosterId: number, week: number) =>
   sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/roster/${rosterId}/analysis?week=${week}`);
 
-export const fetchSleeperWaivers = (leagueId: string, week: number, limit = 25) =>
+export const fetchSleeperLeagueInsights = (leagueId: string, week: number, rosterId?: number | null) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/insights?week=${week}${rosterId != null ? `&roster_id=${rosterId}` : ''}`);
+
+export const fetchSleeperMatchup = (leagueId: string, rosterId: number, week: number) =>
+  sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/roster/${rosterId}/matchup?week=${week}`);
+
+export const fetchSleeperWaivers =(leagueId: string, week: number, limit = 25) =>
   sleeperGet(`/sleeper/league/${encodeURIComponent(leagueId)}/waivers?week=${week}&limit=${limit}`);

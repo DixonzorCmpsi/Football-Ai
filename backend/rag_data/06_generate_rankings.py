@@ -12,6 +12,9 @@ from datetime import datetime
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, os.path.join(project_root, 'applications'))
+# backend/ itself, for db_read: reads that survive a blocked pyarrow DLL.
+sys.path.insert(0, project_root)
+from db_read import read_db_uri
 
 try:
     from feature_generator_timeseries import generate_features_all
@@ -66,7 +69,7 @@ def main():
     for name, query in tables_to_load.items():
         print(f"   - Loading {name}...", end=" ")
         try:
-            df = pl.read_database_uri(query, DB_CONNECTION_STRING)
+            df = read_db_uri(query, DB_CONNECTION_STRING)
             if df.is_empty():
                 print(f"⚠️ Warning: Table is empty.")
             else:

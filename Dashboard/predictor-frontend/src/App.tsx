@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users, KeyRound } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -17,6 +17,15 @@ import GameRanksView from './components/GameRanksView';
 import { getTeamColor } from './utils/nflColors';
 import { sizedPlayerImage } from './utils/playerImage';
 import SleeperView from './components/SleeperView';
+import AgentDock from './components/AgentDock';
+import AgentPanel from './components/AgentPanel';
+import { useAgentScreenContext } from './contexts/AgentScreenContext';
+import type { ScreenEntity } from './contexts/AgentScreenContext';
+import { useAgentChatContext } from './contexts/AgentChatContext';
+import type { AgentScreenAction } from './hooks/useAgentChat';
+import { formatAppUrl, parseAppUrl } from './lib/appUrl';
+import type { AppLocation, CardTab, PlayerView } from './lib/appUrl';
+import type { Tab as SleeperTab } from './components/SleeperView';
 
 // --- HELPER: Status Badge Styles ---
 const getStatusColor = (status?: string) => {
@@ -125,7 +134,8 @@ export default function App() {
     // Only update if we have a valid positive week number
     if (currentWeek && currentWeek > 0) {
         // Schedule setState as a microtask to avoid sync setState-in-effect lint error
-        Promise.resolve().then(() => setActiveWeek(currentWeek));
+        // Keep a week a deep link already chose (/game/NE/SEA?week=1).
+        Promise.resolve().then(() => setActiveWeek((prev) => prev ?? currentWeek));
     }
   }, [currentWeek]);
 
@@ -183,11 +193,26 @@ export default function App() {
   };
   const [showSidebars, setShowSidebars] = useState(true); 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // The agent's conversation and panel visibility are app-wide: the dock floats
+  // over every view and the panel takes the right rail's place. (Panel state and
+  // settings are read further down, next to where they're used.)
+  const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS' | 'GAME_RANKS'>('SCHEDULE');
 
   const [compareList, setCompareList] = useState<string[]>([]);
+
+  // Which tab the player page shows, and which player card is open over a game.
+  // Each remembers what it belongs to, so it only applies to that player/game:
+  // clicking a different player or game (anywhere in the app) falls back to the
+  // defaults without every click site having to reset it.
+  const [historyView, setHistoryView] = useState<{ playerId: string; view: PlayerView } | null>(null);
+  const [gameCard, setGameCard] = useState<{ home: string; away: string; playerId: string; tab: CardTab } | null>(null);
+  const shownHistoryView: PlayerView =
+    historyView && historyView.playerId === selectedHistoryId ? historyView.view : 'storylines';
+  const openCard =
+    gameCard && selectedGame && gameCard.home === selectedGame.home && gameCard.away === selectedGame.away ? gameCard : null;
 
   // Tier list state — lifted here so it survives navigation to Compare / History
   // and back. Persisted to localStorage so reloads also restore.
@@ -221,6 +246,227 @@ export default function App() {
         return [...prev, playerId];
     });
   }, []);
+
+  // --- URL ↔ state sync ---------------------------------------------------
+  // The URL is the single source of truth for which screen is showing, so a
+  // reload, a shared link, or the browser's Back button all restore the right
+  // view. One source of pushes: the effect below, which pushes only when the
+  // URL differs from the state's canonical form. Applying a URL (popstate,
+  // initial load) just sets state; the effect then sees no difference.
+  const [sleeperTab, setSleeperTab] = useState<SleeperTab>('LINEUP');
+  // The tab request the agent (or a deep link) sent, with a nonce so the same
+  // tab can be requested twice in a row. Separate from sleeperTab, which only
+  // reports what SleeperView is showing.
+  const [sleeperTabRequest, setSleeperTabRequest] = useState<{ tab: SleeperTab; nonce: number } | null>(null);
+
+  // Builds the canonical AppLocation from the *current* app state. Drives the
+  // push effect: whenever the user navigates, this changes, and we push.
+  const currentLocation: AppLocation = useMemo(() => {
+    switch (viewMode) {
+      case 'GAME':
+        return selectedGame
+          ? {
+              view: 'GAME', home: selectedGame.home, away: selectedGame.away,
+              ...(activeWeek ? { week: activeWeek } : {}),
+              ...(openCard ? { player: openCard.playerId, card: openCard.tab } : {}),
+            }
+          : { view: 'SCHEDULE' };
+      case 'COMPARE':
+        return { view: 'COMPARE', ids: compareList };
+      case 'HISTORY':
+        return selectedHistoryId
+          ? { view: 'HISTORY', playerId: selectedHistoryId, ...(shownHistoryView !== 'storylines' ? { show: shownHistoryView } : {}) }
+          : { view: 'SCHEDULE' };
+      case 'TEAM_PAGE':
+        return teamModal
+          ? { view: 'TEAM_PAGE', team: teamModal.team, tab: (teamModal.initialTab ?? 'overview') }
+          : { view: 'TEAMS' };
+      case 'MY_TEAM':
+        return { view: 'MY_TEAM', tab: sleeperTab };
+      default:
+        return { view: viewMode } as AppLocation;
+    }
+  }, [viewMode, selectedGame, compareList, selectedHistoryId, teamModal, sleeperTab, activeWeek, openCard, shownHistoryView]);
+
+  // Map an AppLocation onto the app's state setters. `push` decides the view
+  // setter: agent actions and buttons use setViewMode so the header Back button
+  // (which walks the in-app navStack) can return from them; popstate and the
+  // initial load use the raw setter, because the browser stack already covers
+  // those and pushing again would double-count.
+  const applyLocation = useCallback(
+    (loc: AppLocation, push: boolean) => {
+      const setView = push ? setViewMode : setViewModeRaw;
+      switch (loc.view) {
+        case 'SCHEDULE':
+          setView('SCHEDULE');
+          break;
+        case 'GAME':
+          setSelectedGame({ home: loc.home, away: loc.away });
+          if (loc.week) setActiveWeek(loc.week);
+          setGameCard(loc.player ? { home: loc.home, away: loc.away, playerId: loc.player, tab: loc.card ?? 'log' } : null);
+          setView('GAME');
+          break;
+        case 'LOOKUP':
+          setView('LOOKUP');
+          break;
+        case 'COMPARE':
+          setCompareList(loc.ids);
+          setView('COMPARE');
+          break;
+        case 'HISTORY':
+          setSelectedHistoryId(loc.playerId);
+          setHistoryView(loc.show ? { playerId: loc.playerId, view: loc.show } : null);
+          setHistoryFrom('SCHEDULE');
+          setView('HISTORY');
+          break;
+        case 'TRENDING':
+          setView('TRENDING');
+          break;
+        case 'PICKS':
+          setView('PICKS');
+          break;
+        case 'PLAYOFFS':
+          setView('PLAYOFFS');
+          break;
+        case 'TIERS':
+          setView('TIERS');
+          break;
+        case 'TEAMS':
+          setView('TEAMS');
+          break;
+        case 'GAME_RANKS':
+          setView('GAME_RANKS');
+          break;
+        case 'TEAM_PAGE':
+          setTeamModal({ team: loc.team, initialTab: loc.tab });
+          setView('TEAM_PAGE');
+          break;
+        case 'MY_TEAM':
+          setSleeperTabRequest({ tab: loc.tab, nonce: Date.now() + Math.random() });
+          setView('MY_TEAM');
+          break;
+      }
+      // No push here: the effect that watches currentLocation is the one
+      // source of pushes, and it fires once this state settles.
+    },
+    [setViewMode],
+  );
+
+  // On first mount: parse the URL the page loaded with and apply it. Raw
+  // setter — the browser owns this history entry already. lastAppliedFrom
+  // records the URL the state came from so the push effect doesn't echo it.
+  const lastAppliedFrom = useRef<string | null>(null);
+  useEffect(() => {
+    const here = window.location.pathname + window.location.search;
+    const loc = parseAppUrl(here);
+    if (loc) {
+      lastAppliedFrom.current = formatAppUrl(loc);
+      applyLocation(loc, false);
+      const url = formatAppUrl(loc);
+      if (url !== here) {
+        window.history.replaceState({ loc }, '', url);
+      }
+    } else {
+      // Unknown path: behave as today, landing on the schedule at '/'.
+      window.history.replaceState({ loc: { view: 'SCHEDULE' } }, '', '/');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // popstate: the user hit Back/Forward. Apply whatever the URL now says,
+  // without pushing again (raw setter; the browser manages the stack).
+  useEffect(() => {
+    const onPop = () => {
+      const here = window.location.pathname + window.location.search;
+      const loc = parseAppUrl(here);
+      if (loc) {
+        lastAppliedFrom.current = formatAppUrl(loc);
+        applyLocation(loc, false);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [applyLocation]);
+
+  // The one source of pushes. When the state's canonical URL differs from the
+  // address bar — because the user clicked somewhere, or the agent navigated —
+  // push it. An application that came *from* the URL (mount, popstate) is
+  // skipped: the entry is the browser's already. So are no-op navigations
+  // (url already matches) and views a URL cannot express.
+  useEffect(() => {
+    const url = formatAppUrl(currentLocation);
+    if (lastAppliedFrom.current !== null) {
+      if (url === lastAppliedFrom.current) {
+        // Settled into the URL-driven location: consumed, nothing to push.
+        lastAppliedFrom.current = null;
+        return;
+      }
+      // Not settled yet (the URL effect's setState hasn't committed) — wait.
+      return;
+    }
+    const here = window.location.pathname + window.location.search;
+    if (url === here) return;
+    // A view without its payload cannot be expressed; don't rewrite to a
+    // fallback screen the user didn't ask for.
+    const inexpressible =
+      (currentLocation.view === 'GAME' && !selectedGame) ||
+      (currentLocation.view === 'HISTORY' && !selectedHistoryId);
+    if (inexpressible) return;
+    window.history.pushState({ loc: currentLocation }, '', url);
+  }, [currentLocation, selectedGame, selectedHistoryId]);
+
+  // --- Agent screen actions -----------------------------------------------
+  // Actions are events: they arrive once from the stream and are applied
+  // immediately. The transcript keeps a copy only for the reopen buttons;
+  // nothing replays them on reload. allowNavigation gates the automatic move —
+  // when off, the button still works because a click is the user asking.
+  const { panelOpen, openDock, settings: agentSettings, setActionHandler } = useAgentChatContext();
+  const allowNavigation = agentSettings.allowNavigation !== false;
+  const applyAgentActionRef = useRef<(action: AgentScreenAction) => void>(() => {});
+
+  const compareWithCap = useCallback((ids: string[]) => {
+    // compare holds at most 4 ids; an add merges into what's already there.
+    setCompareList((prev) => {
+      const merged = [...prev];
+      for (const id of ids) if (!merged.includes(id)) merged.push(id);
+      return merged.slice(0, 4);
+    });
+  }, []);
+
+  const applyAgentAction = useCallback(
+    (action: AgentScreenAction) => {
+      if (action.url === 'app://back') {
+        window.history.back();
+        return;
+      }
+      const loc = parseAppUrl(action.url);
+      if (!loc) {
+        console.warn('agent action: unrecognized url', action.url);
+        return;
+      }
+      if (action.tool === 'add_to_compare') {
+        // Merge the id into the current tray, then show it.
+        const ids = loc.view === 'COMPARE' ? loc.ids : [];
+        compareWithCap(ids);
+        setViewMode('COMPARE');
+        return;
+      }
+      applyLocation(loc, true);
+    },
+    [applyLocation, compareWithCap, setViewMode],
+  );
+
+  applyAgentActionRef.current = applyAgentAction;
+
+  // Register once: stream events go through the ref, which always holds the
+  // latest applier, so a settings change never leaves a stale handler behind.
+  useEffect(() => {
+    setActionHandler((action) => {
+      // The setting gates the automatic movement only.
+      if (allowNavigation) applyAgentActionRef.current(action);
+    });
+    return () => setActionHandler(null);
+  }, [setActionHandler, allowNavigation]);
 
   // GameRanksView and TierListView stay mounted for the whole session (hidden via
   // display:none) so their local state survives navigation. That means an unstable
@@ -288,6 +534,63 @@ export default function App() {
   const { futureRankings: trendingUp, loadingFuture: loadingUp } = useFutureRankings(safeWeek);
   const { games, loadingSchedule } = useSchedule(safeWeek);
 
+  // Tell the agent which page it is being asked about. This is the coarse
+  // layer -- a mounted view that knows more (the game page knows both teams,
+  // a player page knows the player) refines it with useAgentScreen().
+  useEffect(() => {
+    const facts: string[] = [];
+    const entities: ScreenEntity[] = [];
+    let title = '';
+
+    switch (viewMode) {
+      case 'SCHEDULE':
+        title = 'the weekly schedule';
+        break;
+      case 'GAME':
+        title = selectedGame ? `the ${selectedGame.away} at ${selectedGame.home} game page` : 'a game page';
+        if (selectedGame) {
+          entities.push({ type: 'team', name: selectedGame.away, detail: 'away' });
+          entities.push({ type: 'team', name: selectedGame.home, detail: 'home' });
+        }
+        if (openCard) facts.push(`player card open for player id ${openCard.playerId} on its ${openCard.tab} tab`);
+        break;
+      case 'GAME_RANKS':
+        title = 'the start/sit ranks board';
+        break;
+      case 'HISTORY':
+        title = 'a player game log';
+        if (selectedHistoryId) facts.push(`player id ${selectedHistoryId}`, `showing the ${shownHistoryView} tab`);
+        break;
+      case 'COMPARE':
+        title = 'the player comparison view';
+        if (compareList.length) facts.push(`comparing player ids ${compareList.join(', ')}`);
+        break;
+      case 'TIERS':
+        title = 'the tier list';
+        break;
+      case 'TEAMS':
+        title = 'the team index';
+        break;
+      case 'TEAM_PAGE':
+        title = teamModal ? `the ${teamModal.team} team page` : 'a team page';
+        if (teamModal) entities.push({ type: 'team', name: teamModal.team });
+        break;
+      case 'MY_TEAM':
+        title = 'their own fantasy team (Sleeper)';
+        break;
+      case 'PLAYOFFS':
+        title = 'the playoff picture';
+        break;
+      case 'LOOKUP':
+        title = 'player lookup';
+        break;
+      default:
+        title = viewMode.replace(/_/g, ' ').toLowerCase();
+    }
+
+    setAgentScreen({ view: viewMode, title, week: activeWeek, facts, entities });
+  }, [viewMode, activeWeek, selectedGame, selectedHistoryId, compareList, teamModal, setAgentScreen, openCard, shownHistoryView]);
+
   if (isSyncing) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
@@ -299,12 +602,46 @@ export default function App() {
     );
   }
 
+  // Where a user sets their own model key. It used to live only behind a gear
+  // inside the closed assistant dock, which nobody found.
+  const aiKeysButton = (testId: string, compact = false) => (
+    <button
+      onClick={() => openDock('settings')}
+      data-testid={testId}
+      title={agentSettings.mode === 'byok' ? `AI: your ${agentSettings.provider} key` : 'AI settings: use the free tier or your own API key'}
+      className={`flex items-center gap-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${compact ? 'px-1.5 py-1' : 'px-2.5 py-1.5'} ${
+        agentSettings.mode === 'byok'
+          ? 'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-300 hover:text-blue-600'
+      }`}
+    >
+      <KeyRound size={compact ? 12 : 14} />
+      <span className={compact ? 'text-[10px]' : 'hidden sm:inline'}>{agentSettings.mode === 'byok' ? 'Your key' : 'AI keys'}</span>
+    </button>
+  );
+
+  // Shown in whichever right-rail header is mounted, trending or agent.
+  const railControls = (
+    <div className="flex items-center gap-1.5">
+    {aiKeysButton('rail-ai-keys', true)}
+    <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
+      <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
+        {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
+      </button>
+      <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
+        Wk {activeWeek || "-"}
+      </div>
+    </div>
+    </div>
+  );
+  const rightRailVisible = showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS';
+
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
       
       {/* LEFT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="left panel" className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
                 {/* Title Area */}
@@ -360,7 +697,7 @@ export default function App() {
       <main className="flex-1 flex flex-col relative min-w-0 bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
         
         {/* HEADER */}
-        <header className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
+        <header data-agent-region="header" className="h-16 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shadow-sm sticky top-0 z-30 transition-colors duration-300">
           
           <div className="flex items-center gap-1 pr-8">
              <button
@@ -400,7 +737,7 @@ export default function App() {
           <div className="flex items-center gap-4 z-20 relative">
             <div className="hidden sm:flex gap-2 bg-slate-100 dark:bg-slate-800/50 p-1 rounded-lg border border-slate-200/50 dark:border-slate-700/50" role="tablist" aria-label="Main navigation tabs">
               {(['SCHEDULE', 'PLAYOFFS', 'TEAMS', 'TIERS', 'GAME_RANKS', 'MY_TEAM', 'COMPARE', 'LOOKUP'] as const).map((mode) => (
-                <button key={mode} onClick={() => setViewMode(mode)} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+                <button key={mode} onClick={() => setViewMode(mode)} title={mode === 'GAME_RANKS' ? 'Ranks' : mode === 'MY_TEAM' ? 'My team' : mode.charAt(0) + mode.slice(1).toLowerCase()} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-2 whitespace-nowrap transition-all ${viewMode === mode ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm ring-1 ring-black/5 dark:ring-white/5' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
                   {mode === 'SCHEDULE' && <BarChart2 size={14}/>}
                   {mode === 'PLAYOFFS' && <Trophy size={14}/>}
                   {mode === 'TEAMS' && <Shield size={14}/>}
@@ -414,10 +751,17 @@ export default function App() {
                       </div>
                   )}
                   {mode === 'LOOKUP' && <Search size={14}/>}
-                  <span className={`${showSidebars ? 'hidden 2xl:inline' : 'hidden md:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
+                  {/* With both 20rem rails open the header only has the width for
+                      labels from ~1900px; at 2xl (1536px) they overflowed into the
+                      right rail and "MY TEAM" wrapped. Icons carry a title instead. */}
+                  <span className={`${showSidebars ? 'hidden min-[1900px]:inline' : 'hidden lg:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
                 </button>
               ))}
             </div>
+
+            {/* With the right rail on screen the key button lives in its header
+                (railControls); the main header has no room left at 1280-1400px. */}
+            <div className={rightRailVisible ? 'xl:hidden' : ''}>{aiKeysButton('header-ai-keys')}</div>
 
             <div className={`flex items-center gap-2 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm ${showSidebars ? 'lg:hidden' : ''}`}>
                 <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
@@ -461,12 +805,19 @@ export default function App() {
               <button onClick={() => { setViewMode('MY_TEAM'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">My Team</button>
               <button onClick={() => { setViewMode('COMPARE'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Compare</button>
               <button onClick={() => { setViewMode('LOOKUP'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">Lookup</button>
+              <button onClick={() => { openDock('settings'); setMobileDrawerOpen(false); }} className="w-full text-left p-3 rounded hover:bg-slate-100 dark:hover:bg-slate-800">AI settings &amp; API keys</button>
             </div>
           </div>
         </SidePanelDrawer>
 
         {/* CONTENT */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        {/* Bottom padding clears the floating agent button: without it the last
+            row of every view (the final game's moneyline, at any width) sat
+            permanently underneath it with no way to scroll it into view. */}
+        {/* The game view scrolls its rosters in its own box, so it takes the full
+            height and pads inside that box instead; otherwise the box stopped
+            short of the bottom and cards were cut off in a hard line. */}
+        <div data-agent-region="page" className={`flex-1 overflow-y-auto p-4 md:p-6 ${viewMode === 'GAME' ? 'pb-0 md:pb-0' : 'pb-28 md:pb-24'} dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950`}>
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
@@ -630,12 +981,14 @@ export default function App() {
           {/* VIEW: MY TEAM - import a Sleeper roster and analyze it. */}
           {viewMode === 'MY_TEAM' && (
             <div className="mx-auto w-full max-w-[1600px] px-2">
-              <SleeperView
-                week={safeWeek}
-                season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
-                onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
-                onInnerNav={handleInnerNav}
-              />
+            <SleeperView
+              week={safeWeek}
+              season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
+              onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+              onInnerNav={handleInnerNav}
+              requestedTab={sleeperTabRequest}
+              onTabChange={setSleeperTab}
+            />
             </div>
           )}
 
@@ -695,6 +1048,8 @@ export default function App() {
               onToggleCompare={toggleCompare}
               onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('GAME'); setViewMode('HISTORY'); }}
               onInnerNav={handleInnerNav}
+              card={openCard ? { playerId: openCard.playerId, tab: openCard.tab } : null}
+              onCardChange={(card) => setGameCard(card ? { home: selectedGame.home, away: selectedGame.away, ...card } : null)}
             />
           )}
 
@@ -726,7 +1081,9 @@ export default function App() {
           {viewMode === 'HISTORY' && selectedHistoryId && (
             <div className="w-full max-w-5xl mx-auto">
                 <PlayerHistory 
-                    playerId={selectedHistoryId} 
+                    playerId={selectedHistoryId}
+                    view={shownHistoryView}
+                    onViewChange={(view) => setHistoryView({ playerId: selectedHistoryId, view })}
                     onBack={() => { if (navStack.length) goBack(); else setViewMode(historyFrom); }}
                     compareList={compareList}
                     onToggleCompare={toggleCompare}
@@ -735,11 +1092,22 @@ export default function App() {
           )}
 
         </div>
+
+        {/* Content fades out under the assistant button instead of stopping at a hard edge. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 right-3 z-30 h-24 bg-gradient-to-t from-slate-50 via-slate-50/70 to-transparent dark:from-slate-950 dark:via-slate-950/70"
+        />
       </main>
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside className="w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="right panel" className={`w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col ${panelOpen ? "z-[60]" : "z-20"} shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300`}>
+          {/* The agent panel slots into this rail rather than overlaying the page.
+              Closing it restores the trending list exactly as it was -- the rail
+              is the only thing that changes. */}
+          {panelOpen ? <div data-agent-ignore className="contents"><AgentPanel headerExtra={railControls} /></div> : (
+          <>
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
             <div>
               <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-1">
@@ -749,16 +1117,7 @@ export default function App() {
               <p className="text-xs text-slate-400 dark:text-slate-500">Most Added Players (24h)</p>
             </div>
 
-            {/* Theme + Week Toggle (Desktop Sidebar) */}
-            <div className="flex items-center gap-1 bg-white dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700 shadow-sm">
-                <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-md transition-colors">
-                  {isDarkMode ? <Sun size={14} /> : <Moon size={14} />}
-                </button>
-                
-                <div className="text-[10px] font-black text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 whitespace-nowrap">
-                    Wk {activeWeek || "-"}
-                </div>
-            </div>
+            {railControls}
           </div>
           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
             {loadingUp ? <p className="text-xs text-slate-400 text-center mt-10">Scanning Market...</p> : 
@@ -778,8 +1137,14 @@ export default function App() {
               ))
             }
           </div>
+          </>
+          )}
         </aside>
       )}
+
+      {/* Agentic entry point: bottom-center on every view; steps aside to a
+          status pill while the assistant is using the screen. */}
+      <AgentDock />
     </div>
   );
 }

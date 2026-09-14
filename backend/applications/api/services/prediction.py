@@ -7,6 +7,7 @@ from ..config import logger, DB_CONNECTION_STRING, CURRENT_SEASON
 from ..state import model_data
 from .utils import calculate_fantasy_points, get_team_abbr, normalize_name, get_headshot_url, format_draft_info
 from .data_loader import load_player_history_from_db
+from ..db import read_db
 
 def get_injury_status_for_week(player_id: str, week: int, default="Active"):
     """
@@ -125,6 +126,78 @@ def prior_season_form(player_id: str, max_games: int = CARRYOVER_GAMES) -> tuple
     return sum(points) / len(points), len(points)
 
 
+def prior_season_average(player_id: str) -> tuple[float, int]:
+    """Per-game fantasy average over the player's most recent prior season.
+
+    Unlike `prior_season_form`, zero-point games count: a receiver who caught
+    nothing in three games did average less than his good weeks suggest, and
+    leaving those games out is what made projections run high.
+
+    Returns (average, games); (0.0, 0) when there is no prior season.
+    """
+    rows = _prior_form_index().get(str(player_id))
+    if rows is None or rows.is_empty():
+        return 0.0, 0
+    if "season" in rows.columns:
+        latest = rows.select(pl.col("season").max()).item()
+        rows = rows.filter(pl.col("season") == latest)
+    points = []
+    for row in rows.iter_rows(named=True):
+        try:
+            points.append(float(calculate_fantasy_points(row) or 0.0))
+        except Exception:
+            continue
+    if not points:
+        return 0.0, 0
+    return sum(points) / len(points), len(points)
+
+
+def season_average_with_prior(current_points: list[float], player_id: str) -> float:
+    """This season's per-game average, crossfaded with last season's early on."""
+    games = len(current_points)
+    current = sum(current_points) / games if games else 0.0
+    if games >= CARRYOVER_GAMES:
+        return current
+    prior, prior_games = prior_season_average(player_id)
+    if prior_games == 0:
+        return current
+    weight = games / float(CARRYOVER_GAMES)
+    return weight * current + (1.0 - weight) * prior
+
+
+# How a projection is assembled from its parts. Chosen by backtest, not by feel:
+# model_training/backtest_projection_formula.py rebuilds features for past seasons
+# with the production feature code, runs the shipped models, and scores candidate
+# formulas. These values were picked on 2024 and then confirmed on 2025.
+#
+# The formula they replaced -- last 4 non-zero games + 5*ln(1+deviation) -- ran
+# +3.8 points high on fantasy-relevant players in 2025 (average miss 7.5 points).
+# Both halves pushed upward: dropping zero games inflates the baseline, and the
+# log "boost" multiplied a deviation that already leaned positive. The
+# replacement misses by 6.3 with +0.7 bias, and orders same-week, same-position
+# pairs correctly 60.9% of the time instead of 59.2%.
+RECENT_FORM_WEIGHT = 0.25
+# The position models' mean deviation over 2024. The models were trained against
+# a different baseline, so their raw output carries this offset into every
+# projection; subtracting it keeps the adjustment about the player.
+DEVIATION_CENTER = {"QB": 1.86, "RB": 1.17, "WR": 0.92, "TE": 0.81}
+
+
+def combine_projection(season_avg: float, recent_form: float, deviation: float, pos: str,
+                       has_history: bool) -> tuple[float, float]:
+    """(baseline, model adjustment). See RECENT_FORM_WEIGHT for where these come from.
+
+    A player with no NFL history at all (a rookie in week 1) has nothing for the
+    backtest to have measured, and centering would take his only signal away, so
+    he keeps the old treatment of the model output.
+    """
+    if not has_history:
+        adjustment = math.copysign(5.0 * math.log1p(abs(deviation)), deviation) if deviation else 0.0
+        return 0.0, adjustment
+    baseline = (1.0 - RECENT_FORM_WEIGHT) * season_avg + RECENT_FORM_WEIGHT * recent_form
+    return baseline, deviation - DEVIATION_CENTER.get(pos, 0.0)
+
+
 def blend_with_prior(current_avg: float, current_games: int, player_id: str) -> float:
     """Ease from last season's form into this season's as games accumulate.
 
@@ -144,13 +217,16 @@ def blend_with_prior(current_avg: float, current_games: int, player_id: str) -> 
     return (weight * float(current_avg or 0.0)) + ((1.0 - weight) * prior_avg)
 
 
-def run_base_prediction(pid, pos, week):
+def run_base_prediction(pid, pos, week, breakdown: dict | None = None):
     """
-    Looks up features from DB. 
-    1. RECENT FORM: Calculates average of the LAST 4 NON-ZERO GAMES.
-    2. BASELINE CORRECTION: Uses that 4-game average as the starting point.
-    3. LOGARITHMIC BOOST: 5.0 * ln(1 + deviation).
-    4. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
+    Looks up features from DB.
+    1. SEASON AVERAGE: every game this season, zeros included, carried from last season early on.
+    2. RECENT FORM: average of the last 4 non-zero games.
+    3. BASELINE: a blend of the two (see RECENT_FORM_WEIGHT).
+    4. MODEL ADJUSTMENT: the position model's deviation, centered.
+    5. USAGE VACUUM: Triggers on strict "Out/IR/Doubtful" status (Time-Aware).
+
+    Pass `breakdown` to receive each of those parts, so a projection can be explained.
     """
     # Initialize defaults
     features_dict = {}
@@ -207,6 +283,7 @@ def run_base_prediction(pid, pos, week):
                 history_df = pl.DataFrame()
         
         avg_recent_form = 0.0
+        season_points: list[float] = []
         # If history_df is empty, as a last resort try a targeted DB load again
         if history_df.is_empty():
             try:
@@ -221,10 +298,9 @@ def run_base_prediction(pid, pos, week):
             valid_pts = []
             for row in sorted_history.iter_rows(named=True):
                 pts = calculate_fantasy_points(row)
-                if pts > 0.0:
+                season_points.append(float(pts or 0.0))
+                if pts > 0.0 and len(valid_pts) < 4:
                     valid_pts.append(pts)
-                if len(valid_pts) >= 4:
-                    break
             
             if len(valid_pts) > 0:
                 avg_recent_form = sum(valid_pts) / len(valid_pts)
@@ -249,16 +325,19 @@ def run_base_prediction(pid, pos, week):
                 pred_dev = m_info["model"].predict(pl.DataFrame(feats_input).to_numpy())[0]
             except: pred_dev = 0.0
         
-        # --- 3. LOGARITHMIC BOOST (symmetric, sign-preserving) ---
-        # Use log1p on absolute deviation to produce sharp increases for
-        # small deviations and a tapering curve for large deviations.
-        if pred_dev != 0:
-            amplified_dev = math.copysign(5.0 * math.log1p(abs(pred_dev)), pred_dev)
-        else:
-            amplified_dev = 0.0
-        
-        # --- 4. BASELINE CORRECTION ---
-        baseline = avg_recent_form
+        # --- 3/4. BASELINE AND MODEL ADJUSTMENT ---
+        season_avg = season_average_with_prior(season_points, pid)
+        has_history = bool(season_points) or prior_season_average(pid)[1] > 0
+        if not has_history:
+            # Prior seasons load in the background after startup. Until they do
+            # (or for a player missing from them) the feature row's own
+            # expanding average across seasons is the best baseline available;
+            # without it a veteran would be scored as a rookie.
+            career_avg = float(features_dict.get('player_season_avg_points') or 0.0)
+            if career_avg > 0:
+                season_avg, has_history = career_avg, True
+        baseline, amplified_dev = combine_projection(
+            season_avg, avg_recent_form, float(pred_dev), pos, has_history)
 
         # --- 5. USAGE VACUUM LOGIC (Robust Time-Aware) ---
         injury_boost = 0.0
@@ -342,7 +421,7 @@ def run_base_prediction(pid, pos, week):
             else:
                 try:
                     q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{mate_id}' AND week < {int(week)} ORDER BY week DESC"
-                    mate_stats = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                    mate_stats = read_db(q)
                 except Exception as e:
                     mate_stats = pl.DataFrame()
 
@@ -384,7 +463,17 @@ def run_base_prediction(pid, pos, week):
         # --- 6. FINAL SCORE ---
         final_score = max(0.0, baseline + amplified_dev + injury_boost)
         is_boosted = injury_boost > 0
-        
+        if breakdown is not None:
+            breakdown.update({
+                "season_avg": round(season_avg, 2),
+                "recent_form": round(float(avg_recent_form), 2),
+                "baseline": round(baseline, 2),
+                "model_adjustment": round(amplified_dev, 2),
+                "injury_boost": round(injury_boost, 2),
+                "games_this_season": len(season_points),
+                "has_history": has_history,
+            })
+
         return round(float(final_score), 2), is_boosted, features_dict, avg_recent_form
         
     except Exception as e:
@@ -414,6 +503,71 @@ def get_average_points_fallback(player_id, week):
         logger.warning(f"Average points fallback error: {e}")
     return 0.0
 
+# Card prop label -> the stat-line column(s) that settle it.
+PROP_STAT_COLUMNS = {
+    "Pass Yds": ("passing_yards",),
+    "Pass TDs": ("passing_touchdown",),
+    "Pass Att": ("attempts",),
+    "Rush Yds": ("rushing_yards",),
+    "Rush Att": ("rush_attempts",),
+    "Rec Yds": ("receiving_yards",),
+    "Receptions": ("receptions",),
+    "TDs": ("rush_touchdown", "receiving_touchdown"),
+}
+
+
+def actual_stats(player_id: str, week: int, game_final: bool) -> dict | None:
+    """What the player actually did, keyed by the card's prop labels.
+
+    None before the game. A final game with no stat line is all zeros: he
+    recorded nothing, which is exactly how his props settled.
+    """
+    stats = model_data.get("df_player_stats")
+    row = None
+    if isinstance(stats, pl.DataFrame) and not stats.is_empty() and {"player_id", "week"} <= set(stats.columns):
+        mine = stats.filter((pl.col("player_id") == player_id) & (pl.col("week") == int(week)))
+        if not mine.is_empty():
+            row = mine.row(0, named=True)
+    if row is None and not game_final:
+        return None
+    out = {}
+    for label, cols in PROP_STAT_COLUMNS.items():
+        values = [row.get(c) for c in cols] if row is not None else [0]
+        known = [float(v) for v in values if v is not None]
+        out[label] = (int(sum(known)) if float(sum(known)).is_integer() else round(sum(known), 1)) if known else None
+    return out
+
+
+def actual_result(player_id: str, team: str | None, week: int) -> tuple[float | None, bool]:
+    """(full-PPR points the player scored that week, whether his team's game is final).
+
+    Points come from the week's stat line. A final game with no stat line means he
+    didn't record one (inactive, or on the field without touching the ball): 0.0,
+    not None, so a finished card never reads as "no data".
+    """
+    final = False
+    sched = model_data.get("df_schedule")
+    if team and isinstance(sched, pl.DataFrame) and not sched.is_empty() and {"week", "home_team", "away_team"} <= set(sched.columns):
+        rows = sched.filter(
+            (pl.col("week") == int(week))
+            & ((pl.col("home_team") == team) | (pl.col("away_team") == team))
+        )
+        if "season" in rows.columns and not rows.is_empty():
+            rows = rows.filter(pl.col("season") == rows.select(pl.col("season").max()).item())
+        if not rows.is_empty() and {"home_score", "away_score"} <= set(rows.columns):
+            r = rows.row(0, named=True)
+            final = r.get("home_score") is not None and r.get("away_score") is not None
+
+    stats = model_data.get("df_player_stats")
+    if isinstance(stats, pl.DataFrame) and not stats.is_empty() and {"player_id", "week"} <= set(stats.columns):
+        mine = stats.filter((pl.col("player_id") == player_id) & (pl.col("week") == int(week)))
+        if not mine.is_empty():
+            # A posted stat line means the game has been played, even if the
+            # schedule's score hasn't landed yet.
+            return round(float(calculate_fantasy_points(mine.row(0, named=True))), 2), True
+    return (0.0 if final else None), final
+
+
 async def get_player_card(player_id: str, week: int):
     profile = model_data["df_profile"].filter(pl.col('player_id') == player_id)
     if profile.is_empty(): return None
@@ -426,7 +580,8 @@ async def get_player_card(player_id: str, week: int):
     team = p_row.get('team_abbr') or p_row.get('team') or 'FA'
 
     # --- RUN PREDICTION ---
-    l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week)
+    breakdown: dict = {}
+    l0_score, is_boosted, feats, rolling_avg_val = run_base_prediction(player_id, pos, week, breakdown)
     
     # --- GET SEASON AVERAGE ---
     season_avg = 0.0
@@ -439,8 +594,8 @@ async def get_player_card(player_id: str, week: int):
         # If prediction failed, try to compute rolling average directly from DB (robust fallback)
         if (not rolling_avg_val or rolling_avg_val == 0) and DB_CONNECTION_STRING:
             try:
-                q = f"SELECT y_fantasy_points_ppr, passing_yards, rushing_yards, receiving_yards, receptions, passing_touchdown, rush_touchdown, receiving_touchdown, interceptions, fumbles_lost, week FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 12"
-                hist_df = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                q = f"SELECT y_fantasy_points_ppr, passing_yards, rushing_yards, receiving_yards, receptions, passing_touchdown, rush_touchdown, receiving_touchdown, interception AS interceptions, COALESCE(rushing_fumbles_lost, 0) + COALESCE(receiving_fumbles_lost, 0) AS fumbles_lost, week FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 12"
+                hist_df = read_db(q)
                 if not hist_df.is_empty():
                     pts = []
                     for row in hist_df.iter_rows(named=True):
@@ -476,7 +631,7 @@ async def get_player_card(player_id: str, week: int):
             else:
                 # DB lookup for last snap counts
                 q = f"SELECT * FROM weekly_snap_counts_{CURRENT_SEASON} WHERE player_id = '{player_id}' AND week < {int(week)} ORDER BY week DESC LIMIT 1"
-                history_snaps = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                history_snaps = read_db(q)
 
             if not history_snaps.is_empty():
                 last_game = history_snaps.row(0, named=True)
@@ -496,6 +651,8 @@ async def get_player_card(player_id: str, week: int):
     total_line = None 
     spread_val = None
     implied_total = None
+    moneyline = None
+    lines_source = None
     props_data = [] 
     prop_line = None
     prop_prob = None
@@ -526,6 +683,8 @@ async def get_player_card(player_id: str, week: int):
                 # Calculate spread relative to player's team
                 h_team = get_team_abbr(row.get("home_team"))
                 p_team = get_team_abbr(team) # Ensure player team is also normalized
+                moneyline = row.get("home_ml") if h_team == p_team else row.get("away_ml")
+                lines_source = "schedule" if row.get("processed_at") == "schedule" else "bovada"
                 
                 if raw_spread is not None:
                     try:
@@ -555,7 +714,16 @@ async def get_player_card(player_id: str, week: int):
                     p_props = week_props.filter(pl.col("player_name") == match)
 
             if not p_props.is_empty():
-                props_data = p_props.select(["prop_type", "line", "odds", "implied_prob"]).to_dicts()
+                keep = [c for c in ["prop_type", "line", "odds", "implied_prob", "side"] if c in p_props.columns]
+                props_data = p_props.select(keep).to_dicts()
+
+                def _over_side(df: pl.DataFrame) -> pl.DataFrame:
+                    # A market has an over AND an under row. Without this the
+                    # headline "over probability" was whichever row came first.
+                    if df.is_empty() or "side" not in df.columns:
+                        return df
+                    overs = df.filter(pl.col("side").cast(pl.Utf8).str.to_lowercase().is_in(["over", "yes"]))
+                    return overs if not overs.is_empty() else df
                 
                 target_props = []
                 if pos == 'QB': target_props = ["Passing Yards", "Pass Yards", "Pass Yds"]
@@ -574,9 +742,8 @@ async def get_player_card(player_id: str, week: int):
                     if main_p.is_empty() and pos == 'RB':
                          main_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("rushing & receiving yards"))
 
+                    main_p = _over_side(main_p)
                     if not main_p.is_empty():
-                        # Sort to prefer exact match if possible (though contains is broad)
-                        # Just take the first one for now
                         row = main_p.row(0, named=True)
                         prop_line = row['line']
                         prop_prob = row['implied_prob'] 
@@ -588,6 +755,7 @@ async def get_player_card(player_id: str, week: int):
                         td_pass = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not td_pass.is_empty(): break
                     
+                    td_pass = _over_side(td_pass)
                     if not td_pass.is_empty():
                         row = td_pass.row(0, named=True)
                         pass_td_line = row['line']
@@ -598,6 +766,7 @@ async def get_player_card(player_id: str, week: int):
                     for keyword in ["passing attempts", "pass attempts", "pass att"]:
                         att_pass = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not att_pass.is_empty(): break
+                    att_pass = _over_side(att_pass)
                     if not att_pass.is_empty():
                         row = att_pass.row(0, named=True)
                         pass_att_line = row['line']
@@ -611,6 +780,7 @@ async def get_player_card(player_id: str, week: int):
                         # Avoid "Receiving Yards" matching "Rec"
                         rec_p = rec_p.filter(~pl.col("prop_type").str.to_lowercase().str.contains("yards"))
                         if not rec_p.is_empty(): break
+                    rec_p = _over_side(rec_p)
                     if not rec_p.is_empty():
                         row = rec_p.row(0, named=True)
                         rec_line = row['line']
@@ -622,6 +792,7 @@ async def get_player_card(player_id: str, week: int):
                     for keyword in ["rushing attempts", "rush attempts", "rush att"]:
                         rush_att = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains(keyword))
                         if not rush_att.is_empty(): break
+                    rush_att = _over_side(rush_att)
                     if not rush_att.is_empty():
                         row = rush_att.row(0, named=True)
                         rush_att_line = row['line']
@@ -631,6 +802,7 @@ async def get_player_card(player_id: str, week: int):
                 if td_p.is_empty():
                     td_p = p_props.filter(pl.col("prop_type").str.to_lowercase().str.contains("anytime touchdown"))
 
+                td_p = _over_side(td_p)
                 if not td_p.is_empty():
                     anytime_td_prob = td_p.row(0, named=True)['implied_prob']
 
@@ -646,7 +818,7 @@ async def get_player_card(player_id: str, week: int):
             if sched_df is None or sched_df.is_empty():
                 # fallback to DB schedule read (ensure DB-only behavior)
                 try:
-                    sched_df = pl.read_database_uri(f"SELECT * FROM schedule", DB_CONNECTION_STRING)
+                    sched_df = read_db(f"SELECT * FROM schedule")
                 except Exception:
                     sched_df = pl.DataFrame()
 
@@ -671,11 +843,18 @@ async def get_player_card(player_id: str, week: int):
             logger.warning(f"Opponent lookup failed: {e}")
             opponent = opponent or "BYE"
 
+    actual_points, game_final = actual_result(player_id, team, week)
+
     return {
         "player_name": p_name,
         "player_id": player_id,
         "position": pos,
         "week": week,
+        # Full PPR, once the week's stat line exists; game_final says the game is over.
+        "actual_points": actual_points,
+        "game_final": game_final,
+        # Pass Yds, Rec Yds, Receptions, TDs, ... as they happened, to set beside each prop line.
+        "actual_stats": actual_stats(player_id, week, game_final),
         "team": team,
         "opponent": opponent,
         "draft_position": format_draft_info(p_row.get('draft_year'), p_row.get('draft_number')),
@@ -684,6 +863,9 @@ async def get_player_card(player_id: str, week: int):
         "overunder": float(total_line) if total_line else None,
         "spread": spread_val,
         "implied_total": round(implied_total, 1) if implied_total else None,
+        "moneyline": moneyline,
+        # "bovada" or "schedule" (nflverse's line when Bovada has none for this game).
+        "lines_source": lines_source,
         "props": props_data,
         "prop_line": prop_line, 
         "prop_prob": prop_prob,
@@ -701,8 +883,9 @@ async def get_player_card(player_id: str, week: int):
         "floor_prediction": round(meta_score * 0.8, 2),
         "average_points": round(season_avg, 1), 
         "rolling_4wk_avg": round(rolling_avg_val, 1), 
-        "is_injury_boosted": is_boosted, 
-        "injury_status": final_status, 
+        "is_injury_boosted": is_boosted,
+        "projection_breakdown": breakdown or None,
+        "injury_status": final_status,
         "debug_err": None 
     }
 
@@ -721,10 +904,12 @@ async def get_team_roster_cards(team_abbr: str, week: int):
     ranked = pl.DataFrame()
     try:
         q = f"SELECT player_id, position FROM weekly_rankings WHERE week={week} AND team_abbr='{team_abbr}' ORDER BY predicted_points DESC"
-        ranked = pl.read_database_uri(q, DB_CONNECTION_STRING)
+        ranked = read_db(q)
     except: pass
 
-    df_profile = model_data["df_profile"]
+    df_profile = model_data.get("df_profile")
+    if df_profile is None:
+        df_profile = pl.DataFrame()
     if ranked.is_empty() and ("team_abbr" in df_profile.columns or "team" in df_profile.columns):
         team_col = "team_abbr" if "team_abbr" in df_profile.columns else "team"
         candidates = df_profile.filter(
@@ -732,6 +917,13 @@ async def get_team_roster_cards(team_abbr: str, week: int):
             (pl.col("status") == "ACT")
         ).select(["player_id", "position"])
         ranked = candidates
+
+    # With no rankings and no profiles loaded (a cold start, or the database is
+    # down) there is no roster to build. That used to raise on the missing
+    # column and turn the whole matchup page into a 500, odds and all.
+    if "position" not in ranked.columns or "player_id" not in ranked.columns:
+        logger.warning("No roster source for %s week %s; returning an empty roster", team_abbr, week)
+        return []
 
     # --- OPTIMIZATION: Parallelize Player Card Fetching ---
     # Fetch all player cards concurrently to reduce wait time
@@ -805,7 +997,7 @@ def find_usage_boost_reason(player_id: str, week: int):
                     mate_stats = model_data["df_player_stats"].filter((pl.col('player_id') == mate_id) & (pl.col('week') < int(week)))
                 else:
                     q = f"SELECT * FROM weekly_player_stats_{CURRENT_SEASON} WHERE player_id = '{mate_id}' AND week < {int(week)} ORDER BY week DESC"
-                    mate_stats = pl.read_database_uri(q, DB_CONNECTION_STRING)
+                    mate_stats = read_db(q)
 
                 if mate_stats.is_empty():
                     continue

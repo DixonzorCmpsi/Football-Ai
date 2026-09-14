@@ -16,15 +16,18 @@ from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, 
 from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
-from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper
+from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, terminate_running_scripts, etl_ran_recently
 from .services.storylines import storylines_wrapper
-from .routes import players, games, general, debug, tier_list, sleeper
+from .routes import players, games, general, debug, tier_list, sleeper, agent, llm_proxy, compare, storyline_summary
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
+from .db import read_db, probe_arrow
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
     logger.info("Server startup sequence initiated")
+    # Report a blocked/broken pyarrow now, before any read quietly takes the slower path.
+    probe_arrow()
     try:
         # 0. Schema migration (idempotent). `ADD COLUMN IF NOT EXISTS` is a no-op
         # after the first run; the backfill only touches NULL rows. Runs before
@@ -129,8 +132,10 @@ async def lifespan(app: FastAPI):
             )
         # Player storylines: ESPN's league feed is capped at 50 articles and only
         # covers the last several hours, so polling it a few times a day is what
-        # accumulates real per-player history. Tune with STORYLINE_REFRESH_HOURS.
-        storyline_hours = float(os.getenv('STORYLINE_REFRESH_HOURS', '3'))
+        # accumulates real per-player history. Hourly, since it's one small
+        # request; the profile's refresh button covers anything sooner.
+        # Tune with STORYLINE_REFRESH_HOURS.
+        storyline_hours = float(os.getenv('STORYLINE_REFRESH_HOURS', '1'))
         if storyline_hours > 0:
             scheduler.add_job(
                 storylines_wrapper, 'interval', hours=storyline_hours,
@@ -158,7 +163,7 @@ async def lifespan(app: FastAPI):
                     if DB_CONNECTION_STRING:
                         # quick probe for target table
                         probe_q = f"SELECT count(1) as cnt FROM weekly_player_stats_{CURRENT_SEASON}"
-                        probe_df = pl.read_database_uri(probe_q, DB_CONNECTION_STRING)
+                        probe_df = read_db(probe_q)
                         need_sync = (probe_df.row(0)[0] == 0)
                 except Exception:
                     need_sync = True
@@ -175,6 +180,10 @@ async def lifespan(app: FastAPI):
                         asyncio.create_task(run_daily_etl_async(restart_after=False))
                     except Exception as e:
                         logger.exception(f"Startup ETL failed (sync path): {e}")
+                elif etl_ran_recently():
+                    # A dev server reloads on every save; rerunning a multi-minute
+                    # scrape each time buys nothing when the data is hours old.
+                    logger.info("Startup ETL skipped: a full ETL succeeded recently (STARTUP_ETL_MIN_AGE_HOURS).")
                 else:
                     # Non-blocking trigger when DB already has data (no restart needed)
                     asyncio.create_task(run_daily_etl_async(restart_after=False))
@@ -192,7 +201,10 @@ async def lifespan(app: FastAPI):
     # --- SHUTDOWN ---
     logger.info("Server shutdown sequence initiated")
     if hasattr(app.state, "scheduler"):
-        app.state.scheduler.shutdown()
+        app.state.scheduler.shutdown(wait=False)
+    stopped = terminate_running_scripts()
+    if stopped:
+        logger.info("Stopped %d running pipeline script(s)", stopped)
     model_data.clear()
 
 # --- INITIALIZE APP ---
@@ -221,3 +233,7 @@ app.include_router(general.router)
 app.include_router(debug.router)
 app.include_router(tier_list.router)
 app.include_router(sleeper.router)
+app.include_router(agent.router)
+app.include_router(llm_proxy.router)
+app.include_router(compare.router)
+app.include_router(storyline_summary.router)
