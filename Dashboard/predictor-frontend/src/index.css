@@ -1,3 +1,55 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* --- Assistant button: the football ---------------------------------------
+   At rest the ball sits tilted like a pass in the air. Hovering (or focusing)
+   the button throws a quick spiral with a little lift; while the assistant is
+   working the ball keeps spinning. */
+.football-icon {
+  transform: rotate(-8deg);
+  transform-origin: 50% 50%;
+  transition: transform 200ms ease;
+}
+.football-icon .football-laces {
+  transition: opacity 200ms ease;
+}
+.football-fab:hover .football-icon,
+.football-fab:focus-visible .football-icon {
+  animation: football-spiral 700ms cubic-bezier(0.25, 0.8, 0.35, 1) both;
+}
+.football-fab:hover .football-laces,
+.football-fab:focus-visible .football-laces {
+  animation: football-laces 700ms ease-in-out both;
+}
+.football-icon--spinning,
+.football-fab:hover .football-icon--spinning {
+  animation: football-spin 900ms linear infinite;
+}
+
+@keyframes football-spiral {
+  0% { transform: translateY(0) rotate(-8deg) scale(1); }
+  35% { transform: translateY(-3px) rotate(160deg) scale(1.12); }
+  70% { transform: translateY(-1px) rotate(330deg) scale(1.05); }
+  100% { transform: translateY(0) rotate(352deg) scale(1.06); }
+}
+/* The laces blur past as it spins, like a real spiral. */
+@keyframes football-laces {
+  0%, 100% { opacity: 1; }
+  40%, 60% { opacity: 0.35; }
+}
+@keyframes football-spin {
+  from { transform: rotate(-8deg); }
+  to { transform: rotate(352deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .football-icon,
+  .football-fab:hover .football-icon,
+  .football-fab:focus-visible .football-icon,
+  .football-icon--spinning,
+  .football-fab:hover .football-laces {
+    animation: none;
+    transition: none;
+  }
+}

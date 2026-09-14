@@ -24,6 +24,9 @@ interface MatchupBannerProps {
   gameDay?: string;
   overUnder: number | null;
   spread?: number | null;
+  /** Final score; when both are set the odds box compares Vegas with what happened. */
+  homeScore?: number | null;
+  awayScore?: number | null;
   homeWinProb: number | null;
   awayWinProb: number | null;
   // Optional real-data game intelligence — weather, derived script tag, and
@@ -57,7 +60,7 @@ const SCRIPT_STYLES: Record<BannerGameScript['tag'], string> = {
   BALANCED: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
 };
 
-const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUnder, spread, homeWinProb, awayWinProb, weather, gameScript, tabs }) => {
+const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUnder, spread, homeScore, awayScore, homeWinProb, awayWinProb, weather, gameScript, tabs }) => {
   const [away, home] = matchup.split(' @ ');
   const outlook = weatherOutlook(weather);
   const [intelOpen, setIntelOpen] = useState(true);
@@ -94,6 +97,14 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUn
   };
 
   const impliedScores = calculateImpliedScores();
+  const isFinal = homeScore != null && awayScore != null;
+  const finalTotal = (homeScore ?? 0) + (awayScore ?? 0);
+  // Green when the real number came in above Vegas, red below.
+  const beat = (actual: number, expected: string | number | null) => {
+    if (expected == null) return 'text-slate-800 dark:text-slate-100';
+    const e = Number(expected);
+    return actual > e ? 'text-emerald-600 dark:text-emerald-400' : actual < e ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100';
+  };
   const formattedTime = formatGameTime(gameTime);
 
   if (!bannerOpen) {
@@ -188,6 +199,34 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUn
         </div>
 
         {/* Vegas Context */}
+        {isFinal ? (
+          // Played: Vegas and the final score in one small table, so each number
+          // sits right above what actually happened.
+          <div
+            data-testid="banner-vegas-vs-final"
+            className="grid grid-cols-[auto_repeat(3,minmax(2.75rem,auto))] items-center gap-x-3 gap-y-0.5 bg-slate-100 dark:bg-slate-950/50 rounded-lg px-3 lg:px-4 py-1.5 lg:py-2 border border-slate-200 dark:border-slate-800/50 backdrop-blur-sm font-mono text-xs tabular-nums"
+          >
+            <span />
+            <span className="text-center text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest font-sans">Total</span>
+            <span className="text-center text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest font-sans">{away}</span>
+            <span className="text-center text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest font-sans">{home}</span>
+
+            <span className="text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest font-sans">Vegas</span>
+            <span className="text-center text-slate-600 dark:text-slate-300">{overUnder ?? '-'}</span>
+            <span className="text-center text-slate-600 dark:text-slate-300">{impliedScores.away ?? '-'}</span>
+            <span className="text-center text-slate-600 dark:text-slate-300">{impliedScores.home ?? '-'}</span>
+
+            <span className="text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest font-sans">Final</span>
+            <span className={`text-center font-bold ${beat(finalTotal, overUnder)}`} title={overUnder != null ? `${finalTotal > overUnder ? 'Over' : finalTotal < overUnder ? 'Under' : 'Push'} by ${Math.abs(finalTotal - overUnder).toFixed(1)}` : undefined}>
+              {finalTotal}
+              {overUnder != null && finalTotal !== overUnder && (
+                <span className="ml-1 text-[9px] font-sans">{finalTotal > overUnder ? 'O' : 'U'}</span>
+              )}
+            </span>
+            <span className={`text-center font-bold ${beat(awayScore!, impliedScores.away)}`}>{awayScore}</span>
+            <span className={`text-center font-bold ${beat(homeScore!, impliedScores.home)}`}>{homeScore}</span>
+          </div>
+        ) : (
         <div className="flex items-center gap-3 lg:gap-4 bg-slate-100 dark:bg-slate-950/50 rounded-lg px-3 lg:px-4 py-1.5 lg:py-2 border border-slate-200 dark:border-slate-800/50 backdrop-blur-sm">
             <div className="flex flex-col items-center">
               <span className="text-slate-400 dark:text-slate-500 uppercase text-[9px] font-bold tracking-widest">Total</span>
@@ -202,6 +241,7 @@ const MatchupBanner: React.FC<MatchupBannerProps> = ({ matchup, gameTime, overUn
               </div>
             </div>
         </div>
+        )}
 
       </div>
 

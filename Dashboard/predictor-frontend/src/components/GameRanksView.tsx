@@ -443,6 +443,8 @@ export interface GameScript {
 }
 
 export interface FetchedMatchup {
+  home_score?: number | null;
+  away_score?: number | null;
   home_roster: PlayerData[];
   away_roster: PlayerData[];
   weather: GameWeather | null;
@@ -832,6 +834,8 @@ export const GameCard: React.FC<GameCardProps> = ({ game, week, expanded, onTogg
           gameTime={game?.gametime}
           gameDay={game?.gameday}
           overUnder={matchup?.over_under ?? game?.game_total ?? null}
+          homeScore={matchup?.home_score ?? null}
+          awayScore={matchup?.away_score ?? null}
           spread={matchup?.spread ?? null}
           homeWinProb={matchup?.home_win_prob ?? null}
           awayWinProb={matchup?.away_win_prob ?? null}

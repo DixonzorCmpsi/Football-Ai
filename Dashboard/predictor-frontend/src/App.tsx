@@ -814,7 +814,10 @@ export default function App() {
         {/* Bottom padding clears the floating agent button: without it the last
             row of every view (the final game's moneyline, at any width) sat
             permanently underneath it with no way to scroll it into view. */}
-        <div data-agent-region="page" className="flex-1 overflow-y-auto p-4 md:p-6 pb-28 md:pb-24 dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950">
+        {/* The game view scrolls its rosters in its own box, so it takes the full
+            height and pads inside that box instead; otherwise the box stopped
+            short of the bottom and cards were cut off in a hard line. */}
+        <div data-agent-region="page" className={`flex-1 overflow-y-auto p-4 md:p-6 ${viewMode === 'GAME' ? 'pb-0 md:pb-0' : 'pb-28 md:pb-24'} dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-950`}>
 
           {/* Mobile Footer: quick access to Trending / Compare / Lookup */}
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex sm:hidden max-w-xs">
@@ -1089,6 +1092,12 @@ export default function App() {
           )}
 
         </div>
+
+        {/* Content fades out under the assistant button instead of stopping at a hard edge. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 right-3 z-30 h-24 bg-gradient-to-t from-slate-50 via-slate-50/70 to-transparent dark:from-slate-950 dark:via-slate-950/70"
+        />
       </main>
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}

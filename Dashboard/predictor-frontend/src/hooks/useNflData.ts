@@ -146,6 +146,9 @@ export interface MatchupData {
     week: number;
     gametime?: string;
     gameday?: string;
+    /** Final score once the game is played; null before. */
+    home_score?: number | null;
+    away_score?: number | null;
     home_roster: any[];
     away_roster: any[];
     home_injuries?: InjuryData[];

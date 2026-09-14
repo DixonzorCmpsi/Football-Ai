@@ -19,6 +19,7 @@ import { useAgentChatContext } from '../contexts/AgentChatContext';
 import { byokReady } from '../lib/agentIdentity';
 import { isScreenTool, toolLabel } from '../utils/agentLabels';
 import AgentSettings from './AgentSettings';
+import FootballIcon from './FootballIcon';
 
 /** Answers taller than this get clipped with a "See more" affordance. */
 const PEEK_MAX_HEIGHT = 168;
@@ -176,9 +177,9 @@ export default function AgentDock() {
         data-agent-ignore
         aria-label="Ask the AI about this page"
         title="Ask about this page ( / )"
-        className="fixed z-[60] bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-900/20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+        className="football-fab fixed z-[60] bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 h-12 w-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-900/25 ring-2 ring-white/10 flex items-center justify-center transition-[box-shadow,transform] duration-200 hover:shadow-xl hover:shadow-blue-600/40 active:scale-95 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-400/50"
       >
-        {streaming ? <Loader2 size={20} className="animate-spin" /> : <Sparkles size={20} />}
+        <FootballIcon size={24} spinning={streaming} />
       </button>
     );
   }

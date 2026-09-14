@@ -340,6 +340,8 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
           gameTime={data.gametime}
           gameDay={data.gameday}
           overUnder={data.over_under || null}
+          homeScore={data.home_score ?? null}
+          awayScore={data.away_score ?? null}
           spread={data.spread || null}
           homeWinProb={data.home_win_prob || null}
           awayWinProb={data.away_win_prob || null}
@@ -350,7 +352,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
       </div>
 
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
-        <div className={`flex-1 overflow-y-auto overscroll-contain pb-4 ${activeTab === 'ROSTER' ? 'pr-10 lg:pr-12 xl:pr-14' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div className={`flex-1 overflow-y-auto overscroll-contain pb-28 md:pb-24 ${activeTab === 'ROSTER' ? 'pr-10 lg:pr-12 xl:pr-14' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
           <style>{`.hide-scrollbar::-webkit-scrollbar { display: none; }`}</style>
           
           {activeTab === 'ROSTER' ? (

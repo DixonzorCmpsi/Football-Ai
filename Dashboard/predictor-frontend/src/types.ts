@@ -58,6 +58,9 @@ export interface PlayerData {
 export interface MatchupData {
   matchup: string;
   week: number;
+  /** Final score once the game is played; null before. */
+  home_score?: number | null;
+  away_score?: number | null;
   over_under: number | null;
   home_win_prob: number | null;
   away_win_prob: number | null;

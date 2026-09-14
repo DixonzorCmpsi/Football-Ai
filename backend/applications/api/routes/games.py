@@ -120,6 +120,7 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
         
         over_under, home_win, away_win, spread = None, None, None, None
         gametime, gameday = None, None
+        home_score, away_score = None, None
 
         # Fetch Game Time from Schedule
         if "df_schedule" in model_data and not model_data["df_schedule"].is_empty():
@@ -144,6 +145,9 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
                 row = sched_game.row(0, named=True)
                 gametime = row.get("gametime")
                 gameday = row.get("gameday")
+                # Final score, once the game is played (null before).
+                if row.get("home_team") == home_team and row.get("away_team") == away_team:
+                    home_score, away_score = row.get("home_score"), row.get("away_score")
                 # logger.info(f"Found gametime for {away_team}@{home_team}: {gameday} {gametime}")
             else:
                 logger.warning(f"Could not find schedule entry for {away_team}@{home_team} Week {week}. Available games: {model_data['df_schedule'].filter(pl.col('week')==int(week)).select(['home_team', 'away_team']).to_dicts()}")
@@ -197,6 +201,8 @@ async def get_matchup_rosters(week: int, home_team: str, away_team: str):
             "week": week,
             "gametime": gametime,
             "gameday": gameday,
+            "home_score": home_score,
+            "away_score": away_score,
             "over_under": over_under,
             "spread": spread,
             "home_win_prob": home_win,
