@@ -18,6 +18,10 @@ export interface PlayerData {
   prediction: number;
   floor_prediction: number;
   average_points: number;
+  /** Full-PPR points scored that week, once the stat line exists (0 for a final game with none). */
+  actual_points?: number | null;
+  /** The player's game for this week is over. */
+  game_final?: boolean;
   snap_percentage?: number;
   is_injury_boosted?: boolean; // <-- Add this line
   // Depth-chart starter (pos_rank == 1). Drives roster ordering so the

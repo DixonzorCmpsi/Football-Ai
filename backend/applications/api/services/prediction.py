@@ -503,6 +503,36 @@ def get_average_points_fallback(player_id, week):
         logger.warning(f"Average points fallback error: {e}")
     return 0.0
 
+def actual_result(player_id: str, team: str | None, week: int) -> tuple[float | None, bool]:
+    """(full-PPR points the player scored that week, whether his team's game is final).
+
+    Points come from the week's stat line. A final game with no stat line means he
+    didn't record one (inactive, or on the field without touching the ball): 0.0,
+    not None, so a finished card never reads as "no data".
+    """
+    final = False
+    sched = model_data.get("df_schedule")
+    if team and isinstance(sched, pl.DataFrame) and not sched.is_empty() and {"week", "home_team", "away_team"} <= set(sched.columns):
+        rows = sched.filter(
+            (pl.col("week") == int(week))
+            & ((pl.col("home_team") == team) | (pl.col("away_team") == team))
+        )
+        if "season" in rows.columns and not rows.is_empty():
+            rows = rows.filter(pl.col("season") == rows.select(pl.col("season").max()).item())
+        if not rows.is_empty() and {"home_score", "away_score"} <= set(rows.columns):
+            r = rows.row(0, named=True)
+            final = r.get("home_score") is not None and r.get("away_score") is not None
+
+    stats = model_data.get("df_player_stats")
+    if isinstance(stats, pl.DataFrame) and not stats.is_empty() and {"player_id", "week"} <= set(stats.columns):
+        mine = stats.filter((pl.col("player_id") == player_id) & (pl.col("week") == int(week)))
+        if not mine.is_empty():
+            # A posted stat line means the game has been played, even if the
+            # schedule's score hasn't landed yet.
+            return round(float(calculate_fantasy_points(mine.row(0, named=True))), 2), True
+    return (0.0 if final else None), final
+
+
 async def get_player_card(player_id: str, week: int):
     profile = model_data["df_profile"].filter(pl.col('player_id') == player_id)
     if profile.is_empty(): return None
@@ -778,11 +808,16 @@ async def get_player_card(player_id: str, week: int):
             logger.warning(f"Opponent lookup failed: {e}")
             opponent = opponent or "BYE"
 
+    actual_points, game_final = actual_result(player_id, team, week)
+
     return {
         "player_name": p_name,
         "player_id": player_id,
         "position": pos,
         "week": week,
+        # Full PPR, once the week's stat line exists; game_final says the game is over.
+        "actual_points": actual_points,
+        "game_final": game_final,
         "team": team,
         "opponent": opponent,
         "draft_position": format_draft_info(p_row.get('draft_year'), p_row.get('draft_number')),

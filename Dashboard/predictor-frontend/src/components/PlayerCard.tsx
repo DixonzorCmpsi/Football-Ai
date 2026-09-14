@@ -25,6 +25,8 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
     onToggleCompare
 }) => {
   const { addPick, removePick, getPick } = usePicks();
+  const actual = data.actual_points ?? 0;
+  const hasActual = data.actual_points != null;
 
   const getProbColor = (prob: number | null) => {
     if (!prob) return "text-slate-400 dark:text-white/40";
@@ -186,12 +188,30 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
             <span className="text-[9px] text-slate-400 dark:text-white/50 uppercase font-bold tracking-widest">Avg</span>
             <span className="text-xs font-bold text-slate-700 dark:text-white/80">{data.average_points}</span>
           </div>
-          <div className="flex flex-col items-end justify-center min-w-[36px]">
-            <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase font-bold tracking-wider">Proj</span>
-            <span className={`text-base font-black leading-none ${data.is_injury_boosted ? 'text-amber-500 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>
-              {data.prediction}
-            </span>
-          </div>
+          {hasActual ? (
+            <>
+              <div className="flex flex-col items-end justify-center min-w-[32px]">
+                <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase font-bold tracking-wider">Proj</span>
+                <span className="text-xs font-bold text-slate-700 dark:text-white/80">{data.prediction}</span>
+              </div>
+              {/* Full PPR once the game is played; colored by how it compares to the projection. */}
+              <div className="flex flex-col items-end justify-center min-w-[40px]" data-testid="player-card-actual" title="Actual fantasy points, full PPR">
+                <span className="text-[9px] text-slate-500 dark:text-white/60 uppercase font-bold tracking-wider">PPR</span>
+                <span className={`text-base font-black leading-none tabular-nums ${
+                  actual >= data.prediction ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                }`}>
+                  {actual.toFixed(1)}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-end justify-center min-w-[36px]">
+              <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase font-bold tracking-wider">Proj</span>
+              <span className={`text-base font-black leading-none ${data.is_injury_boosted ? 'text-amber-500 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>
+                {data.prediction}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
