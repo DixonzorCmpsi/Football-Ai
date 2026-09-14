@@ -118,8 +118,10 @@ const PlayerCard: React.FC<PlayerCardProps> = memo(({
   };
 
   return (
-    <div 
+    <div
       onClick={() => onClick(data)}
+      data-testid="player-card"
+      data-player-name={data.player_name}
       className={`relative rounded-xl p-3 cursor-pointer group shadow-sm hover:shadow-lg transition-colors duration-200 flex flex-col min-h-[9rem] h-auto overflow-hidden border bg-white dark:bg-slate-900 ${
         isSelected 
           ? 'border-blue-500 ring-2 ring-blue-500/20 dark:ring-blue-500/40' 

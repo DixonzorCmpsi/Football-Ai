@@ -110,14 +110,22 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
   const [injuredOnly, setInjuredOnly] = useState(true);
 
   useEffect(() => {
+    // Week 0 means the current week isn't known yet (a deep link opens before it
+    // loads). Asking for it returned every player on a BYE, and if that slower
+    // response landed after the real one it replaced the real roster. So: wait
+    // for a week, and drop any answer for a request that's been superseded.
+    if (!week) return;
+    let current = true;
     import('../lib/api').then(({ fetchMatchup }) => {
       fetchMatchup(week, home, away)
         .then(d => {
+          if (!current) return;
           setData(d);
           setLoading(false);
         })
-        .catch(err => { console.error("Matchup Fetch Error:", err); setLoading(false); });
-    }).catch(err => { console.error(err); setLoading(false); });
+        .catch(err => { console.error("Matchup Fetch Error:", err); if (current) setLoading(false); });
+    }).catch(err => { console.error(err); if (current) setLoading(false); });
+    return () => { current = false; };
   }, [week, home, away]);
 
   // Hooks must run unconditionally, before the loading/empty-data early
