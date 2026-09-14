@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users, KeyRound } from 'lucide-react';
+import { Search, BarChart2, PanelLeft, Minimize2, TrendingUp, TrendingDown, Sun, Moon, Plus, Check, Calendar, Trophy, Menu, Layers, ArrowLeft, Shield, ListOrdered, Users, KeyRound, MessageSquare } from 'lucide-react';
 import { usePastRankings, useFutureRankings, useSchedule, useCurrentWeek } from './hooks/useNflData';
 import type { Player } from './hooks/useNflData';
 import PlayerLookupView from './components/PlayerLookup';
@@ -18,6 +18,8 @@ import { getTeamColor } from './utils/nflColors';
 import { sizedPlayerImage } from './utils/playerImage';
 import SleeperView from './components/SleeperView';
 import AgentDock from './components/AgentDock';
+import RailResizer from './components/RailResizer';
+import { RAIL_DEFAULT, useRailWidth } from './hooks/useRailWidth';
 import AgentPanel from './components/AgentPanel';
 import { useAgentScreenContext } from './contexts/AgentScreenContext';
 import type { ScreenEntity } from './contexts/AgentScreenContext';
@@ -420,7 +422,10 @@ export default function App() {
   // immediately. The transcript keeps a copy only for the reopen buttons;
   // nothing replays them on reload. allowNavigation gates the automatic move —
   // when off, the button still works because a click is the user asking.
-  const { panelOpen, openDock, settings: agentSettings, setActionHandler } = useAgentChatContext();
+  const { panelOpen, openPanel, closePanel, turns: agentTurns, streaming: agentStreaming, openDock, settings: agentSettings, setActionHandler } = useAgentChatContext();
+  // Each rail keeps its own width (drag its inner edge).
+  const [leftRailWidth, setLeftRailWidth] = useRailWidth('spotai.rail.left.width.v1');
+  const [rightRailWidth, setRightRailWidth] = useRailWidth('spotai.rail.right.width.v1');
   const allowNavigation = agentSettings.allowNavigation !== false;
   const applyAgentActionRef = useRef<(action: AgentScreenAction) => void>(() => {});
 
@@ -635,13 +640,38 @@ export default function App() {
     </div>
   );
   const rightRailVisible = showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS';
+  // Widened rails leave the header less room: tabs go icon-only (their titles still name them).
+  const railsWidened = rightRailVisible && leftRailWidth + rightRailWidth > 2 * RAIL_DEFAULT;
+
+  // Switch the right rail between Trending Up and the conversation. The chat is
+  // kept either way, so hopping to trending and back loses nothing.
+  const railTabClass = (active: boolean) =>
+    `flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-widest transition-colors ${
+      active ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+    }`;
+  const railTabs = (
+    <div role="tablist" aria-label="Right panel" className="flex gap-1 m-2 mb-0 p-1 rounded-lg bg-slate-100 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 shrink-0">
+      <button type="button" role="tab" aria-selected={!panelOpen} data-testid="rail-tab-trending" onClick={closePanel} className={railTabClass(!panelOpen)}>
+        <TrendingUp size={12} className="text-green-600 dark:text-green-400" /> Trending
+      </button>
+      <button type="button" role="tab" aria-selected={panelOpen} data-testid="rail-tab-chat" onClick={openPanel} className={railTabClass(panelOpen)}>
+        <MessageSquare size={12} className="text-blue-600 dark:text-blue-400" /> Chat
+        {agentStreaming && !panelOpen ? (
+          <span className="h-1.5 w-1.5 rounded-full bg-blue-500 motion-safe:animate-pulse" aria-label="answering" />
+        ) : agentTurns.length > 0 ? (
+          <span className="font-mono normal-case tracking-normal text-slate-400">{Math.ceil(agentTurns.length / 2)}</span>
+        ) : null}
+      </button>
+    </div>
+  );
 
   return (
     <div className="flex h-screen bg-slate-100 dark:bg-slate-900 font-sans text-slate-900 dark:text-slate-100 overflow-hidden transition-colors duration-300">
       
       {/* LEFT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside data-agent-region="left panel" className="w-80 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+        <aside data-agent-region="left panel" style={{ width: leftRailWidth }} className="relative bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 shadow-[4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300">
+          <RailResizer side="left" width={leftRailWidth} onResize={setLeftRailWidth} label="Resize the left panel" />
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur">
              <div className="flex items-center justify-between mb-3">
                 {/* Title Area */}
@@ -754,7 +784,7 @@ export default function App() {
                   {/* With both 20rem rails open the header only has the width for
                       labels from ~1900px; at 2xl (1536px) they overflowed into the
                       right rail and "MY TEAM" wrapped. Icons carry a title instead. */}
-                  <span className={`${showSidebars ? 'hidden min-[1900px]:inline' : 'hidden lg:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
+                  <span className={`${!showSidebars ? 'hidden lg:inline' : railsWidened ? 'hidden' : 'hidden min-[1900px]:inline'}`}>{mode === 'COMPARE' ? 'COMPARE' : mode === 'GAME_RANKS' ? 'RANKS' : mode === 'MY_TEAM' ? 'MY TEAM' : mode}</span>
                 </button>
               ))}
             </div>
@@ -1102,10 +1132,12 @@ export default function App() {
 
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
-        <aside data-agent-region="right panel" className={`w-80 bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col ${panelOpen ? "z-[60]" : "z-20"} shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300`}>
+        <aside data-agent-region="right panel" style={{ width: rightRailWidth }} className={`relative bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col ${panelOpen ? "z-[60]" : "z-20"} shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300`}>
           {/* The agent panel slots into this rail rather than overlaying the page.
               Closing it restores the trending list exactly as it was -- the rail
               is the only thing that changes. */}
+          <RailResizer side="right" width={rightRailWidth} onResize={setRightRailWidth} label="Resize the right panel" />
+          {railTabs}
           {panelOpen ? <div data-agent-ignore className="contents"><AgentPanel headerExtra={railControls} /></div> : (
           <>
           <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 backdrop-blur flex items-start justify-between">
