@@ -19,6 +19,7 @@ const LABELS: Record<string, string> = {
   sleeper_find_leagues: 'finding your leagues',
   sleeper_list_teams: 'listing teams',
   sleeper_analyze_roster: 'analyzing your roster',
+  sleeper_matchup: 'breaking down your matchup',
   sleeper_waiver_targets: 'scanning the waiver wire',
   get_status: 'checking data freshness',
   open_screen: 'opening the page',

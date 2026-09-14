@@ -459,6 +459,64 @@ def sleeper_analyze_roster(league_id: str, roster_id: int, week: int = 0) -> str
 
 
 @mcp.tool()
+def sleeper_matchup(league_id: str, roster_id: int, week: int = 0) -> str:
+    """This week's fantasy opponent, head to head, for a Sleeper roster.
+
+    Both set lineups slot by slot with projection range, game script (spread,
+    total, team implied points), touchdown chance, defense-vs-position rank and
+    injury flags; plus win probability, position-group edges, swing players,
+    and bench fixes for injured or bye-week starters. Use sleeper_list_teams
+    first to get the roster_id.
+    """
+    wk = week or _current_week()
+    data = _get(f"/sleeper/league/{league_id.strip()}/roster/{roster_id}/matchup", {"week": wk})
+    if not data:
+        return f"No matchup returned for roster {roster_id} in league {league_id}."
+    return summarize_matchup(data)
+
+
+def summarize_matchup(data: dict) -> str:
+    you, them = data.get("you") or {}, data.get("opponent")
+    lines = [f"Week {data.get('league', {}).get('week')}: {you.get('team_name')} ({you.get('record')})"]
+    if not them:
+        lines.append(data.get("message") or "No opponent this week.")
+    else:
+        lines[0] += (f" vs {them.get('team_name')} ({them.get('record')}). Projected {you.get('projected_total')}"
+                     f" to {them.get('projected_total')}, win probability {round(100 * (data.get('live_win_probability') or 0))}%.")
+        edges = ", ".join(f"{e['group']} {e['edge']:+.1f}" for e in data.get("group_edges") or [])
+        lines.append(f"Position edges (you minus them): {edges}")
+
+    def player(p: dict) -> str:
+        if p.get("empty"):
+            return f"  {p.get('slot')}: EMPTY"
+        bits = [f"  {p.get('slot')}: {p.get('player_name')} {p.get('team') or ''} vs {p.get('opponent') or '?'}",
+                f"proj {p.get('projection')}"]
+        if p.get("floor") is not None:
+            bits.append(f"range {p['floor']}-{p['ceiling']}")
+        if p.get("injury_flag"):
+            bits.append(f"injury {p['injury_flag']}")
+        if p.get("script"):
+            bits.append(f"script {p['script']['summary']}")
+        if p.get("td"):
+            bits.append(f"TD {round(100 * p['td']['probability'])}% ({p['td']['source']})")
+        if p.get("defense_rank"):
+            d = p["defense_rank"]
+            bits.append(f"defense #{d['rank']}/{d['teams']} vs position (1 = softest)")
+        return "; ".join(bits)
+
+    for label, side in (("Your lineup", you), ("Their lineup", them)):
+        if side:
+            lines.append(f"{label}:")
+            lines.extend(player(p) for p in side.get("starters") or [])
+    for f in data.get("bench_fixes") or []:
+        rep = f.get("replace_with")
+        lines.append(f"Fix: {f['out']} ({f['reason']}) -> " + (f"start {rep['player_name']} ({rep['projection']})" if rep else "no bench fit"))
+    for s in data.get("swing_players") or []:
+        lines.append(f"Swing ({s['side']}): {s['player_name']} {s['floor']}-{s['ceiling']}")
+    return "\n".join(lines)[:6000]
+
+
+@mcp.tool()
 def sleeper_waiver_targets(league_id: str, week: int = 0, limit: int = 15) -> str:
     """Free agents in a Sleeper league, ranked by this app's projection."""
     wk = week or _current_week()

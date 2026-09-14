@@ -22,7 +22,7 @@ export type AppLocation =
   | { view: 'TEAMS' }
   | { view: 'GAME_RANKS' }
   | { view: 'TEAM_PAGE'; team: string; tab: 'overview' | 'builder' }
-  | { view: 'MY_TEAM'; tab: 'LINEUP' | 'WAIVERS' | 'LEAGUE' };
+  | { view: 'MY_TEAM'; tab: 'LINEUP' | 'MATCHUP' | 'WAIVERS' | 'LEAGUE' };
 
 /** Tabs of the player card that opens over a game page. */
 export type CardTab = 'log' | 'visuals' | 'storylines' | 'vegas';
@@ -89,6 +89,7 @@ export function formatAppUrl(loc: AppLocation): string {
         ? `/team/${enc(loc.team)}?tab=builder`
         : `/team/${enc(loc.team)}`;
     case 'MY_TEAM':
+      if (loc.tab === 'MATCHUP') return '/my-team/matchup';
       if (loc.tab === 'WAIVERS') return '/my-team/waivers';
       if (loc.tab === 'LEAGUE') return '/my-team/league';
       return '/my-team';
@@ -175,11 +176,12 @@ export function parseAppUrl(pathnameAndSearch: string): AppLocation | null {
     return { view: 'TEAM_PAGE', team, tab };
   }
 
-  // --- my team: /my-team, /my-team/waivers, /my-team/league ---
+  // --- my team: /my-team, /my-team/matchup, /my-team/waivers, /my-team/league ---
   if (first === 'my-team' || first === 'my_team') {
     if (segs.length === 1) return { view: 'MY_TEAM', tab: 'LINEUP' };
     if (segs.length === 2) {
       const sub = segs[1].toLowerCase();
+      if (sub === 'matchup') return { view: 'MY_TEAM', tab: 'MATCHUP' };
       if (sub === 'waivers') return { view: 'MY_TEAM', tab: 'WAIVERS' };
       if (sub === 'league') return { view: 'MY_TEAM', tab: 'LEAGUE' };
     }

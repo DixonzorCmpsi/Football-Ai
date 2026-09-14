@@ -85,7 +85,7 @@ NAV_SCREENS = {
     "tiers", "teams", "ranks", "my_team",
 }
 # Tabs only valid with my_team (see open_screen).
-MY_TEAM_TABS = {"lineup", "waivers", "league"}
+MY_TEAM_TABS = {"lineup", "matchup", "waivers", "league"}
 
 MAX_COMPARE_IDS = 4
 
@@ -252,6 +252,8 @@ def format_url(view: str, **kw: Any) -> str:
         return f"/team/{_enc(kw['team'])}?tab=builder" if tab == "builder" else f"/team/{_enc(kw['team'])}"
     if v == "MY_TEAM":
         tab = kw.get("tab", "LINEUP")
+        if tab == "MATCHUP":
+            return "/my-team/matchup"
         if tab == "WAIVERS":
             return "/my-team/waivers"
         if tab == "LEAGUE":
@@ -347,8 +349,8 @@ def open_screen(screen: str, tab: str = "") -> ScreenResult:
 
     Use this when the user asks to go somewhere or see something, or when the
     page answers better than words. For a specific player use open_player; for
-    a game use open_game. ``tab`` applies to my_team only: lineup, waivers, or
-    league.
+    a game use open_game. ``tab`` applies to my_team only: lineup, matchup
+    (this week's opponent, head to head), waivers, or league.
     """
     key = (screen or "").strip().lower().replace("-", "_").replace(" ", "_")
     if key not in NAV_SCREENS:
@@ -360,7 +362,7 @@ def open_screen(screen: str, tab: str = "") -> ScreenResult:
         t = (tab or "lineup").strip().lower()
         if t not in MY_TEAM_TABS:
             return ScreenResult(
-                f"'{tab}' is not a my_team tab. Use lineup, waivers, or league."
+                f"'{tab}' is not a my_team tab. Use lineup, matchup, waivers, or league."
             )
         path = format_url("MY_TEAM", tab=t.upper())
         return ScreenResult(

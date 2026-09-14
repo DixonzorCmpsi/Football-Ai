@@ -1,14 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff, Scale, Check, X } from 'lucide-react';
+import { Loader2, Search, Users, TrendingUp, AlertTriangle, CheckCircle2, ArrowLeftRight, ChevronRight, Pin, PinOff, Scale, Check, X, RefreshCw } from 'lucide-react';
 import PlayerCompareModal from './PlayerCompareModal';
 import LeagueInsights from './LeagueInsights';
 import type { LeagueInsightsData } from './LeagueInsights';
+import FantasyMatchup from './FantasyMatchup';
+import type { FantasyMatchupData } from './FantasyMatchup';
 import {
   fetchSleeperUser,
   fetchSleeperLeague,
   fetchSleeperRosterAnalysis,
   fetchSleeperWaivers,
   fetchSleeperLeagueInsights,
+  fetchSleeperMatchup,
   type SleeperLeague,
   type SleeperTeam,
 } from '../lib/api';
@@ -31,7 +34,7 @@ export interface SleeperViewProps {
 }
 
 export type Stage = 'USER' | 'LEAGUE' | 'TEAM';
-export type Tab = 'LINEUP' | 'WAIVERS' | 'LEAGUE';
+export type Tab = 'LINEUP' | 'MATCHUP' | 'WAIVERS' | 'LEAGUE';
 
 const num = (v: unknown) => {
   const n = Number(v);
@@ -186,6 +189,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
   const [analysis, setAnalysis] = useState<any>(null);
   const [waivers, setWaivers] = useState<any>(null);
   const [leagueData, setLeagueData] = useState<LeagueInsightsData | null>(null);
+  const [matchup, setMatchup] = useState<FantasyMatchupData | null>(null);
   const [tab, setTabState] = useState<Tab>('LINEUP');
   // onTabChange may come and go (App may pass a new callback identity), so hold
   // it in a ref and expose a never-changing setTab. That keeps the dozen
@@ -303,6 +307,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       setAnalysis(await fetchSleeperRosterAnalysis(league.league_id, rosterId, week));
       setWaivers(null);
       setLeagueData(null);
+      setMatchup(null);
       setTab('LINEUP');
       saveSession({ rosterId });
       setPinned((prev) => {
@@ -323,6 +328,19 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     });
   }, [league, week, waivers, run, setTab]);
 
+  // Matchup data changes through the week (injuries, lines, lineups set), so it
+  // refetches whenever it's stale for this roster/week, and on demand.
+  const loadMatchup = useCallback((force = false) => {
+    if (!league || !analysis) return;
+    setTab('MATCHUP');
+    const fresh = matchup && matchup.league.week === week && matchup.league.league_id === league.league_id
+      && matchup.you.roster_id === analysis.roster_id;
+    if (fresh && !force) return;
+    run(async () => {
+      setMatchup(await fetchSleeperMatchup(league.league_id, analysis.roster_id, week));
+    });
+  }, [league, analysis, week, matchup, run, setTab]);
+
   const loadLeague = useCallback(() => {
     if (!league) return;
     setTab('LEAGUE');
@@ -342,10 +360,13 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
     if (!requestedTab || requestedTab.nonce === appliedRequest.current) return;
     if (stage !== 'TEAM' || !league) return; // not connected yet: retry once it is
     appliedRequest.current = requestedTab.nonce;
-    if (requestedTab.tab === 'WAIVERS') loadWaivers();
+    if (requestedTab.tab === 'MATCHUP') {
+      if (!analysis) { appliedRequest.current = null; return; } // needs the roster; retry once it loads
+      loadMatchup();
+    } else if (requestedTab.tab === 'WAIVERS') loadWaivers();
     else if (requestedTab.tab === 'LEAGUE') loadLeague();
     else setTab('LINEUP');
-  }, [requestedTab, stage, league, loadWaivers, loadLeague, setTab]);
+  }, [requestedTab, stage, league, analysis, loadMatchup, loadWaivers, loadLeague, setTab]);
 
   const openPinned = useCallback((pin: PinnedLeague) => {
     run(async () => {
@@ -406,6 +427,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       const t = teams.find((x) => x.roster_id === analysis.roster_id);
       out.push({ label: t?.team_name || `Roster ${analysis.roster_id}`, onClick: tab !== 'LINEUP' ? () => setTab('LINEUP') : undefined });
     }
+    if (analysis && tab === 'MATCHUP') out.push({ label: 'Matchup' });
     if (analysis && tab === 'WAIVERS') out.push({ label: 'Waiver wire' });
     if (analysis && tab === 'LEAGUE') out.push({ label: 'League' });
     return out;
@@ -661,6 +683,14 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
               Lineup
             </button>
             <button
+              onClick={() => loadMatchup()}
+              data-testid="sleeper-tab-matchup"
+              data-active={tab === 'MATCHUP'}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold ${tab === 'MATCHUP' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+            >
+              Matchup
+            </button>
+            <button
               onClick={loadWaivers}
               data-testid="sleeper-tab-waivers"
               data-active={tab === 'WAIVERS'}
@@ -693,7 +723,24 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
             </div>
           </div>
 
-          {tab === 'LEAGUE' ? (
+          {tab === 'MATCHUP' ? (
+            matchup ? (
+              <div className="space-y-2">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => loadMatchup(true)}
+                    disabled={loading}
+                    data-testid="matchup-refresh"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500 hover:text-blue-600 disabled:opacity-40"
+                  >
+                    <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> Refresh lines &amp; lineups
+                  </button>
+                </div>
+                <FantasyMatchup data={matchup} onOpenHistory={onOpenHistory} />
+              </div>
+            ) : null
+          ) : tab === 'LEAGUE' ? (
             leagueData ? (
               <LeagueInsights data={leagueData} onFindWaivers={() => loadWaivers()} />
             ) : null
@@ -820,9 +867,9 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
         </div>
       )}
 
-      {/* Compare bar: bottom-left, clear of the assistant button on the right. */}
+      {/* Compare bar: centered above the assistant button. */}
       {analysis && compareIds.length > 0 && (
-        <div className="fixed z-40 bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 xl:left-[22rem] xl:translate-x-0 flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full bg-slate-900 text-white shadow-xl max-w-[calc(100vw-2rem)]" data-testid="sleeper-compare-bar">
+        <div className="fixed z-40 bottom-36 md:bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-full bg-slate-900 text-white shadow-xl max-w-[calc(100vw-2rem)]" data-testid="sleeper-compare-bar">
           <Scale size={14} className="shrink-0" />
           <span className="text-[12px] font-bold truncate">
             {compareIds.length === 1 ? `${compareNames[0]}: pick one more` : compareNames.join(' vs ')}

@@ -25,6 +25,7 @@ describe('appUrl round-trips', () => {
   it('TEAM_PAGE overview', () => roundTrip({ view: 'TEAM_PAGE', team: 'BUF', tab: 'overview' }));
   it('TEAM_PAGE builder', () => roundTrip({ view: 'TEAM_PAGE', team: 'NE', tab: 'builder' }));
   it('MY_TEAM lineup', () => roundTrip({ view: 'MY_TEAM', tab: 'LINEUP' }));
+  it('MY_TEAM matchup', () => roundTrip({ view: 'MY_TEAM', tab: 'MATCHUP' }));
   it('MY_TEAM waivers', () => roundTrip({ view: 'MY_TEAM', tab: 'WAIVERS' }));
   it('MY_TEAM league', () => roundTrip({ view: 'MY_TEAM', tab: 'LEAGUE' }));
 });

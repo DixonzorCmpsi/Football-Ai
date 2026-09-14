@@ -44,6 +44,7 @@ class TestFormatUrl:
 
     def test_my_team_tabs(self):
         assert sa.format_url("MY_TEAM") == "/my-team"
+        assert sa.format_url("MY_TEAM", tab="MATCHUP") == "/my-team/matchup"
         assert sa.format_url("MY_TEAM", tab="WAIVERS") == "/my-team/waivers"
         assert sa.format_url("MY_TEAM", tab="LEAGUE") == "/my-team/league"
 
@@ -176,6 +177,7 @@ class TestOpenScreen:
         assert sa.open_screen("tiers").path == "/tiers"
         assert sa.open_screen("my_team").path == "/my-team"
         assert sa.open_screen("my_team", "league").path == "/my-team/league"
+        assert sa.open_screen("my_team", "matchup").path == "/my-team/matchup"
         assert sa.open_screen("my_team", "waivers").path == "/my-team/waivers"
         assert sa.open_screen("my_team", "lineup").path == "/my-team"
 

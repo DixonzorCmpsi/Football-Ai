@@ -60,6 +60,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "sleeper_find_leagues",
     "sleeper_list_teams",
     "sleeper_analyze_roster",
+    "sleeper_matchup",
     "sleeper_waiver_targets",
     "get_status",
 ) + tuple(name for name, _fn in SCREEN_ACTION_TOOLS) + tuple(name for name, _fn in UI_CONTROL_TOOLS) + tuple(
