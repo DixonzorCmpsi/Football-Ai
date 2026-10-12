@@ -571,7 +571,9 @@ def main():
                 if OUTCOMES.get(step["script"]) in ("failed", "missing"):
                     UPLOAD_PROBLEMS.setdefault(step["script"], []).append(table)
                     continue
-                if not push_to_postgres(csv, table, mode, engine, skipped=was_skipped):
+                # `is False`: the upload paths that succeed return True or nothing at all;
+                # only an explicit False means the table was not loaded.
+                if push_to_postgres(csv, table, mode, engine, skipped=was_skipped) is False:
                     UPLOAD_PROBLEMS.setdefault(step["script"], []).append(table)
 
     return summarize(steps_to_run)

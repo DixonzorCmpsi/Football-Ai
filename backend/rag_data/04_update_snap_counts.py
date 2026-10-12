@@ -6,7 +6,7 @@ import sys
 import psycopg2
 from datetime import datetime
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer, util
+from rapidfuzz import fuzz, process, utils as fuzz_utils
 
 # --- Configuration ---
 load_dotenv()
@@ -29,8 +29,11 @@ TRACKED_POSITIONS = [
     'DE', 'DT', 'LB', 'CB', 'S', 'DB', 'ILB', 'OLB', 'NT', 'SS', 'FS', 'DL', 'EDGE'
 ]
 OFFENSIVE_POSITIONS = TRACKED_POSITIONS  # Backwards-compatible alias
-MODEL_NAME = 'all-MiniLM-L6-v2' 
-AI_MATCH_THRESHOLD = 0.80 
+# Names the snap-count source spells differently from our profiles ('Olu Fashanu' vs
+# 'Olumuyiwa Fashanu', a missing 'Jr.'). Matched only against the SAME team's roster, so the
+# pool is a few dozen names. This used to be a sentence-embedding model (sentence-transformers,
+# which drags in torch: ~2 GB, and the ETL failed outright on any machine without it).
+FUZZY_MATCH_THRESHOLD = 80  # rapidfuzz WRatio, 0-100
 
 # STRICT Column Definition for safe concatenation.
 # `pfr_id` is included so downstream joins can always use a single key —
@@ -211,12 +214,7 @@ def main():
     # --- STRATEGY C: AI Semantic Match ---
     final_c = None
     if len(unmatched_b) > 0:
-        print(f"Strategy C: AI Semantic Matching ({len(unmatched_b)} remaining)...")
-        try:
-            model = SentenceTransformer(MODEL_NAME)
-        except Exception as e: 
-            print(f"   ⚠️ Could not load AI model: {e}")
-            return
+        print(f"Strategy C: Fuzzy Name Matching ({len(unmatched_b)} remaining)...")
 
         team_rosters = {}
         for row in df_profiles.iter_rows(named=True):
@@ -234,21 +232,19 @@ def main():
             if team in team_rosters:
                 candidates = list(team_rosters[team].keys())
                 if candidates:
-                    emb1 = model.encode(snap_name, convert_to_tensor=True)
-                    emb2 = model.encode(candidates, convert_to_tensor=True)
-                    scores = util.cos_sim(emb1, emb2)
-                    best_idx = int(scores.argmax())
-                    best_score = float(scores.max())
-                    
-                    if best_score >= AI_MATCH_THRESHOLD:
-                        best_match = candidates[best_idx]
+                    best = process.extractOne(
+                        snap_name, candidates, scorer=fuzz.WRatio,
+                        processor=fuzz_utils.default_process, score_cutoff=FUZZY_MATCH_THRESHOLD,
+                    )
+                    if best:
+                        best_match, best_score, _ = best
                         recovered_data.append({
                             "snap_name": snap_name,
                             "team_abbr": team,
                             "real_name": best_match,
                             "player_id": team_rosters[team][best_match]
                         })
-                        print(f"  -> AI Match: '{snap_name}' ≈ '{best_match}' ({best_score:.2f})")
+                        print(f"  -> Fuzzy Match: '{snap_name}' ≈ '{best_match}' ({best_score:.0f})")
 
         if recovered_data:
             df_rec = pl.DataFrame(recovered_data)

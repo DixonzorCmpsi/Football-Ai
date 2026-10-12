@@ -45,8 +45,11 @@ services:
       # A missing database must be loud, never a silent fall back to stale CSVs.
       ALLOW_CSV_FALLBACK: "false"
       RESTART_AFTER_ETL: "false"
-      # First boot after a restore: leave false, the 06:00 job refreshes the data daily.
-      RUN_ETL_ON_STARTUP: ${RUN_ETL_ON_STARTUP:-false}
+      # Every start runs the ETL in the background (about 15 minutes on the 1 GB VM, which
+      # has swap for it). A new container has none of the CSV artifacts the pipeline writes,
+      # so this is what guarantees the data is current after every deploy; the 06:00 job
+      # keeps it current after that.
+      RUN_ETL_ON_STARTUP: ${RUN_ETL_ON_STARTUP:-true}
       TRUST_PROXY_HEADERS: "true"
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
       # Secrets (the assistant's model key, etc.) come from Secret Manager through the
