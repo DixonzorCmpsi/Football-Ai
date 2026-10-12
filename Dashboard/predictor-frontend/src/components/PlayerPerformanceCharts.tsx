@@ -17,15 +17,18 @@ import {
   LabelList,
 } from 'recharts';
 import type { HistoryEntry } from '../hooks/useNflData';
+import { SERIES_COLORS } from './visualSeries';
 
 interface Props {
   rows: HistoryEntry[];
   position: string;
   season: number;
-  teamColor: string;
+  teamColor?: string;
+  /** This player's colour for the radar and its numbers; matters when he is one of several. */
+  color?: string;
 }
 
-interface RadarAxisDef {
+export interface RadarAxisDef {
   key: keyof HistoryEntry;
   label: string;
   max: number;
@@ -33,7 +36,7 @@ interface RadarAxisDef {
 
 // Five-axis "skeleton" per position group — the stats that best describe
 // that position's usage/production, normalized against a rough per-game ceiling.
-const RADAR_AXES: Record<string, RadarAxisDef[]> = {
+export const RADAR_AXES: Record<string, RadarAxisDef[]> = {
   QB: [
     { key: 'passing_yds', label: 'Pass Yds', max: 350 },
     { key: 'passing_tds', label: 'Pass TDs', max: 3 },
@@ -64,9 +67,9 @@ const RADAR_AXES: Record<string, RadarAxisDef[]> = {
   ],
 };
 
-// Fixed vibrant accent for the charts — deliberately NOT team color, since a
-// black/silver team (Raiders, etc.) would render an invisible-looking chart.
-const ACCENT = '#ef4444'; // red-500
+// The radar takes the player's series colour (see visualSeries.ts) — deliberately NOT
+// team color, since a black/silver team (Raiders, etc.) would render an
+// invisible-looking chart, and not red, which reads as "bad" next to the bars.
 
 // Three-tier, relative-to-THIS-player's-own-season-average color, shared with
 // the history table so "green" means the same thing in both views: a game
@@ -85,7 +88,7 @@ export function pointColor(points: number, avg: number): string {
 
 // ───────────────────────────────────────── Lightweight modal shell
 
-const ChartModal: React.FC<{ title: string; onClose: () => void; children: React.ReactNode }> = ({
+export const ChartModal: React.FC<{ title: string; onClose: () => void; children: React.ReactNode }> = ({
   title,
   onClose,
   children,
@@ -112,7 +115,7 @@ const ChartModal: React.FC<{ title: string; onClose: () => void; children: React
   </div>
 );
 
-const ExpandButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+export const ExpandButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
   <button
     onClick={onClick}
     className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
@@ -122,7 +125,7 @@ const ExpandButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
   </button>
 );
 
-const PlayerPerformanceCharts: React.FC<Props> = ({ rows, position, season }) => {
+const PlayerPerformanceCharts: React.FC<Props> = ({ rows, position, season, color = SERIES_COLORS[0] }) => {
   const [expanded, setExpanded] = useState<'radar' | 'bar' | null>(null);
   const [selectedWeek, setSelectedWeek] = useState<HistoryEntry | null>(null);
 
@@ -169,11 +172,11 @@ const PlayerPerformanceCharts: React.FC<Props> = ({ rows, position, season }) =>
     const raw = radarData[index]?.raw;
     if (raw == null) return null;
     return (
-      // Light text with a dark halo: the accent-on-accent label vanished inside
-      // the red polygon. The halo keeps it readable on the fill and on either theme.
+      // The player's own colour with a dark halo, so the number stays readable on its
+      // own fill and on either theme.
       <text
         x={x} y={y} dy={-8} textAnchor="middle" fontSize={11} fontWeight={800}
-        fill="#f8fafc" stroke="#0f172a" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke"
+        fill={color} stroke="#0f172a" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke"
       >
         {raw.toFixed(1)}
       </text>
@@ -182,18 +185,18 @@ const PlayerPerformanceCharts: React.FC<Props> = ({ rows, position, season }) =>
 
   const RadarViz = ({ height }: { height: number }) => (
     <ResponsiveContainer width="100%" height={height}>
-      <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="82%">
+      <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="70%" margin={{ top: 16, right: 44, bottom: 16, left: 44 }}>
         <PolarGrid stroke="rgba(148,163,184,0.3)" />
         <PolarAngleAxis dataKey="axis" tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 700 }} />
         <PolarRadiusAxis angle={90} domain={[0, 100]} tick={false} axisLine={false} />
         <Radar
           name="Per-game avg"
           dataKey="value"
-          stroke={ACCENT}
-          fill={ACCENT}
-          fillOpacity={0.45}
+          stroke={color}
+          fill={color}
+          fillOpacity={0.35}
           strokeWidth={2.5}
-          dot={{ r: 3, fill: ACCENT, stroke: '#fff', strokeWidth: 1 }}
+          dot={{ r: 3, fill: color, stroke: '#fff', strokeWidth: 1 }}
           label={radarVertexLabel}
         />
         <Tooltip

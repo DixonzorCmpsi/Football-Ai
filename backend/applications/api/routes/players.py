@@ -426,6 +426,234 @@ def refresh_storylines_now(player_id: str, limit: int = 10):
     }
 
 
+
+
+_SCHEDULE_DATES: dict = {}
+_PLAYERS_TABLE: dict = {}
+
+
+def _game_date(season: int, week, team=None):
+    """ISO date of `team`'s game in (season, week), from the nflreadpy schedule.
+
+    Keyed by team because a week's games span Thursday to Monday; the week's first
+    kickoff is the wrong date for most players.
+    """
+    if season not in _SCHEDULE_DATES:
+        dates: dict = {}
+        try:
+            import nflreadpy as nfl
+            sched = nfl.load_schedules([season])
+            for wk, day, home, away in sched.select(["week", "gameday", "home_team", "away_team"]).iter_rows():
+                for t in (home, away):
+                    dates[(int(wk), get_team_abbr(t))] = str(day)
+        except Exception as e:
+            logger.warning(f"Schedule dates unavailable for {season}: {e}")
+        _SCHEDULE_DATES[season] = dates
+    try:
+        return _SCHEDULE_DATES[season].get((int(week), get_team_abbr(team)))
+    except (TypeError, ValueError):
+        return None
+
+
+_RANK_CACHE: dict = {}
+
+
+def _season_position_table():
+    """Per-player current-season fantasy totals, cached until the stats frame reloads.
+
+    Rows: player_id -> {position, team, games, total, ppg}. Position comes from the
+    player's own stat rows (falling back to the profile), team from their latest game.
+    """
+    cur = model_data.get('df_player_stats', pl.DataFrame())
+    key = (cur.height, model_data.get('data_loaded_at'))
+    if _RANK_CACHE.get('key') == key:
+        return _RANK_CACHE['table']
+    table: dict = {}
+    if not cur.is_empty() and 'player_id' in cur.columns:
+        frame = cur
+        if 'season_type' in frame.columns:
+            frame = frame.filter(pl.col('season_type').fill_null('REG') == 'REG')
+        frame = frame.unique(subset=['player_id', 'week'], keep='first', maintain_order=True)
+        if 'week' in frame.columns:
+            frame = frame.sort('week')
+        for row in frame.iter_rows(named=True):
+            pid = row.get('player_id')
+            if not pid:
+                continue
+            e = table.setdefault(pid, {"position": None, "team": None, "games": 0, "total": 0.0})
+            e["position"] = row.get('position') or e["position"]
+            e["team"] = row.get('team') or e["team"]
+            e["games"] += 1
+            e["total"] += float(calculate_fantasy_points(row))
+    for e in table.values():
+        e["ppg"] = e["total"] / e["games"] if e["games"] else 0.0
+    _RANK_CACHE['key'] = key
+    _RANK_CACHE['table'] = table
+    return table
+
+
+@router.get("/player/{player_id}/ranks")
+def get_player_ranks(player_id: str):
+    """Where the player sits among his position this season, league-wide and on his team.
+
+    Ranked by total fantasy points from the weekly stats (the app's own scoring), so it
+    reflects what he has actually produced, not a projection. `ppg_*` ranks only count
+    players who have played at least half of the games the busiest player at the
+    position has, so a one-game wonder doesn't top the per-game list.
+    """
+    table = _season_position_table()
+    me = table.get(player_id)
+    if not me or not me["position"]:
+        return {"player_id": player_id, "ranked": False}
+    pos = me["position"]
+    same = {pid: e for pid, e in table.items() if e["position"] == pos}
+
+    def rank_of(pool: dict, field: str):
+        order = sorted(pool.items(), key=lambda kv: (-kv[1][field], -kv[1]["total"]))
+        for i, (pid, _) in enumerate(order, 1):
+            if pid == player_id:
+                return i, len(order)
+        return None, len(order)
+
+    team_pool = {pid: e for pid, e in same.items() if e["team"] == me["team"]}
+    most_games = max((e["games"] for e in same.values()), default=0)
+    qualified = {pid: e for pid, e in same.items() if e["games"] >= max(1, most_games / 2) or pid == player_id}
+    team_qualified = {pid: e for pid, e in qualified.items() if e["team"] == me["team"]}
+
+    nfl_rank, nfl_of = rank_of(same, "total")
+    team_rank, team_of = rank_of(team_pool, "total")
+    ppg_rank, ppg_of = rank_of(qualified, "ppg")
+    return {
+        "player_id": player_id,
+        "ranked": True,
+        "position": pos,
+        "team": me["team"],
+        "games": me["games"],
+        "total": round(me["total"], 1),
+        "ppg": round(me["ppg"], 1),
+        "nfl_rank": nfl_rank,
+        "nfl_of": nfl_of,
+        "team_rank": team_rank,
+        "team_of": team_of,
+        "ppg_rank": ppg_rank,
+        "ppg_of": ppg_of,
+        "team_ppg_rank": rank_of(team_qualified, "ppg")[0],
+    }
+
+
+@router.get("/player/{player_id}/bio")
+def get_player_bio(player_id: str):
+    """Bio card: height, weight, date of birth, experience, draft, college.
+
+    The profile frame has no DOB or college, so those come from nflreadpy's player
+    table (loaded once per process). Missing fields are null, never guessed.
+    """
+    if "df" not in _PLAYERS_TABLE:
+        try:
+            import nflreadpy as nfl
+            _PLAYERS_TABLE["df"] = nfl.load_players()
+        except Exception as e:
+            logger.warning(f"nflreadpy players table unavailable: {e}")
+            _PLAYERS_TABLE["df"] = pl.DataFrame()
+    table = _PLAYERS_TABLE["df"]
+    row = {}
+    if not table.is_empty() and "gsis_id" in table.columns:
+        m = table.filter(pl.col("gsis_id") == player_id)
+        if not m.is_empty():
+            row = m.row(0, named=True)
+
+    profile = model_data.get("df_profile", pl.DataFrame())
+    prof = {}
+    if not profile.is_empty() and "player_id" in profile.columns:
+        pm = profile.filter(pl.col("player_id") == player_id)
+        if not pm.is_empty():
+            prof = pm.row(0, named=True)
+
+    age = None
+    birth = row.get("birth_date")
+    if birth:
+        try:
+            from datetime import date
+            b = date.fromisoformat(str(birth)[:10])
+            t = date.today()
+            age = t.year - b.year - ((t.month, t.day) < (b.month, b.day))
+        except ValueError:
+            pass
+    return {
+        "player_id": player_id,
+        "name": row.get("display_name") or prof.get("player_name"),
+        "position": row.get("position") or prof.get("position"),
+        "team": prof.get("team_abbr") or row.get("latest_team"),
+        "jersey_number": row.get("jersey_number"),
+        "height_in": row.get("height") or prof.get("height"),
+        "weight_lb": row.get("weight") or prof.get("weight"),
+        "birth_date": str(birth)[:10] if birth else None,
+        "age": age if age is not None else prof.get("age"),
+        "experience": row.get("years_of_experience"),
+        "college": row.get("college_name"),
+        "draft_year": row.get("draft_year") or prof.get("draft_year"),
+        "draft_round": row.get("draft_round"),
+        "draft_pick": row.get("draft_pick") or prof.get("draft_number"),
+        "draft_team": row.get("draft_team"),
+        "status": row.get("ngs_status_short_description") or prof.get("status"),
+    }
+
+
+_OFFENSE_ORDER = ["QB", "RB", "FB", "LWR", "RWR", "SWR", "TE", "LT", "LG", "C", "RG", "RT"]
+_WR_SLOT_LABELS = {1: "LWR", 2: "RWR", 8: "SWR"}
+
+
+@router.get("/team/{team_abbr}/depth-chart")
+def get_team_depth_chart(team_abbr: str):
+    """A team's current depth chart as ordered slots (QB, RB, LWR...), starter first.
+
+    Built from `df_depth_charts` (nflreadpy). The feed repeats a player across
+    slots and leaves rank ties, so each slot is re-ranked 1..n in feed order with
+    duplicates dropped. `as_of` is the feed's own observation date, not today.
+    """
+    depth = model_data.get("df_depth_charts", pl.DataFrame())
+    team = team_abbr.upper()
+    if depth.is_empty() or "team" not in depth.columns:
+        return {"team": team, "as_of": None, "offense": [], "defense": []}
+    t = depth.filter(pl.col("team") == team)
+    if t.is_empty():
+        return {"team": team, "as_of": None, "offense": [], "defense": []}
+
+    as_of = str(t["dt"].max()) if "dt" in t.columns else None
+    rows = t.sort(["pos_slot", "pos_rank"]).to_dicts()
+
+    slots: dict = {}
+    for r in rows:
+        grp = r.get("pos_grp") or ""
+        side = "offense" if grp.startswith("3WR") else "defense"
+        abb = r.get("pos_abb")
+        if abb == "WR":
+            abb = _WR_SLOT_LABELS.get(r.get("pos_slot"), f"WR{r.get('pos_slot')}")
+        if not abb:
+            continue
+        key = (side, abb)
+        entry = slots.setdefault(key, {"pos": abb, "slot": r.get("pos_slot"), "players": [], "_seen": set()})
+        ident = r.get("gsis_id") or r.get("player_name")
+        if ident in entry["_seen"]:
+            continue
+        entry["_seen"].add(ident)
+        entry["players"].append({
+            "player_id": r.get("gsis_id"),
+            "name": r.get("player_name"),
+            "rank": len(entry["players"]) + 1,
+        })
+
+    def out(side: str, order=None):
+        items = [dict((k, v) for k, v in e.items() if k != "_seen") for (sd, _), e in slots.items() if sd == side]
+        if order:
+            items.sort(key=lambda e: order.index(e["pos"]) if e["pos"] in order else len(order))
+        else:
+            items.sort(key=lambda e: (e["slot"] if e["slot"] is not None else 99))
+        return items
+
+    return {"team": team, "as_of": as_of, "offense": out("offense", _OFFENSE_ORDER), "defense": out("defense")}
+
+
 @router.get("/player/history/{player_id}")
 async def get_player_history(player_id: str):
     """Return weekly history across the current season plus any cached prior seasons.
@@ -461,6 +689,9 @@ async def get_player_history(player_id: str):
         if not frames:
             return []
         df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
+        # One row per game. A re-appended load once left the same week in the table
+        # several times, which tripled a game in the log and inflated season totals.
+        df = df.unique(subset=['season', 'week'], keep='first', maintain_order=True)
 
         history = []
 
@@ -531,7 +762,23 @@ async def get_player_history(player_id: str):
                 # 2 points apiece, but without these the client can't reconcile a
                 # points breakdown against the total it's given.
                 "interceptions": int(row.get('interceptions') or 0),
-                "fumbles_lost": int(row.get('fumbles_lost') or 0)
+                "fumbles_lost": int(row.get('fumbles_lost') or 0) or int(
+                    (row.get('rushing_fumbles_lost') or 0)
+                    + (row.get('receiving_fumbles_lost') or 0)
+                    + (row.get('sack_fumbles_lost') or 0)
+                ),
+                # Game-log columns (FantasyData-style): split TDs, fumbles, passing line.
+                "team": row.get('team'),
+                "date": _game_date(int(season), wk, row.get('team')),
+                "season_type": row.get('season_type') or "REG",
+                "rushing_tds": int(row.get('rush_touchdown') or 0),
+                "receiving_tds": int(row.get('receiving_touchdown') or 0),
+                "fumbles": int(
+                    (row.get('rushing_fumbles') or 0)
+                    + (row.get('receiving_fumbles') or 0)
+                    + (row.get('sack_fumbles') or 0)
+                ),
+                "completions": int(row.get('completions') or 0),
             })
         return history
     except Exception as e:

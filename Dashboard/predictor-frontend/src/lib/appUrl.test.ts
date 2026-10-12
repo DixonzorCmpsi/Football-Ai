@@ -101,8 +101,13 @@ describe('player cards and player page tabs', () => {
     expect(parseAppUrl('/game/NYJ/TEN?player=<x>')).toEqual({ view: 'GAME', away: 'NYJ', home: 'TEN' });
   });
   it('opens the player page on a chosen view', () => {
-    expect(formatAppUrl({ view: 'HISTORY', playerId: '00-0039890', show: 'table' })).toBe('/player/00-0039890?view=table');
-    expect(parseAppUrl('/player/00-0039890?view=table')).toEqual({ view: 'HISTORY', playerId: '00-0039890', show: 'table' });
+    expect(formatAppUrl({ view: 'HISTORY', playerId: '00-0039890', show: 'depth' })).toBe('/player/00-0039890?view=depth');
+    expect(parseAppUrl('/player/00-0039890?view=depth')).toEqual({ view: 'HISTORY', playerId: '00-0039890', show: 'depth' });
+    expect(parseAppUrl('/player/00-0039890?view=seasons')).toEqual({ view: 'HISTORY', playerId: '00-0039890', show: 'seasons' });
+  });
+  it('still understands the names links used before the tabs were unified', () => {
+    expect(parseAppUrl('/player/00-0039890?view=table')).toEqual({ view: 'HISTORY', playerId: '00-0039890', show: 'log' });
+    expect(parseAppUrl('/game/NYJ/TEN?player=00-0039890&tab=visuals')).toMatchObject({ card: 'visual' });
     expect(parseAppUrl('/player/00-0039890?view=bogus')).toEqual({ view: 'HISTORY', playerId: '00-0039890' });
   });
 });

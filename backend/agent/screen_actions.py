@@ -96,14 +96,22 @@ GSIS_ID_RE = re.compile(r"^00-\d{7}$")
 # What the user asks for -> the tab that shows it. The same words work for the
 # full player page and the card over a game, so "stats", "a chart", "what's going
 # on with him" and "his odds" land on the right tab either way.
+#
+# The tab names are the URL's (see frontend lib/appUrl.ts PlayerTab). The full page
+# and the card show the same seven tabs, in this order.
 PLAYER_VIEW_WORDS = {
-    "stats": "stats", "table": "stats", "log": "stats", "game_log": "stats", "gamelog": "stats", "numbers": "stats",
-    "visuals": "visuals", "visual": "visuals", "charts": "visuals", "chart": "visuals", "graphs": "visuals", "trends": "visuals",
+    "stats": "log", "table": "log", "log": "log", "game_log": "log", "gamelog": "log", "numbers": "log",
+    "depth": "depth", "depth_chart": "depth", "depthchart": "depth", "backup": "depth", "backups": "depth",
+    "starter": "depth", "behind": "depth", "string": "depth", "roster_spot": "depth",
+    "seasons": "seasons", "season_stats": "seasons", "career": "seasons", "year_by_year": "seasons",
+    "visuals": "visual", "visual": "visual", "charts": "visual", "chart": "visual", "graphs": "visual", "trends": "visual",
     "storylines": "storylines", "storyline": "storylines", "news": "storylines", "situation": "storylines", "updates": "storylines",
+    "bio": "bio", "height": "bio", "weight": "bio", "college": "bio", "draft": "bio", "drafted": "bio", "birthday": "bio",
     "vegas": "vegas", "odds": "vegas", "props": "vegas", "lines": "vegas", "betting": "vegas",
 }
-PAGE_VIEW = {"stats": "table", "visuals": "visual", "storylines": "storylines"}
-CARD_TAB = {"stats": "log", "visuals": "visuals", "storylines": "storylines", "vegas": "vegas"}
+PLAYER_TABS = ("log", "depth", "seasons", "visual", "storylines", "bio", "vegas")
+PAGE_VIEW = {tab: tab for tab in PLAYER_TABS}
+CARD_TAB = {tab: tab for tab in PLAYER_TABS}
 
 
 def _player_view(view: str) -> str | None:
@@ -234,7 +242,7 @@ def format_url(view: str, **kw: Any) -> str:
         return f"/compare?ids={','.join(ids)}" if ids else "/compare"
     if v == "HISTORY":
         show = kw.get("show")
-        return f"/player/{_enc(kw['player_id'])}" + (f"?view={show}" if show and show != "storylines" else "")
+        return f"/player/{_enc(kw['player_id'])}" + (f"?view={show}" if show and show != "log" else "")
     if v == "TRENDING":
         return "/trending"
     if v == "PICKS":
@@ -381,15 +389,18 @@ def open_screen(screen: str, tab: str = "") -> ScreenResult:
 def open_player(player: str, view: str = "stats") -> ScreenResult:
     """Open a player's full page, on the tab that answers the question.
 
-    ``view``: "stats" (game-log table, the default: "show me his stats"),
-    "visuals" (charts: "show me a visual", "his trend"), or "storylines" (news:
-    "what's going on with him", "any updates"). Accepts a name or a gsis id; an
-    ambiguous name opens nothing and lists the matches. If the user is on, or
-    asking about, a game, prefer open_player_card, which keeps them on the game.
+    ``view``: "stats" (this season's game log, the default: "show me his stats"),
+    "depth" (his depth chart: "who's behind him", "is he the starter"), "seasons"
+    (every season and his career line), "visuals" (charts: "show me a visual", "his
+    trend"), "storylines" (news: "what's going on with him", "any updates"), "bio"
+    (height, weight, age, college, draft) or "vegas" (odds, props, the game line).
+    Accepts a name or a gsis id; an ambiguous name opens nothing and lists the
+    matches. If the user is on, or asking about, a game, prefer open_player_card,
+    which keeps them on the game.
     """
     chosen = _player_view(view)
     if chosen not in PAGE_VIEW:
-        return ScreenResult("view is stats, visuals or storylines. (Odds and props are on the card: use open_player_card with tab vegas.)")
+        return ScreenResult("view is stats, depth chart, seasons, visuals, storylines, bio or vegas.")
     pid, resolved_name, note = _resolve_player(player)
     if not pid:
         return ScreenResult(note or f"Could not resolve '{player}'.")
@@ -406,14 +417,15 @@ def open_player_card(player: str, tab: str = "stats", week: int = 0) -> ScreenRe
     """Open a player's card over his game's page, on the tab that answers the question.
 
     Use it for "take me to the Jets game and show me AD Mitchell's stats": the
-    user stays on the game with the card open. ``tab``: "stats" (game log),
-    "visuals" (charts), "storylines" (news, "what's his situation"), or "vegas"
-    (odds, props, the game line). ``week`` 0 is the current week. The game is
-    found from the player's team, so there's no need to open the game first.
+    user stays on the game with the card open. ``tab``: "stats" (game log), "depth"
+    (depth chart), "seasons" (every season), "visuals" (charts), "storylines" (news,
+    "what's his situation"), "bio", or "vegas" (odds, props, the game line). ``week``
+    0 is the current week. The game is found from the player's team, so there's no
+    need to open the game first.
     """
     chosen = _player_view(tab)
     if chosen not in CARD_TAB:
-        return ScreenResult("tab is stats, visuals, storylines or vegas.")
+        return ScreenResult("tab is stats, depth chart, seasons, visuals, storylines, bio or vegas.")
     pid, resolved_name, note = _resolve_player(player)
     if not pid:
         return ScreenResult(note or f"Could not resolve '{player}'.")

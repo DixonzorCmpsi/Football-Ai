@@ -82,6 +82,13 @@ export interface HistoryEntry {
   carries: number;
   interceptions?: number;
   fumbles_lost?: number;
+  team?: string;
+  date?: string | null;
+  season_type?: string;
+  rushing_tds?: number;
+  receiving_tds?: number;
+  fumbles?: number;
+  completions?: number;
 }
 
 export interface InjuryData {

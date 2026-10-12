@@ -201,7 +201,7 @@ class TestOpenPlayer:
             {"player_id": "00-0037834", "player_name": "Brock Purdy",
              "position": "QB", "team_abbr": "SF"}])
         out = sa.open_player("purdy")
-        assert out.path == "/player/00-0037834?view=table", "stats is the default view"
+        assert out.path == "/player/00-0037834", "stats (the game log) is the default view"
         assert "Brock Purdy" in out.text
 
     def test_label_uses_resolved_name_not_model_spelling(self, monkeypatch):
@@ -209,13 +209,13 @@ class TestOpenPlayer:
             {"player_id": "00-0031234", "player_name": "Kyle Williams",
              "position": "WR", "team_abbr": "NE"}])
         out = sa.open_player("kyle wiliams")  # model's typo
-        assert out.path == "/player/00-0031234?view=table"
+        assert out.path == "/player/00-0031234"
         assert "Kyle Williams" in out.label
         assert "wiliams" not in out.label
 
     def test_gsis_id_short_circuits(self):
         out = sa.open_player("00-0037834", view="storylines")
-        assert out.path == "/player/00-0037834"
+        assert out.path == "/player/00-0037834?view=storylines"
 
     def test_bare_digits_are_names_not_ids(self, monkeypatch):
         """A jersey number is not an id; it goes through search."""
@@ -349,27 +349,30 @@ class TestPlayerViews:
         ))
 
     @pytest.mark.parametrize("asked, path", [
-        ("stats", "/player/00-0037834?view=table"),
-        ("table", "/player/00-0037834?view=table"),
+        ("stats", "/player/00-0037834"),  # the game log is the page's default tab
+        ("table", "/player/00-0037834"),
         ("a visual", "/player/00-0037834?view=visual"),
-        ("his game log", "/player/00-0037834?view=table"),
+        ("his game log", "/player/00-0037834"),
         ("dance", None),  # no word fits; the tool says which views exist
         ("charts", "/player/00-0037834?view=visual"),
-        ("news", "/player/00-0037834"),
-        ("storylines", "/player/00-0037834"),
+        ("news", "/player/00-0037834?view=storylines"),
+        ("storylines", "/player/00-0037834?view=storylines"),
+        ("his depth chart", "/player/00-0037834?view=depth"),
+        ("who is behind him", "/player/00-0037834?view=depth"),
+        ("his career", "/player/00-0037834?view=seasons"),
+        ("what college", "/player/00-0037834?view=bio"),
+        ("odds", "/player/00-0037834?view=vegas"),
     ])
     def test_player_page_view(self, asked, path):
         assert sa.open_player("Brock Purdy", view=asked).path == path
 
-    def test_odds_are_on_the_card_not_the_page(self):
-        out = sa.open_player("Brock Purdy", view="odds")
-        assert out.path is None and "open_player_card" in out.text
-
     @pytest.mark.parametrize("asked, suffix", [
         ("stats", ""),
-        ("visuals", "&tab=visuals"),
+        ("visuals", "&tab=visual"),
         ("situation", "&tab=storylines"),
         ("props", "&tab=vegas"),
+        ("depth chart", "&tab=depth"),
+        ("his bio", "&tab=bio"),
     ])
     def test_card_over_the_players_game(self, asked, suffix):
         out = sa.open_player_card("Brock Purdy", tab=asked, week=1)

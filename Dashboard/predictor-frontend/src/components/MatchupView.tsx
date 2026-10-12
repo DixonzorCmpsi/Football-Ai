@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, Users, TrendingUp, ListOrdered } from 'lucide-react';
 import MatchupBanner from './MatchupBanner';
 import PlayerCard from './PlayerCard';
-import PlayerModal from './PlayerModal';
+import PlayerPopup from './PlayerPopup';
 import MatchupInsights from './MatchupInsights';
 import { GameCard, gameKey } from './GameRanksView';
 import type { FetchedMatchup } from './GameRanksView';
@@ -89,11 +89,9 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
     if (controlled) onCardChange?.(next);
     else setOwnCard(next);
   }, [controlled, onCardChange]);
-  const setSelectedPlayer = useCallback((p: PlayerData | null) => setCard(p ? { playerId: p.player_id, tab: 'log' } : null), [setCard]);
-  const selectedPlayer = useMemo(() => {
-    if (!shownCard || !data) return null;
-    return [...(data.home_roster ?? []), ...(data.away_roster ?? [])].find((p) => p.player_id === shownCard.playerId) ?? null;
-  }, [shownCard, data]);
+  // A roster card opens that player's full view as a popup. The card (player + tab) is
+  // URL-controlled by App, so a link or the assistant can open it on a given tab.
+  const openPlayer = useCallback((p: PlayerData) => setCard({ playerId: p.player_id, tab: 'log' }), [setCard]);
   const [loading, setLoading] = useState(true);
   const [filterPos, setFilterPos] = useState<PositionFilter>('ALL');
   const [activeTab, setActiveTab] = useState<ViewTab>('ROSTER');
@@ -379,7 +377,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                             <PlayerCard
                                 data={p}
                                 teamColor={getTeamColor(away)}
-                                onClick={setSelectedPlayer}
+                                onClick={openPlayer}
                                 isSelected={compareList.includes(p.player_id)}
                                 onToggleCompare={onToggleCompare}
                             />
@@ -399,7 +397,7 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
                             <PlayerCard
                                 data={p}
                                 teamColor={getTeamColor(home)}
-                                onClick={setSelectedPlayer}
+                                onClick={openPlayer}
                                 isSelected={compareList.includes(p.player_id)}
                                 onToggleCompare={onToggleCompare}
                             />
@@ -507,12 +505,14 @@ const MatchupView: React.FC<MatchupViewProps> = ({ week, home, away, compareList
         )}
       </div>
 
-      {selectedPlayer && shownCard && (
-        <PlayerModal
-          player={selectedPlayer}
-          onClose={() => setSelectedPlayer(null)}
+      {shownCard && (
+        <PlayerPopup
+          playerId={shownCard.playerId}
           tab={shownCard.tab}
           onTabChange={(tab) => setCard({ playerId: shownCard.playerId, tab })}
+          compareList={compareList}
+          onToggleCompare={onToggleCompare}
+          onClose={() => setCard(null)}
         />
       )}
     </div>

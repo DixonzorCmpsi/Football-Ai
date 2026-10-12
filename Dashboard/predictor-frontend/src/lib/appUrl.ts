@@ -24,12 +24,25 @@ export type AppLocation =
   | { view: 'TEAM_PAGE'; team: string; tab: 'overview' | 'builder' }
   | { view: 'MY_TEAM'; tab: 'LINEUP' | 'MATCHUP' | 'WAIVERS' | 'LEAGUE' };
 
-/** Tabs of the player card that opens over a game page. */
-export type CardTab = 'log' | 'visuals' | 'storylines' | 'vegas';
-export const CARD_TABS: CardTab[] = ['log', 'visuals', 'storylines', 'vegas'];
-/** Tabs of the full player page. */
-export type PlayerView = 'table' | 'visual' | 'storylines';
-export const PLAYER_VIEWS: PlayerView[] = ['table', 'visual', 'storylines'];
+/**
+ * Tabs of a player: the card that opens over a game page and the full player page
+ * show the same set, in this order.
+ */
+export type PlayerTab = 'log' | 'depth' | 'seasons' | 'visual' | 'storylines' | 'bio' | 'vegas';
+export const PLAYER_TABS: PlayerTab[] = ['log', 'depth', 'seasons', 'visual', 'storylines', 'bio', 'vegas'];
+export type CardTab = PlayerTab;
+export type PlayerView = PlayerTab;
+export const CARD_TABS = PLAYER_TABS;
+export const PLAYER_VIEWS = PLAYER_TABS;
+
+/** Names links used before the tabs were unified: ?view=table was the game log, ?tab=visuals the charts. */
+const LEGACY_TABS: Record<string, PlayerTab> = { table: 'log', visuals: 'visual' };
+
+export function normalizePlayerTab(raw: string | null | undefined): PlayerTab | null {
+  if (!raw) return null;
+  const tab = LEGACY_TABS[raw] ?? raw;
+  return (PLAYER_TABS as string[]).includes(tab) ? (tab as PlayerTab) : null;
+}
 
 const TEAM_RE = /^[A-Z]{2,3}$/;
 const PLAYER_ID_RE = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -148,8 +161,7 @@ export function parseAppUrl(pathnameAndSearch: string): AppLocation | null {
     const player = params.get('player');
     if (player && PLAYER_ID_RE.test(player)) {
       loc.player = player;
-      const tab = params.get('tab') as CardTab | null;
-      loc.card = tab && CARD_TABS.includes(tab) ? tab : 'log';
+      loc.card = normalizePlayerTab(params.get('tab')) ?? 'log';
     }
     return loc;
   }
@@ -158,8 +170,8 @@ export function parseAppUrl(pathnameAndSearch: string): AppLocation | null {
   if (first === 'player' && segs.length === 2) {
     const pid = segs[1];
     if (!PLAYER_ID_RE.test(pid)) return null;
-    const show = new URLSearchParams(search).get('view') as PlayerView | null;
-    return show && PLAYER_VIEWS.includes(show) ? { view: 'HISTORY', playerId: pid, show } : { view: 'HISTORY', playerId: pid };
+    const show = normalizePlayerTab(new URLSearchParams(search).get('view'));
+    return show ? { view: 'HISTORY', playerId: pid, show } : { view: 'HISTORY', playerId: pid };
   }
 
   // --- team page: /team/{TEAM} or /team/{TEAM}?tab=builder ---

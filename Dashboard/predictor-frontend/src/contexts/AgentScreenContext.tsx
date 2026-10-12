@@ -10,7 +10,7 @@
  * re-render of App on every keystroke of a question would be wasteful.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 export type ScreenEntity = {
@@ -35,7 +35,8 @@ type AgentScreenValue = {
   /** Read the latest without subscribing to re-renders. */
   read: () => ScreenDescriptor;
   setBase: (next: ScreenDescriptor) => void;
-  setDetail: (next: ScreenDescriptor | null) => void;
+  /** Register (or clear, with null) one view's detail under its own key. */
+  setDetail: (key: string, next: ScreenDescriptor | null) => void;
 };
 
 const EMPTY: ScreenDescriptor = { view: '' };
@@ -55,9 +56,23 @@ function merge(base: ScreenDescriptor, detail: ScreenDescriptor | null): ScreenD
 
 export function AgentScreenProvider({ children }: { children: ReactNode }) {
   const [base, setBase] = useState<ScreenDescriptor>(EMPTY);
-  const [detail, setDetail] = useState<ScreenDescriptor | null>(null);
+  // One slot per registering view. A popup (the player page) opens over a view that
+  // has its own detail (the game page); a single shared slot let each wipe the
+  // other. Insertion order is the stacking order: the newest view wins the title.
+  const [details, setDetails] = useState<Record<string, ScreenDescriptor>>({});
+  const setDetail = useCallback((key: string, next: ScreenDescriptor | null) => {
+    setDetails((prev) => {
+      const rest = { ...prev };
+      delete rest[key];
+      if (!next) return key in prev ? rest : prev;
+      return { ...rest, [key]: next };
+    });
+  }, []);
 
-  const screen = useMemo(() => merge(base, detail), [base, detail]);
+  const screen = useMemo(
+    () => Object.values(details).reduce<ScreenDescriptor>((acc, d) => merge(acc, d), base),
+    [base, details],
+  );
   // Mirrored into a ref so the dock can read the descriptor at submit time
   // without every keystroke of a question re-rendering App. Written in an
   // effect, which lands before any user event can read it.
@@ -70,7 +85,7 @@ export function AgentScreenProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AgentScreenValue>(
     () => ({ screen, read, setBase, setDetail }),
-    [screen, read],
+    [screen, read, setDetail],
   );
 
   return <AgentScreenContext.Provider value={value}>{children}</AgentScreenContext.Provider>;
@@ -95,11 +110,12 @@ export function useAgentScreenContext(): AgentScreenValue {
  */
 export function useAgentScreen(descriptor: ScreenDescriptor | null) {
   const { setDetail } = useAgentScreenContext();
+  const key = useId();
   const serialized = JSON.stringify(descriptor);
 
   useEffect(() => {
-    setDetail(descriptor ? (JSON.parse(serialized) as ScreenDescriptor) : null);
-    return () => setDetail(null);
+    setDetail(key, descriptor ? (JSON.parse(serialized) as ScreenDescriptor) : null);
+    return () => setDetail(key, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serialized, setDetail]);
+  }, [serialized, setDetail, key]);
 }
