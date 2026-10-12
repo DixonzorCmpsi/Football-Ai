@@ -2,17 +2,18 @@
 # Copies a local database into the server's, so the site starts with the data you have now
 # instead of rebuilding it from scratch. Overwrites the server's database.
 #
-#   deploy/gcp/restore-db.sh [local-db-container]      (default: football-ai-db-1)
+#   deploy/gcp/restore-db.sh [local-db-container] [database]   (defaults: football-ai-db-1, football_ai)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_common.sh
 source "${HERE}/_common.sh"
 
 LOCAL_DB="${1:-football-ai-db-1}"
+LOCAL_NAME="${2:-football_ai}"
 DUMP="$(mktemp -t football-ai-dump-XXXXXX.sql.gz)"
 
 say "Dumping ${LOCAL_DB}"
-docker exec "$LOCAL_DB" pg_dump -U admin -d football_ai --no-owner --clean --if-exists | gzip > "$DUMP"
+docker exec "$LOCAL_DB" pg_dump -U admin -d "$LOCAL_NAME" --no-owner --clean --if-exists | gzip > "$DUMP"
 ls -lh "$DUMP"
 
 say "Uploading"

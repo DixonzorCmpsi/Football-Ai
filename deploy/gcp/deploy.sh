@@ -63,6 +63,7 @@ GCP_PROJECT_ID=${PROJECT}
 REGISTRY=${REGISTRY}
 TAG=latest
 SITE_ADDRESS=https://${IP}
+DEFAULT_SNI=${IP}
 TLS_MODE=internal
 PUBLIC_APP_URL=https://${IP}
 BASIC_AUTH_USER=admin
@@ -70,6 +71,10 @@ BASIC_AUTH_HASH='\$hash'
 RUN_ETL_ON_STARTUP=false
 ENV
   echo "NEW_LOGIN user=admin password=\$pw"
+fi
+# Servers created before DEFAULT_SNI existed: derive it from the site address.
+if ! grep -q '^DEFAULT_SNI=' ${REMOTE_ROOT}/.env.prod; then
+  echo "DEFAULT_SNI=\$(grep '^SITE_ADDRESS=' ${REMOTE_ROOT}/.env.prod | cut -d= -f2- | sed 's#^https\?://##')" >> ${REMOTE_ROOT}/.env.prod
 fi
 REMOTE
 )"

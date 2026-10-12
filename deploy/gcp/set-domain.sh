@@ -24,7 +24,7 @@ say "Pointing the server at ${DOMAIN}"
 vm_script <<REMOTE
 set -euo pipefail
 f=${REMOTE_ROOT}/.env.prod
-sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=${DOMAIN}|; s|^TLS_MODE=.*|TLS_MODE=${EMAIL}|; s|^PUBLIC_APP_URL=.*|PUBLIC_APP_URL=https://${DOMAIN}|" \$f
+sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=${DOMAIN}|; s|^DEFAULT_SNI=.*|DEFAULT_SNI=${DOMAIN}|; s|^TLS_MODE=.*|TLS_MODE=${EMAIL}|; s|^PUBLIC_APP_URL=.*|PUBLIC_APP_URL=https://${DOMAIN}|" \$f
 cd ${REMOTE_ROOT}/app && ${COMPOSE} up -d --no-build web
 REMOTE
 echo "Open https://${DOMAIN} (the certificate is issued on the first request; give it a minute)."

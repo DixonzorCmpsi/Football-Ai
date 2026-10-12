@@ -160,6 +160,9 @@ PIPELINE_STEPS = [
     # headless-Chrome text scrape that hung the ETL and misread Bovada's new layout.
     {
         "script": "10b_bovada_api_props.py",
+        # Bovada's board is empty between games and when the site changes; the week's lines
+        # come from the schedule feed, so a missing board degrades the props, not the app.
+        "optional": True,
         "uploads": [
              (f"weekly_bovada_game_lines_{SEASON}.csv", "bovada_game_lines", "smart_append"),
              (f"weekly_bovada_player_props_{SEASON}.csv", "bovada_player_props", "smart_append")
@@ -168,6 +171,7 @@ PIPELINE_STEPS = [
     # 13. UPDATE BOVADA RESULTS (Post-game for ML training)
     {
         "script": "14_update_bovada_results.py",
+        "optional": True,
         "uploads": []  # This script updates DB directly
     },
     # 14. FINAL RANKINGS
@@ -181,6 +185,13 @@ PIPELINE_STEPS = [
 
 def get_db_engine(): return create_engine(DB_CONNECTION_STRING)
 
+# What each step actually did. The run used to print "ETL PIPELINE COMPLETE" and exit 0
+# whatever happened, so a step that wrote nothing looked like a success and the data went
+# stale for weeks without anyone being told. Every step now records an outcome, the run
+# ends with a summary, and a failed REQUIRED step makes the run exit non-zero.
+OUTCOMES: dict[str, str] = {}      # script -> ok | skipped | failed | missing
+UPLOAD_PROBLEMS: dict[str, list[str]] = {}   # script -> tables that did not load
+
 def run_external_script(step, engine):
     script_name = step["script"]
     
@@ -191,6 +202,7 @@ def run_external_script(step, engine):
         print(f"\n🔍 Checking if we can skip {script_name}...")
         if check_schema_match(check_file, check_table, engine):
             print(f"   ✅ Schema Match & File Exists ({check_file}). SKIPPING execution.")
+            OUTCOMES[script_name] = "skipped"
             return False 
         else:
             print(f"   ⚠️ Schema mismatch or file missing. PROCEEDING with execution.")
@@ -201,14 +213,17 @@ def run_external_script(step, engine):
     
     if not script_path.exists():
         print(f"❌ Error: Script {script_name} not found.")
+        OUTCOMES[script_name] = "missing"
         return False
 
     try:
         subprocess.run([sys.executable, str(script_path)], check=True, cwd=script_path.parent)
         print(f"✅ FINISHED: {script_name}")
+        OUTCOMES[script_name] = "ok"
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ FAILED: {script_name} code {e.returncode}")
+        OUTCOMES[script_name] = "failed"
         return False
 
 def reset_db_table(table_name, engine):
@@ -224,17 +239,18 @@ def reset_db_table(table_name, engine):
         print(f"      ❌ Error dropping table: {e}")
 
 
-def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
+def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False) -> bool:
+    """Load one CSV into its table. True if the table is now current, False if it was not loaded."""
     current_dir = Path(__file__).parent
     file_path = (current_dir / file_path_str).resolve() if file_path_str.startswith("../") else current_dir / file_path_str
 
     if skipped:
         logger.info(f"Skipping upload for {table_name} (Smart Check Passed).")
-        return
+        return True
 
     if not file_path.exists():
         logger.warning(f"Output file {file_path_str} not found at {file_path}. Skipping upload.")
-        return
+        return False
 
     # Log file size for quick diagnostics
     try:
@@ -454,7 +470,8 @@ def push_to_postgres(file_path_str, table_name, mode, engine, skipped=False):
 
     except Exception as e:
         print(f"   ❌ Upload failed for {table_name}: {e}")
-        return
+        return False
+    return True
 
 
 def check_system_memory_and_swap():
@@ -549,11 +566,44 @@ def main():
         
         if "uploads" in step:
             for csv, table, mode in step["uploads"]:
-                push_to_postgres(csv, table, mode, engine, skipped=was_skipped)
+                # A step that failed has no fresh file to load; loading last run's leftover
+                # CSV would only re-label old data as new.
+                if OUTCOMES.get(step["script"]) in ("failed", "missing"):
+                    UPLOAD_PROBLEMS.setdefault(step["script"], []).append(table)
+                    continue
+                if not push_to_postgres(csv, table, mode, engine, skipped=was_skipped):
+                    UPLOAD_PROBLEMS.setdefault(step["script"], []).append(table)
 
-    print("\n" + "="*50)
-    print("🎉 ETL PIPELINE COMPLETE")
-    print("="*50)
+    return summarize(steps_to_run)
+
+
+def summarize(steps) -> int:
+    """Print what happened per step; return the process exit code (1 if a required step failed)."""
+    optional = {s["script"] for s in steps if s.get("optional")}
+    print("\n" + "=" * 50)
+    print("ETL SUMMARY")
+    print("=" * 50)
+    required_problems, optional_problems = [], []
+    for step in steps:
+        name = step["script"]
+        outcome = OUTCOMES.get(name, "not run")
+        tables = UPLOAD_PROBLEMS.get(name, [])
+        bad = outcome in ("failed", "missing", "not run") or bool(tables)
+        mark = "FAIL" if bad and name not in optional else ("warn" if bad else "ok  ")
+        detail = outcome + (f"; did not load: {', '.join(tables)}" if tables else "")
+        print(f"  [{mark}] {name:<40} {detail}")
+        if bad:
+            (optional_problems if name in optional else required_problems).append(name)
+    if required_problems:
+        print(f"\n❌ ETL INCOMPLETE: required steps failed: {', '.join(required_problems)}")
+        print("   The data behind these steps is NOT current. Run rag_data/audit_data.py to see what is stale.")
+        return 1
+    if optional_problems:
+        print(f"\n⚠️ ETL COMPLETE, DEGRADED: optional sources unavailable: {', '.join(optional_problems)}")
+    else:
+        print("\n🎉 ETL PIPELINE COMPLETE")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

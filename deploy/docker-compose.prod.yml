@@ -72,6 +72,7 @@ services:
         condition: service_healthy
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env.prod}
+      DEFAULT_SNI: ${DEFAULT_SNI:?set DEFAULT_SNI in .env.prod}
       TLS_MODE: ${TLS_MODE:-internal}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env.prod}
       BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?set BASIC_AUTH_HASH in .env.prod}

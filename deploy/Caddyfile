@@ -1,6 +1,7 @@
 # Football-Ai edge: HTTPS, the login, the static app, and /api -> backend.
 #
 # Environment (from .env.prod):
+#   DEFAULT_SNI    203.0.113.10           the IP or domain, without https://
 #   SITE_ADDRESS   https://203.0.113.10   while there is only an IP
 #                  detalk.example         once a domain points here (Caddy then gets a real certificate)
 #   TLS_MODE       internal               self-signed, for the IP phase (the browser warns once)
@@ -8,6 +9,10 @@
 #   BASIC_AUTH_USER / BASIC_AUTH_HASH     the login; the hash is `caddy hash-password` output
 {
 	admin off
+	# A browser opening https://<ip> sends no hostname (SNI), and behind Google's network the
+	# VM does not see its public address, so without this Caddy cannot choose the certificate it
+	# made for the IP and the handshake fails. Harmless once the site has a domain.
+	default_sni {$DEFAULT_SNI}
 }
 
 {$SITE_ADDRESS} {
