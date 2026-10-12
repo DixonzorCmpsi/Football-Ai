@@ -12,15 +12,23 @@ the last week whose games are all final, instead of trusting that a pipeline "ra
 * duplicates are counted, because a re-run that appends twice quietly doubles a game;
 * history (previous seasons) and the trained models are checked the same way.
 
+With --api it also asks the RUNNING app what it is serving (loaded data age, injury refresh,
+game lines on the schedule), because a backend can answer /health while holding old data:
+
+    python rag_data/audit_data.py --api https://host/api --auth admin:password --insecure
+
 Pure reads; it changes nothing.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import ssl
 import sys
-from datetime import datetime
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -85,9 +93,79 @@ def check_weekly(conn, insp, table: str, label: str, last_final: int, min_per_we
         ok(f"{label}: duplicates", "none")
 
 
+def _get_json(url: str, auth: str | None, insecure: bool):
+    req = urllib.request.Request(url)
+    if auth:
+        req.add_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
+    ctx = ssl._create_unverified_context() if insecure else None
+    with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _age_minutes(stamp: str | None):
+    if not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds() / 60
+
+
+def check_running_app(base: str, auth: str | None, insecure: bool) -> None:
+    """What the live API is serving right now, not what the database holds."""
+    base = base.rstrip("/")
+    try:
+        health = _get_json(f"{base}/health", auth, insecure)
+    except Exception as exc:
+        fail("app: reachable", f"{base}/health failed: {type(exc).__name__}: {exc}")
+        return
+    ok("app: reachable", f"{base}")
+    (ok if health.get("ready") and health.get("db_responding") else fail)(
+        "app: ready", f"ready={health.get('ready')} db_responding={health.get('db_responding')}")
+    (ok if health.get("models_loaded", 0) >= 4 and health.get("meta_loaded") else fail)(
+        "app: models", f"{health.get('models_loaded')} position models, meta={health.get('meta_loaded')}")
+    if health.get("db_read_path") not in ("arrow", None):
+        warn("app: database reads", f"using the slow path ({health.get('db_read_path')}): {health.get('arrow_unavailable_reason')}")
+
+    loaded = _age_minutes(health.get("data_loaded_at"))
+    if loaded is None:
+        fail("app: data loaded", "no load timestamp: the app has not loaded data")
+    elif loaded > 180:
+        fail("app: data loaded", f"the app's in-memory data is {loaded/60:.1f} h old (it reloads hourly)")
+    else:
+        ok("app: data loaded", f"{loaded:.0f} min ago")
+
+    inj = _age_minutes(health.get("injuries_updated_at"))
+    if inj is None:
+        warn("app: injury refresh", "no injury refresh yet since the app started (the first runs within 15 minutes of boot)")
+    elif inj > 45:
+        fail("app: injury refresh", f"last refreshed {inj:.0f} min ago; it should run every 15")
+    else:
+        ok("app: injury refresh", f"{inj:.0f} min ago")
+
+    story = _age_minutes(health.get("storylines_updated_at"))
+    (ok if story is not None and story < 360 else warn)(
+        "app: storylines", f"{story:.0f} min ago" if story is not None else "never refreshed")
+
+    week = health.get("current_week")
+    try:
+        games = _get_json(f"{base}/schedule/{week}", auth, insecure)
+        with_total = sum(1 for g in games if g.get("game_total"))
+        (ok if games and with_total == len(games) else fail)(
+            "app: game lines", f"week {week}: {with_total} of {len(games)} games have an over/under")
+    except Exception as exc:
+        fail("app: game lines", f"/schedule/{week} failed: {type(exc).__name__}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true", help="print machine-readable results")
+    ap.add_argument("--api", help="base URL of the running app's API (e.g. https://host/api) to check as well")
+    ap.add_argument("--auth", help="user:password for the API's login")
+    ap.add_argument("--insecure", action="store_true", help="accept a self-signed certificate")
     args = ap.parse_args()
 
     url = os.getenv("DB_CONNECTION_STRING")
@@ -211,6 +289,9 @@ def main() -> int:
             ok("models", f"{len(models)} trained models load")
         except Exception as exc:  # a model that doesn't load is a broken projection, not a warning
             fail("models", f"a trained model failed to load: {type(exc).__name__}: {exc}")
+
+    if args.api:
+        check_running_app(args.api, args.auth, args.insecure)
 
     return finish(args)
 

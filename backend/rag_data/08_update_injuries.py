@@ -1,6 +1,7 @@
 import polars as pl
 import requests
 import os
+import sys
 from datetime import datetime
 from dotenv import load_dotenv
 import nflreadpy as nfl
@@ -155,15 +156,40 @@ def fetch_sleeper_map(profiles: list[dict]):
         print(f"      ❌ Sleeper Fetch Error: {e}")
         return None
 
+def load_profiles():
+    """The player list statuses are matched against: the ETL's CSV, else the database table.
+
+    A fresh container has no CSV until the first daily ETL has run (and loses it on every
+    redeploy), but the table is always there once the data has been loaded.
+    """
+    if os.path.exists(PROFILES_FILE):
+        return pl.read_csv(PROFILES_FILE, infer_schema_length=0)
+    url = os.getenv("DB_CONNECTION_STRING")
+    if not url:
+        return None
+    try:
+        from sqlalchemy import create_engine
+
+        df = pl.read_database("SELECT * FROM player_profiles", create_engine(url))
+        print(f"   (no {os.path.basename(PROFILES_FILE)}; using the player_profiles table: {df.height} players)")
+        return df.with_columns(pl.all().cast(pl.Utf8))  # the CSV path reads everything as text
+    except Exception as exc:
+        print(f"   player_profiles table unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
 def main():
     print(f"--- 🏥 Updating Injury History ({SEASON}) ---")
 
     # 1. Load Profiles
-    if not os.path.exists(PROFILES_FILE):
-        print("❌ Profiles file missing.")
-        return
+    df_profiles = load_profiles()
+    if df_profiles is None:
+        # Exit non-zero: the 15-minute refresh used to print this and exit 0, so a server
+        # that had never run the daily ETL (no profiles file) looked healthy while its
+        # injury statuses never updated.
+        print("❌ No player profiles: neither the CSV nor the player_profiles table is available.")
+        sys.exit(1)
     cols = ["player_id", "player_name", "team_abbr", "position"]
-    df_profiles = pl.read_csv(PROFILES_FILE, infer_schema_length=0)
     df_profiles = df_profiles.select([c for c in cols if c in df_profiles.columns]).unique(subset=["player_id"])
 
     # 2. Fetch Current Data
