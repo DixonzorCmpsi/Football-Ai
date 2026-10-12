@@ -68,12 +68,12 @@ TLS_MODE=internal
 PUBLIC_APP_URL=https://${IP}
 BASIC_AUTH_USER=admin
 BASIC_AUTH_HASH='\$hash'
-RUN_ETL_ON_STARTUP=true
+RUN_ETL_ON_STARTUP=false
 ENV
   echo "NEW_LOGIN user=admin password=\$pw"
 fi
 # Servers created before the ETL ran on every start have it switched off in .env.prod.
-sed -i 's/^RUN_ETL_ON_STARTUP=.*/RUN_ETL_ON_STARTUP=true/' ${REMOTE_ROOT}/.env.prod
+sed -i 's/^RUN_ETL_ON_STARTUP=.*/RUN_ETL_ON_STARTUP=false/' ${REMOTE_ROOT}/.env.prod
 # Servers created before DEFAULT_SNI existed: derive it from the site address.
 if ! grep -q '^DEFAULT_SNI=' ${REMOTE_ROOT}/.env.prod; then
   echo "DEFAULT_SNI=\$(grep '^SITE_ADDRESS=' ${REMOTE_ROOT}/.env.prod | cut -d= -f2- | sed 's#^https\?://##')" >> ${REMOTE_ROOT}/.env.prod

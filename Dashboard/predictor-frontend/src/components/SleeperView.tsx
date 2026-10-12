@@ -469,6 +469,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       </div>
 
       {/* Breadcrumb — every level is clickable, so no step is a dead end. */}
+      {crumbs.length > 1 && (
       <nav data-testid="sleeper-breadcrumb" className="flex items-center flex-wrap gap-1 text-xs">
         {crumbs.map((c, i) => (
           <span key={`${c.label}-${i}`} className="flex items-center gap-1">
@@ -487,6 +488,7 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
           </span>
         ))}
       </nav>
+      )}
 
       {/* Pinned leagues: always visible, one click to the roster, no handle needed. */}
       {pinned.length > 0 && (
@@ -545,29 +547,26 @@ const SleeperView: React.FC<SleeperViewProps> = ({ week, season, onOpenHistory, 
       {/* Step 1 — username. Collapses once a team is loaded so the analysis
           gets the screen; the breadcrumb walks back to it. */}
       {!analysis && (
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex-1 min-w-[220px]">
-            <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-              Sleeper username
-            </label>
             <input
+              aria-label="Sleeper username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && lookupUser()}
-              placeholder="e.g. yourhandle"
+              placeholder="Sleeper username, e.g. yourhandle"
               data-testid="sleeper-username"
-              className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-          <div className="w-28">
-            <label className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-              Season
-            </label>
+          <div className="w-24">
             <input
               type="number"
+              aria-label="Season"
+              title="Season"
               value={seasonInput}
               onChange={(e) => setSeasonInput(Number(e.target.value))}
-              className="w-full mt-1 px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
           <button

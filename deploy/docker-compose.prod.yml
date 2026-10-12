@@ -49,7 +49,7 @@ services:
       # has swap for it). A new container has none of the CSV artifacts the pipeline writes,
       # so this is what guarantees the data is current after every deploy; the 06:00 job
       # keeps it current after that.
-      RUN_ETL_ON_STARTUP: ${RUN_ETL_ON_STARTUP:-true}
+      RUN_ETL_ON_STARTUP: ${RUN_ETL_ON_STARTUP:-false}
       TRUST_PROXY_HEADERS: "true"
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
       # Secrets (the assistant's model key, etc.) come from Secret Manager through the

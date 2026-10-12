@@ -45,6 +45,22 @@ REMOTE
   exit 0
 fi
 
+if [[ "${1:-}" == "--rehost" ]]; then
+  say "Moving the Google sign-in to https://${HOST} (keeps the saved client ID, secret and email)"
+  echo "The OAuth client's Authorized redirect URI must include: https://${HOST}/oauth2/callback"
+  vm_script <<REMOTE
+set -euo pipefail
+f=${REMOTE_ROOT}/.env.prod
+grep -q '^GOOGLE_CLIENT_ID=' "\$f" || { echo "No Google login configured yet: run without --rehost." >&2; exit 1; }
+set_key() { grep -v "^\$1=" "\$f" > "\$f.tmp" || true; printf '%s=%s
+' "\$1" "\$2" >> "\$f.tmp"; mv "\$f.tmp" "\$f"; }
+set_key SITE_ADDRESS ${HOST}
+set_key DEFAULT_SNI ${HOST}
+set_key PUBLIC_APP_URL https://${HOST}
+cd ${REMOTE_ROOT}/app && ${COMPOSE} up -d --no-build --remove-orphans --force-recreate web oauth2-proxy
+REMOTE
+  CHECK_ONLY=1
+else
 say "Google sign-in for https://${HOST}"
 echo "In the Google console, the OAuth client's Authorized redirect URI must be exactly:"
 echo "    https://${HOST}/oauth2/callback"
@@ -77,12 +93,14 @@ set_key PUBLIC_APP_URL https://${HOST}
 cd ${REMOTE_ROOT}/app && ${COMPOSE} up -d --no-build --remove-orphans web oauth2-proxy
 REMOTE
 
+fi
+
 say "Checking: an unauthenticated visit must be sent to Google"
 for _ in $(seq 1 12); do
-  code="$(curl -s -m 30 -o /dev/null -w '%{http_code} %{redirect_url}' "https://${HOST}/" || true)"
+  code="$(curl -sL -m 30 -o /dev/null -w '%{http_code} %{url_effective}' "https://${HOST}/" || true)"
   echo "  ${code}"
-  [[ "$code" == 302* && "$code" == *accounts.google.com* ]] && break
+  [[ "$code" == *accounts.google.com* ]] && break
   sleep 10
 done
 echo
-echo "Open https://${HOST} and sign in as ${EMAIL}."
+echo "Open https://${HOST} and sign in as the allowed email."
