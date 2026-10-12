@@ -19,15 +19,20 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "Uncommitted changes to tracked files: commit them first, so the server runs a known version." >&2
   exit 1
 fi
-REV="$(git rev-parse --short HEAD)"
+# SKIP_BUILD=1 REV_TAG=<tag> resumes a deploy whose images are already built (e.g. the script was
+# interrupted after Cloud Build finished): it reuses that tag instead of building again.
+REV="${REV_TAG:-$(git rev-parse --short HEAD)}"
 IP="$(vm_ip)"
 
-say "Building ${REV} on Cloud Build"
-SRC="$(mktemp -d -t football-ai-src-XXXXXX)"
-git archive HEAD | tar -x -C "$SRC"
-( cd "$SRC" && gcloud builds submit . --project "$PROJECT" --config deploy/cloudbuild.yaml \
-    --substitutions "_REGISTRY=${REGISTRY},_TAG=${REV}" )
-rm -rf "$SRC"
+if [[ -z "${SKIP_BUILD:-}" ]]; then
+  say "Building ${REV} on Cloud Build"
+  SRC="$(mktemp -d -t football-ai-src-XXXXXX)"
+  git archive HEAD | tar -x -C "$SRC"
+  ( cd "$SRC" && gcloud builds submit . --project "$PROJECT" --config deploy/cloudbuild.yaml       --substitutions "_REGISTRY=${REGISTRY},_TAG=${REV}" )
+  rm -rf "$SRC"
+else
+  say "Skipping the build: using the images already tagged ${REV}"
+fi
 
 say "Uploading the stack definition to ${VM} (${IP})"
 ARCHIVE="$(mktemp -t football-ai-XXXXXX.tar.gz)"
