@@ -7,6 +7,7 @@ import SidePanelDrawer from './components/SidePanelDrawer';
 import CompareView from './components/CompareView';
 import PlayerHistory from './components/PlayerHistory';
 import MatchupView from './components/MatchupView';
+import PlayerPopup from './components/PlayerPopup';
 import MyPicksList from './components/MyPicksList';
 import PlayoffView from './components/PlayoffView';
 import LiveScoresBar from './components/LiveScoresBar';
@@ -201,6 +202,11 @@ export default function App() {
   const { setBase: setAgentScreen } = useAgentScreenContext();
   const [selectedGame, setSelectedGame] = useState<{home: string, away: string} | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  // Browsing pages (tiers, ranks, rosters, teams, My Team) show a player in a popup so
+  // the list underneath keeps its scroll, filters and sort. Search and Compare still
+  // go to the full page (HISTORY).
+  const [popupPlayerId, setPopupPlayerId] = useState<string | null>(null);
+  const openPlayerPopup = useCallback((id: string) => setPopupPlayerId(id), []);
   const [historyFrom, setHistoryFrom] = useState<'SCHEDULE' | 'GAME' | 'LOOKUP' | 'COMPARE' | 'TIERS' | 'TEAMS' | 'GAME_RANKS'>('SCHEDULE');
 
   const [compareList, setCompareList] = useState<string[]>([]);
@@ -212,7 +218,7 @@ export default function App() {
   const [historyView, setHistoryView] = useState<{ playerId: string; view: PlayerView } | null>(null);
   const [gameCard, setGameCard] = useState<{ home: string; away: string; playerId: string; tab: CardTab } | null>(null);
   const shownHistoryView: PlayerView =
-    historyView && historyView.playerId === selectedHistoryId ? historyView.view : 'storylines';
+    historyView && historyView.playerId === selectedHistoryId ? historyView.view : 'log';
   const openCard =
     gameCard && selectedGame && gameCard.home === selectedGame.home && gameCard.away === selectedGame.away ? gameCard : null;
 
@@ -277,7 +283,7 @@ export default function App() {
         return { view: 'COMPARE', ids: compareList };
       case 'HISTORY':
         return selectedHistoryId
-          ? { view: 'HISTORY', playerId: selectedHistoryId, ...(shownHistoryView !== 'storylines' ? { show: shownHistoryView } : {}) }
+          ? { view: 'HISTORY', playerId: selectedHistoryId, ...(shownHistoryView !== 'log' ? { show: shownHistoryView } : {}) }
           : { view: 'SCHEDULE' };
       case 'TEAM_PAGE':
         return teamModal
@@ -477,17 +483,8 @@ export default function App() {
   // display:none) so their local state survives navigation. That means an unstable
   // prop re-renders a 300+ card tree even while it is off-screen, so every handler
   // they receive is memoised and both components are wrapped in React.memo.
-  const openHistoryFromRanks = useCallback((id: string) => {
-    setSelectedHistoryId(id);
-    setHistoryFrom('GAME_RANKS');
-    setViewMode('HISTORY');
-  }, [setViewMode]);
-
-  const openHistoryFromTiers = useCallback((id: string) => {
-    setSelectedHistoryId(id);
-    setHistoryFrom('TIERS');
-    setViewMode('HISTORY');
-  }, [setViewMode]);
+  const openHistoryFromRanks = openPlayerPopup;
+  const openHistoryFromTiers = openPlayerPopup;
 
   const openCompareFromTiers = useCallback(() => setViewMode('COMPARE'), [setViewMode]);
   // Team Overview / Team Builder are destinations now, not dialogs: navigating
@@ -709,11 +706,7 @@ export default function App() {
                         type="down" 
                         isSelected={compareList.includes(p.player_id)}
                         onToggleCompare={toggleCompare}
-                        onClick={(id) => { 
-                            setSelectedHistoryId(id); 
-                            setHistoryFrom('SCHEDULE'); 
-                            setViewMode('HISTORY'); 
-                        }} 
+                        onClick={openPlayerPopup} 
                     />
                 ))
             ) : (
@@ -960,7 +953,7 @@ export default function App() {
                       key={p.player_id}
                       player={p}
                       type="up"
-                      onClick={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
+                      onClick={openPlayerPopup}
                       onToggleCompare={toggleCompare}
                       isSelected={compareList.includes(p.player_id)}
                     />
@@ -1011,14 +1004,14 @@ export default function App() {
           {/* VIEW: MY TEAM - import a Sleeper roster and analyze it. */}
           {viewMode === 'MY_TEAM' && (
             <div className="mx-auto w-full max-w-[1600px] px-2">
-            <SleeperView
-              week={safeWeek}
-              season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
-              onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('SCHEDULE'); setViewMode('HISTORY'); }}
-              onInnerNav={handleInnerNav}
-              requestedTab={sleeperTabRequest}
-              onTabChange={setSleeperTab}
-            />
+              <SleeperView
+                week={safeWeek}
+                season={new Date().getMonth() >= 8 ? new Date().getFullYear() : new Date().getFullYear() - 1}
+                onOpenHistory={openPlayerPopup}
+                onInnerNav={handleInnerNav}
+                requestedTab={sleeperTabRequest}
+                onTabChange={setSleeperTab}
+              />
             </div>
           )}
 
@@ -1035,19 +1028,8 @@ export default function App() {
                 onClose={() => { if (navStack.length) goBack(); else setViewMode('TEAMS'); }}
                 compareList={compareList}
                 onToggleCompare={toggleCompare}
-                onViewHistory={(id, ctx) => {
-                  // Stash which team/tab/player-detail was open so Back from
-                  // HISTORY returns you exactly where you left off.
-                  setModalReturn({
-                    team: teamModal.team,
-                    focusPlayerId: teamModal.focusPlayerId ?? null,
-                    detailPlayerId: ctx?.detailPlayerId ?? null,
-                    activeTab: ctx?.activeTab ?? teamModal.initialTab ?? 'overview',
-                  });
-                  setSelectedHistoryId(id);
-                  setHistoryFrom('TEAMS');
-                  setViewMode('HISTORY');
-                }}
+                openPlayerInPlace
+                onViewHistory={openPlayerPopup}
               />
             </div>
           )}
@@ -1076,7 +1058,7 @@ export default function App() {
               onBack={() => { if (navStack.length) goBack(); else setViewMode('SCHEDULE'); }}
               compareList={compareList}
               onToggleCompare={toggleCompare}
-              onOpenHistory={(id) => { setSelectedHistoryId(id); setHistoryFrom('GAME'); setViewMode('HISTORY'); }}
+              onOpenHistory={openPlayerPopup}
               onInnerNav={handleInnerNav}
               card={openCard ? { playerId: openCard.playerId, tab: openCard.tab } : null}
               onCardChange={(card) => setGameCard(card ? { home: selectedGame.home, away: selectedGame.away, ...card } : null)}
@@ -1130,6 +1112,15 @@ export default function App() {
         />
       </main>
 
+      {popupPlayerId && (
+        <PlayerPopup
+          playerId={popupPlayerId}
+          compareList={compareList}
+          onToggleCompare={toggleCompare}
+          onClose={() => setPopupPlayerId(null)}
+        />
+      )}
+
       {/* RIGHT SIDEBAR (hidden where the main view needs the full width) */}
       {showSidebars && viewMode !== 'TIERS' && viewMode !== 'TEAMS' && (
         <aside data-agent-region="right panel" style={{ width: rightRailWidth }} className={`relative bg-white dark:bg-slate-800 border-l border-slate-200 dark:border-slate-700 flex flex-col ${panelOpen ? "z-[60]" : "z-20"} shadow-[-4px_0_24px_rgba(0,0,0,0.02)] shrink-0 hidden xl:flex transition-colors duration-300`}>
@@ -1160,11 +1151,7 @@ export default function App() {
                     type="up" 
                     isSelected={compareList.includes(p.player_id)}
                     onToggleCompare={toggleCompare}
-                    onClick={(id) => { 
-                        setSelectedHistoryId(id); 
-                        setHistoryFrom('SCHEDULE'); 
-                        setViewMode('HISTORY'); 
-                    }} 
+                    onClick={openPlayerPopup} 
                 />
               ))
             }

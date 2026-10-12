@@ -127,6 +127,8 @@ interface Props {
   // `ctx` lets App stash which player-detail modal was open so Back from History
   // can restore it. Optional so existing callers (Schedule/Lookup) keep working.
   onViewHistory: (id: string, ctx?: { detailPlayerId?: string | null; activeTab?: 'overview' | 'builder' }) => void;
+  /** The host shows players in a popup over this page, so don't close the page or the detail card first. */
+  openPlayerInPlace?: boolean;
 }
 
 interface PositionView {
@@ -802,6 +804,7 @@ const TeamOffenseModal: React.FC<Props> = ({
   compareList,
   onToggleCompare,
   onViewHistory,
+  openPlayerInPlace = false,
   asPage = false,
 }) => {
   const [data, setData] = useState<TeamOffenseResponse | null>(null);
@@ -1172,6 +1175,10 @@ const TeamOffenseModal: React.FC<Props> = ({
           isComparing={compareList.includes(detailPlayer.player_id)}
           onToggleCompare={onToggleCompare}
           onViewHistory={(id) => {
+            if (openPlayerInPlace) {
+              onViewHistory(id);
+              return;
+            }
             // Capture which detail modal was open so App can restore it after
             // the user pops out of History.
             onViewHistory(id, { detailPlayerId: detailPlayer.player_id, activeTab });

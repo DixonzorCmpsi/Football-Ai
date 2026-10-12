@@ -7,7 +7,7 @@ const BASE = process.env.BASE || 'http://localhost:5401';
 const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 
 (async () => {
-  const b = await chromium.launch();
+  const b = await chromium.launch({ channel: process.env.PW_CHANNEL || undefined });
   const p = await b.newPage({ viewport: { width: 1500, height: 1000 } });
   const errors = [];
   p.on('pageerror', (e) => errors.push(e.message));

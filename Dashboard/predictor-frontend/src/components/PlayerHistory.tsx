@@ -1,24 +1,50 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper } from 'lucide-react';
+import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper, ListOrdered, ArrowLeft, User, BarChart3, TrendingUp } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
-import PlayerPerformanceCharts, { pointColor } from './PlayerPerformanceCharts';
+import { pointColor } from './PlayerPerformanceCharts';
 import PlayerStorylines from './PlayerStorylines';
+import PlayerDepthChart from './PlayerDepthChart';
+import PlayerBio from './PlayerBio';
+import PlayerVegas from './PlayerVegas';
+import PlayerRankChips from './PlayerRankChips';
+import VisualsPanel from './VisualsPanel';
+import type { Series } from './visualSeries';
+import { useAgentScreen } from '../contexts/AgentScreenContext';
+import type { PlayerTab } from '../lib/appUrl';
+import { SeasonStatsTable, GameLogTable } from './PlayerStatTables';
 import { sizedPlayerImage } from '../utils/playerImage';
+
+// Flow: this season's game log, where he sits on the team, every season, then
+// visuals and news. Bio and the betting market close it out.
+const TABS = [
+  ['log', 'Game Log', Table2],
+  ['depth', 'Depth Chart', ListOrdered],
+  ['seasons', 'Season Stats', BarChart3],
+  ['visual', 'Visual', LineChart],
+  ['storylines', 'Storylines', Newspaper],
+  ['bio', 'Bio', User],
+  ['vegas', 'Vegas Data', TrendingUp],
+] as const;
 
 interface Props {
   playerId: string;
   /** Controlled tab, so a link or the assistant can open straight onto stats or charts. */
-  view?: 'table' | 'visual' | 'storylines';
-  onViewChange?: (view: 'table' | 'visual' | 'storylines') => void;
+  view?: PlayerTab;
+  onViewChange?: (view: PlayerTab) => void;
   onBack: () => void;
   compareList: string[];
   onToggleCompare: (id: string) => void;
 }
 
-export default function PlayerHistory({ playerId, compareList, onToggleCompare, view, onViewChange }: Props) {
+export default function PlayerHistory({ playerId: rootId, compareList, onToggleCompare, view, onViewChange }: Props) {
+  // Clicking a teammate on the depth chart swaps the page to that player in place;
+  // `rootId` stays the player the user came in on so they can step back to them.
+  const [playerId, setPlayerId] = useState(rootId);
+  useEffect(() => setPlayerId(rootId), [rootId]);
   const { history, loadingHistory } = usePlayerHistory(playerId);
   const { cardData } = usePlayerProfileById(playerId);
+  const { cardData: rootCard } = usePlayerProfileById(rootId);
 
   // Group rows by season, sorted newest → oldest.
   const seasons = useMemo(() => {
@@ -35,11 +61,9 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
       .sort((a, b) => b.season - a.season);
   }, [history]);
 
-  // Storylines first: opening a player is usually "what's going on with him", and
-  // it is the one view with something to show before a player has game logs.
-  const [ownView, setOwnView] = useState<'table' | 'visual' | 'storylines'>('storylines');
+  const [ownView, setOwnView] = useState<PlayerTab>('log');
   const viewMode = view ?? ownView;
-  const setViewMode = (next: 'table' | 'visual' | 'storylines') => {
+  const setViewMode = (next: PlayerTab) => {
     setOwnView(next);
     onViewChange?.(next);
   };
@@ -70,10 +94,37 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
   }, [canPrev, canNext, idx, seasons]);
 
   const teamColor = cardData ? getTeamColor(cardData.team) : '#1e293b';
+  // Other players picked for comparison (from depth charts or the + button); shown under this one's visuals.
+  const extraCompareIds = compareList.filter((id) => id !== playerId);
+
+  const tabLabel = TABS.find(([m]) => m === viewMode)?.[1] ?? '';
+  useAgentScreen(
+    cardData
+      ? {
+          view: 'PLAYER',
+          title: `${cardData.name}'s player page, ${tabLabel} tab`,
+          facts: [
+            ...(viewMode === 'log' || viewMode === 'visual' ? (selectedSeason ? [`season ${selectedSeason}`] : []) : []),
+            ...(playerId !== rootId && rootCard?.name ? [`opened from ${rootCard.name}'s depth chart`] : []),
+          ],
+          entities: [
+            {
+              type: 'player',
+              name: cardData.name,
+              id: playerId,
+              detail: [cardData.position, cardData.team, cardData.injury_status].filter(Boolean).join(', '),
+            },
+          ],
+        }
+      : null,
+  );
   const isSelected = compareList.includes(playerId);
   const isBoosted = cardData?.is_injury_boosted;
 
   const rows = currentSeason?.rows ?? [];
+  const mainSeries: Series | null = cardData
+    ? { id: playerId, name: cardData.name, position: cardData.position, team: cardData.team, season: currentSeason?.season ?? null, rows }
+    : null;
   const totalPoints = rows.reduce((acc, r) => acc + (r.points || 0), 0);
   const totalTDs = rows.reduce((acc, r) => acc + (r.touchdowns || 0), 0);
   const gamesWithPoints = rows.filter((r) => (r.points || 0) > 0).length;
@@ -86,6 +137,15 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
 
   return (
     <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {playerId !== rootId && (
+        <button
+          onClick={() => setPlayerId(rootId)}
+          className="mb-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition"
+        >
+          <ArrowLeft size={13} /> Back to {rootCard?.name || 'original player'}
+        </button>
+      )}
+
       {/* HEADER CARD WITH GRADIENT BLEND */}
       <div
         className="rounded-xl shadow-lg border border-white/10 p-6 mb-6 text-white relative overflow-hidden transition-all duration-500"
@@ -145,6 +205,7 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
                   {cardData?.injury_status || 'ACT'}
                 </span>
               </div>
+              <PlayerRankChips playerId={playerId} className="mt-2" />
             </div>
           </div>
 
@@ -171,90 +232,61 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
         </div>
       </div>
 
-      {/* VIEW TABS + SEASON SELECTOR
-          The tabs always render. They used to sit inside the season-data guard, so a
-          player with no game logs (rookies, backups, anyone pre-kickoff) got no tabs
-          at all, and with them no way to reach Storylines. The season picker only
-          applies to Table and Visual, so it hides on Storylines. */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {viewMode !== 'storylines' && seasons.length > 0 && currentSeason && (
-        <>
-          <button
-            onClick={() => canPrev && setSelectedSeason(seasons[idx + 1].season)}
-            disabled={!canPrev}
-            className="w-7 h-7 rounded-md flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition"
-            aria-label="Older season"
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
-            {seasons.map((s) => {
-              const active = s.season === selectedSeason;
-              const empty = s.rows.every((r) => (r.points || 0) === 0);
-              return (
-                <button
-                  key={s.season}
-                  onClick={() => setSelectedSeason(s.season)}
-                  className={`px-3 py-1 rounded-md text-xs font-black font-mono transition ${
-                    active
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : empty
-                      ? 'text-slate-400 dark:text-slate-500 italic hover:text-slate-600 dark:hover:text-slate-300'
-                      : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700'
-                  }`}
-                  title={`${s.rows.length} games`}
-                >
-                  {s.season}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            onClick={() => canNext && setSelectedSeason(seasons[idx - 1].season)}
-            disabled={!canNext}
-            className="w-7 h-7 rounded-md flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition"
-            aria-label="Newer season"
-          >
-            <ChevronRight size={14} />
-          </button>
-          <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 ml-2">
-            ← → to cycle · {rows.length} games
-          </span>
+      {/* ONE ROW: view tabs on the left, season picker on the right.
+          The tabs always render (a player with no game logs still needs Storylines).
+          The season picker only applies to Game Log and Visual, so it hides elsewhere. */}
+      <div className="flex items-center gap-3 mb-3">
+        <div role="tablist" className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700 min-w-0 overflow-x-auto scrollbar-none">
+          {TABS.map(([mode, label, Icon]) => (
+            <button
+              key={mode}
+              role="tab"
+              aria-selected={viewMode === mode}
+              data-testid={`player-modal-tab-${mode}`}
+              onClick={() => setViewMode(mode)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-black whitespace-nowrap transition ${
+                viewMode === mode
+                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              <Icon size={13} /> {label}
+            </button>
+          ))}
+        </div>
 
-        </>
-        )}
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700 ml-auto">
+        {(viewMode === 'log' || viewMode === 'visual') && seasons.length > 0 && currentSeason && (
+          <div className="ml-auto shrink-0 flex items-center gap-1" title="Use the left and right arrow keys to change season">
             <button
-              onClick={() => setViewMode('storylines')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
-                viewMode === 'storylines'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
+              onClick={() => canPrev && setSelectedSeason(seasons[idx + 1].season)}
+              disabled={!canPrev}
+              className="w-7 h-7 rounded-md flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition"
+              aria-label="Older season"
             >
-              <Newspaper size={13} /> Storylines
+              <ChevronLeft size={14} />
             </button>
-            <button
-              onClick={() => setViewMode('table')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
-                viewMode === 'table'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
+            <select
+              value={selectedSeason ?? ''}
+              onChange={(e) => setSelectedSeason(Number(e.target.value))}
+              aria-label="Season"
+              className="h-7 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-black font-mono text-slate-700 dark:text-slate-200 px-2"
             >
-              <Table2 size={13} /> Table
-            </button>
+              {seasons.map((x) => (
+                <option key={x.season} value={x.season}>
+                  {x.season} · {x.rows.length} G
+                </option>
+              ))}
+            </select>
             <button
-              onClick={() => setViewMode('visual')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black transition ${
-                viewMode === 'visual'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
+              onClick={() => canNext && setSelectedSeason(seasons[idx - 1].season)}
+              disabled={!canNext}
+              className="w-7 h-7 rounded-md flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition"
+              aria-label="Newer season"
             >
-              <LineChart size={13} /> Visual
+              <ChevronRight size={14} />
             </button>
           </div>
+        )}
       </div>
 
       {/* HISTORY TABLE / VISUAL */}
@@ -263,99 +295,45 @@ export default function PlayerHistory({ playerId, compareList, onToggleCompare, 
             player with no games yet (a rookie, or anyone pre-kickoff) is exactly
             who you open this page to read about, and the old guards rendered
             "No games for this season yet" over everything. */}
-        {viewMode === 'storylines' ? (
+        {viewMode === 'bio' ? (
+          <PlayerBio playerId={playerId} />
+        ) : viewMode === 'storylines' ? (
           <PlayerStorylines
             playerId={playerId}
             playerName={cardData?.name}
             teamColor={teamColor}
           />
+        ) : viewMode === 'vegas' ? (
+          <PlayerVegas playerId={playerId} />
+        ) : viewMode === 'depth' ? (
+          <PlayerDepthChart
+            team={cardData?.team}
+            playerId={playerId}
+            teamColor={teamColor}
+            onSelectPlayer={setPlayerId}
+            compareList={compareList}
+            onToggleCompare={onToggleCompare}
+          />
         ) : loadingHistory ? (
           <div className="p-20 text-center text-slate-400 dark:text-slate-500 animate-pulse font-bold">
             Loading Season History...
           </div>
+        ) : viewMode === 'seasons' ? (
+          <SeasonStatsTable
+            history={history}
+            onOpenSeason={(season) => {
+              setSelectedSeason(season);
+              setViewMode('log');
+            }}
+          />
         ) : rows.length === 0 ? (
           <div className="p-20 text-center text-slate-400 dark:text-slate-500 font-bold">
             No games for {currentSeason?.season || 'this season'} yet.
           </div>
         ) : viewMode === 'visual' ? (
-          <PlayerPerformanceCharts
-            rows={rows}
-            position={cardData?.position || 'WR'}
-            season={currentSeason?.season || new Date().getFullYear()}
-            teamColor={teamColor}
-          />
+          <VisualsPanel main={mainSeries} extraIds={extraCompareIds} onRemove={onToggleCompare} />
         ) : (
-          <div className="overflow-x-auto scrollbar-thin dark:scrollbar-thumb-slate-600 dark:scrollbar-track-slate-800">
-            <table className="w-full text-sm text-left whitespace-nowrap">
-              <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 font-bold uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-700">
-                <tr>
-                  <th className="px-6 py-4 sticky left-0 bg-slate-50 dark:bg-slate-900 z-10">Week</th>
-                  <th className="px-6 py-4">Opponent</th>
-                  <th className="px-6 py-4 text-center">Snaps</th>
-                  <th className="px-6 py-4 text-center">Rec / Tgt</th>
-                  <th className="px-6 py-4 text-center">Rush Yds / Att</th>
-                  <th className="px-6 py-4 text-right">Pass Yds</th>
-                  <th className="px-6 py-4 text-right">Rec Yds</th>
-                  <th className="px-6 py-4 text-right">TDs</th>
-                  <th className="px-6 py-4 text-right bg-slate-50/50 dark:bg-slate-800/50">Pts</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                {rows.map((game) => (
-                  <tr
-                    key={`${game.season}-${game.week}`}
-                    className="hover:bg-slate-50/50 dark:hover:bg-slate-700/50 transition-colors"
-                  >
-                    <td className="px-6 py-4 font-bold text-slate-800 dark:text-slate-100 sticky left-0 bg-white dark:bg-slate-800 z-10 border-r border-slate-100 dark:border-slate-700">
-                      Week {game.week}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="px-2 py-1 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-300 font-bold text-xs border border-slate-200 dark:border-slate-600">
-                        {game.opponent}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <div className="flex flex-col items-center">
-                        <span className="font-bold text-slate-700 dark:text-slate-300">
-                          {((game.snap_percentage || 0) * 100).toFixed(0)}%
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {game.snap_count || 0} / {game.team_total_snaps || '-'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-center font-medium text-slate-600 dark:text-slate-400">
-                      {game.receptions}
-                      <span className="text-slate-300 dark:text-slate-600 mx-1">/</span>
-                      {game.targets}
-                    </td>
-                    <td className="px-6 py-4 text-center font-medium text-slate-600 dark:text-slate-400">
-                      {game.rushing_yds || '-'}
-                      <span className="text-slate-300 dark:text-slate-600 mx-1">/</span>
-                      {game.carries !== undefined ? game.carries : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">
-                      {game.passing_yds || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">
-                      {game.receiving_yds || '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right text-slate-600 dark:text-slate-400 font-medium">
-                      {game.touchdowns > 0 ? game.touchdowns : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right bg-slate-50/30 dark:bg-slate-900/30">
-                      <span
-                        className="font-black text-base"
-                        style={{ color: pointColor(game.points || 0, avgPointsNum) }}
-                      >
-                        {game.points?.toFixed(1) || '0.0'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <GameLogTable rows={rows} pointColor={pointColor} avgPoints={avgPointsNum} />
         )}
       </div>
     </div>
