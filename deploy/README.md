@@ -36,7 +36,7 @@ deploy/gcp/restore-db.sh     # optional: copy your local database up, so the sit
 
 - **Now (IP only):** HTTP basic auth at Caddy. Nothing, including `/api`, is served without it.
 - **GCP itself:** only the project owner (your Google account) can administer it. The VM has its own service account limited to Secret Manager read, image pull, logging and its backup bucket; it does not use the default compute account (which has project-wide Editor). SSH is only through Google's IAP tunnel, authenticated as your Google account (OS Login); port 22 is not open to the internet.
-- **Next (needs a domain):** replace the password with **Sign in with Google, allowing only your account**, using `oauth2-proxy` in front of Caddy. Google's OAuth does not accept a bare IP as a redirect address, which is why this waits for the domain.
+- **Sign in with Google, one email only:** `deploy/gcp/set-google-login.sh`. It puts `oauth2-proxy` in front of everything (the page, the files and `/api`), so nothing is served until the browser is signed in as the one allowed Google account. It uses a free `<ip-with-dashes>.sslip.io` name that points at the VM: Google rejects a bare IP as a redirect address but accepts a real DNS name, and Caddy gets a normal Let's Encrypt certificate for it (no browser warning). With the console's OAuth consent screen left in *Testing* and only your account listed as a test user, Google refuses every other account too. `set-google-login.sh --disable` returns to the password.
 
 ## Moving to a domain
 
