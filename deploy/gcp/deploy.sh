@@ -80,7 +80,8 @@ if grep -q '^NEW_LOGIN' <<<"$OUT"; then
 fi
 
 say "Pulling the images and starting the stack"
-vm_ssh "cd ${REMOTE_ROOT}/app && sudo env REGISTRY=${REGISTRY} TAG=${REV} ${COMPOSE} pull && sudo env REGISTRY=${REGISTRY} TAG=${REV} ${COMPOSE} up -d --no-build"
+# /opt/football-ai is root-only (it holds .env.prod), so the whole command runs under sudo.
+vm_ssh "sudo bash -c 'cd ${REMOTE_ROOT}/app && export REGISTRY=${REGISTRY} TAG=${REV} && ${COMPOSE} pull && ${COMPOSE} up -d --no-build'"
 
 say "Waiting for the API to report ready"
 for _ in $(seq 1 60); do
