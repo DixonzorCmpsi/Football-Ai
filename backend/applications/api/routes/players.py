@@ -397,12 +397,21 @@ def get_storylines(player_id: str, limit: int = 10):
     """
     from ..services.storylines import get_player_storylines, storylines_updated_at
 
-    items = get_player_storylines(player_id, limit=max(1, min(limit, 25)))
+    try:
+        items = get_player_storylines(player_id, limit=max(1, min(limit, 25)))
+        degraded = False
+    except Exception:
+        # News is a side panel: a failed lookup (the store still loading right after a restart, a
+        # feed hiccup) must not turn the whole tab into an HTTP 500. It is logged, and the panel
+        # shows its empty state until the next open.
+        logger.exception("Storylines lookup failed for %s", player_id)
+        items, degraded = [], True
     return {
         "player_id": player_id,
         "count": len(items),
         "updated_at": storylines_updated_at(),
         "storylines": items,
+        "degraded": degraded,
     }
 
 
@@ -784,3 +793,194 @@ async def get_player_history(player_id: str):
     except Exception as e:
         logger.exception(f"History endpoint failed for {player_id}: {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Usage: how much of his team's offense runs through a player
+# ---------------------------------------------------------------------------
+_USAGE_TOTALS = (
+    "attempts", "rush_attempts", "targets", "receptions", "passing_yards", "rushing_yards",
+    "receiving_yards", "receiving_air_yards", "passing_touchdown", "rush_touchdown",
+    "receiving_touchdown",
+)
+
+
+def _share(part: float, whole: float) -> float | None:
+    return round(100.0 * part / whole, 1) if whole else None
+
+
+def _usage_shares(p: dict, t: dict) -> dict:
+    """A player's (or a group's) share of the team totals `t`, in percent."""
+    return {
+        "carry_share": _share(_number(p, "rush_attempts"), _number(t, "rush_attempts")),
+        "target_share": _share(_number(p, "targets"), _number(t, "targets")),
+        "pass_att_share": _share(_number(p, "attempts"), _number(t, "attempts")),
+        "rush_yd_share": _share(_number(p, "rushing_yards"), _number(t, "rushing_yards")),
+        "rec_yd_share": _share(_number(p, "receiving_yards"), _number(t, "receiving_yards")),
+        "air_yd_share": _share(_number(p, "receiving_air_yards"), _number(t, "receiving_air_yards")),
+        "rush_td_share": _share(_number(p, "rush_touchdown"), _number(t, "rush_touchdown")),
+        "rec_td_share": _share(_number(p, "receiving_touchdown"), _number(t, "receiving_touchdown")),
+    }
+
+
+def _all_player_stats() -> pl.DataFrame:
+    frames = []
+    for key in ("df_player_stats", "df_player_stats_history"):
+        df = model_data.get(key, pl.DataFrame())
+        if df is None or df.is_empty():
+            continue
+        if "season" not in df.columns:
+            df = df.with_columns(pl.lit(int(CURRENT_SEASON)).alias("season"))
+        frames.append(df)
+    if not frames:
+        return pl.DataFrame()
+    df = pl.concat(frames, how="diagonal_relaxed")
+    for col in _USAGE_TOTALS:
+        if col not in df.columns:
+            df = df.with_columns(pl.lit(0.0).alias(col))
+    df = df.with_columns([pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0) for c in _USAGE_TOTALS])
+    return df.with_columns(
+        pl.col("season").cast(pl.Int64, strict=False), pl.col("week").cast(pl.Int64, strict=False),
+    )
+
+
+def _snap_pct_by_week(player_id: str, season: int) -> dict[int, tuple[int, float]]:
+    """week -> (snaps, share of the team's snaps in %). Offense unless defense dominates."""
+    pfr_id = None
+    profile = model_data.get("df_profile", pl.DataFrame())
+    if not profile.is_empty() and "player_id" in profile.columns and "pfr_id" in profile.columns:
+        row = profile.filter(pl.col("player_id") == player_id)
+        if not row.is_empty():
+            pfr_id = row.row(0, named=True).get("pfr_id")
+    frames = []
+    for key in ("df_snap_counts", "df_snap_counts_history"):
+        df = model_data.get(key, pl.DataFrame())
+        if df is not None and not df.is_empty():
+            if "season" not in df.columns:
+                df = df.with_columns(pl.lit(int(CURRENT_SEASON)).alias("season"))
+            frames.append(df)
+    if not frames:
+        return {}
+    snaps = pl.concat(frames, how="diagonal_relaxed")
+    mine = pl.DataFrame()
+    if "player_id" in snaps.columns:
+        mine = snaps.filter(pl.col("player_id") == player_id)
+    if mine.is_empty() and pfr_id and "pfr_id" in snaps.columns:
+        mine = snaps.filter(pl.col("pfr_id") == pfr_id)
+    if mine.is_empty():
+        return {}
+    mine = mine.filter(pl.col("season").cast(pl.Int64, strict=False) == int(season))
+    out: dict[int, tuple[int, float]] = {}
+    for r in mine.to_dicts():
+        week = int(_number(r, "week"))
+        off, dfn = _number(r, "offense_snaps"), _number(r, "defense_snaps")
+        n_snaps, pct = (dfn, _number(r, "defense_pct")) if dfn > off else (off, _number(r, "offense_pct"))
+        out[week] = (int(n_snaps), round(pct * 100 if pct and pct <= 1.0 else pct, 1))
+    return out
+
+
+@router.get("/player/{player_id}/usage")
+def get_player_usage(player_id: str, season: Optional[int] = None):
+    """A player's share of his team's carries, targets and pass attempts, game by game.
+
+    Team totals are the sum of every player's rows for that team and week, so the shares
+    need no extra feed. Route participation is not in our data; targets and target share
+    are the closest stand-in.
+    """
+    df = _all_player_stats()
+    empty = {"player_id": player_id, "season": season, "seasons": [], "team": None, "position": None,
+             "games": [], "summary": None, "teammates": []}
+    if df.is_empty():
+        return empty
+    mine_all = df.filter(pl.col("player_id") == player_id)
+    if mine_all.is_empty():
+        return empty
+    seasons = sorted({int(s) for s in mine_all["season"].to_list() if s is not None}, reverse=True)
+    season = int(season) if season and int(season) in seasons else seasons[0]
+    mine = mine_all.filter(pl.col("season") == season)
+    if "season_type" in mine.columns:
+        mine = mine.filter(pl.col("season_type").fill_null("REG") == "REG")
+    mine = mine.unique(subset=["week"], keep="first").sort("week")
+    if mine.is_empty():
+        return {**empty, "season": season, "seasons": seasons}
+
+    first = mine.row(0, named=True)
+    position = first.get("position") or first.get("position_group")
+    teams = mine["team"].to_list()
+    team = max(set(teams), key=teams.count)
+
+    team_rows = df.filter((pl.col("season") == season) & (pl.col("team").is_in(set(teams))))
+    if "season_type" in team_rows.columns:
+        team_rows = team_rows.filter(pl.col("season_type").fill_null("REG") == "REG")
+    team_rows = team_rows.unique(subset=["player_id", "week"], keep="first")
+    totals = {
+        (r["team"], r["week"]): r
+        for r in team_rows.group_by(["team", "week"]).agg([pl.col(c).sum() for c in _USAGE_TOTALS]).to_dicts()
+    }
+    snaps = _snap_pct_by_week(player_id, season)
+
+    games = []
+    sum_p = {c: 0.0 for c in _USAGE_TOTALS}
+    sum_t = {c: 0.0 for c in _USAGE_TOTALS}
+    for p in mine.to_dicts():
+        week = int(p["week"])
+        t = totals.get((p["team"], p["week"]), {})
+        for c in _USAGE_TOTALS:
+            sum_p[c] += _number(p, c)
+            sum_t[c] += _number(t, c)
+        n_snaps, snap_pct = snaps.get(week, (None, None))
+        games.append({
+            "week": week, "opponent": p.get("opponent_team"), "team": p["team"],
+            "snaps": n_snaps, "snap_pct": snap_pct,
+            "carries": int(_number(p, "rush_attempts")), "team_carries": int(_number(t, "rush_attempts")),
+            "targets": int(_number(p, "targets")), "team_targets": int(_number(t, "targets")),
+            "pass_att": int(_number(p, "attempts")), "team_pass_att": int(_number(t, "attempts")),
+            "receptions": int(_number(p, "receptions")),
+            **_usage_shares(p, t),
+        })
+    snap_vals = [g["snap_pct"] for g in games if g["snap_pct"]]
+    n = len(games)
+    summary = {
+        "games": n,
+        "carries": int(sum_p["rush_attempts"]), "team_carries": int(sum_t["rush_attempts"]),
+        "targets": int(sum_p["targets"]), "team_targets": int(sum_t["targets"]),
+        "pass_att": int(sum_p["attempts"]), "team_pass_att": int(sum_t["attempts"]),
+        "carries_per_game": round(sum_p["rush_attempts"] / n, 1),
+        "targets_per_game": round(sum_p["targets"] / n, 1),
+        "snap_pct": round(sum(snap_vals) / len(snap_vals), 1) if snap_vals else None,
+        **_usage_shares(sum_p, sum_t),
+    }
+
+    # Teammates at the same position: where he sits in his team's pecking order.
+    team_total = {c: sum(v[c] for (tm, _w), v in totals.items() if tm == team) for c in _USAGE_TOTALS}
+    group = _position_group(position)
+    key = "pass_att" if group == "qb" else ("carries" if group == "rb" else "targets")
+    mates = []
+    # The weekly feed's name columns are not always filled for the current season; the profile is the fallback.
+    name_cols = [c for c in ("player_display_name", "player_name") if c in team_rows.columns]
+    profile = model_data.get("df_profile", pl.DataFrame())
+    profile_names = {}
+    if not profile.is_empty() and "player_id" in profile.columns and "player_name" in profile.columns:
+        profile_names = dict(zip(profile["player_id"].to_list(), profile["player_name"].to_list()))
+    for r in team_rows.filter(pl.col("team") == team).group_by("player_id").agg([
+        (pl.coalesce([pl.col(c) for c in name_cols]).drop_nulls().first() if name_cols else pl.lit(None)).alias("name"),
+        pl.col("position").first().alias("position"),
+        pl.col("week").n_unique().alias("games"),
+        *[pl.col(c).sum() for c in _USAGE_TOTALS],
+    ]).to_dicts():
+        if _position_group(r.get("position")) != group:
+            continue
+        mates.append({
+            "player_id": r["player_id"], "name": r["name"] or profile_names.get(r["player_id"]) or r["player_id"],
+            "position": r["position"], "games": int(r["games"]),
+            "carries": int(r["rush_attempts"]), "targets": int(r["targets"]), "pass_att": int(r["attempts"]),
+            **_usage_shares(r, team_total),
+        })
+    mates = [m for m in mates if m[key] > 0 or m["player_id"] == player_id]
+    mates.sort(key=lambda m: m[key], reverse=True)
+    for i, m in enumerate(mates, 1):
+        m["rank"] = i
+    return {"player_id": player_id, "season": season, "seasons": seasons, "team": team,
+            "position": position, "games": games, "summary": summary, "teammates": mates[:12],
+            "team_totals": {"carries": int(team_total["rush_attempts"]), "targets": int(team_total["targets"]),
+                            "pass_att": int(team_total["attempts"])}}

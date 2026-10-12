@@ -28,8 +28,8 @@ export type AppLocation =
  * Tabs of a player: the card that opens over a game page and the full player page
  * show the same set, in this order.
  */
-export type PlayerTab = 'log' | 'depth' | 'seasons' | 'visual' | 'storylines' | 'bio' | 'vegas';
-export const PLAYER_TABS: PlayerTab[] = ['log', 'depth', 'seasons', 'visual', 'storylines', 'bio', 'vegas'];
+export type PlayerTab = 'log' | 'usage' | 'depth' | 'seasons' | 'visual' | 'storylines' | 'vegas' | 'bio';
+export const PLAYER_TABS: PlayerTab[] = ['log', 'usage', 'depth', 'seasons', 'visual', 'storylines', 'vegas', 'bio'];
 export type CardTab = PlayerTab;
 export type PlayerView = PlayerTab;
 export const CARD_TABS = PLAYER_TABS;

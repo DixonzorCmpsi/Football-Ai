@@ -98,18 +98,20 @@ GSIS_ID_RE = re.compile(r"^00-\d{7}$")
 # on with him" and "his odds" land on the right tab either way.
 #
 # The tab names are the URL's (see frontend lib/appUrl.ts PlayerTab). The full page
-# and the card show the same seven tabs, in this order.
+# and the card show the same eight tabs, in this order.
 PLAYER_VIEW_WORDS = {
     "stats": "log", "table": "log", "log": "log", "game_log": "log", "gamelog": "log", "numbers": "log",
     "depth": "depth", "depth_chart": "depth", "depthchart": "depth", "backup": "depth", "backups": "depth",
     "starter": "depth", "behind": "depth", "string": "depth", "roster_spot": "depth",
     "seasons": "seasons", "season_stats": "seasons", "career": "seasons", "year_by_year": "seasons",
+    "usage": "usage", "workload": "usage", "touches": "usage", "snap_share": "usage", "target_share": "usage",
+    "carry_share": "usage", "market_share": "usage", "role": "usage", "snaps": "usage",
     "visuals": "visual", "visual": "visual", "charts": "visual", "chart": "visual", "graphs": "visual", "trends": "visual",
     "storylines": "storylines", "storyline": "storylines", "news": "storylines", "situation": "storylines", "updates": "storylines",
     "bio": "bio", "height": "bio", "weight": "bio", "college": "bio", "draft": "bio", "drafted": "bio", "birthday": "bio",
     "vegas": "vegas", "odds": "vegas", "props": "vegas", "lines": "vegas", "betting": "vegas",
 }
-PLAYER_TABS = ("log", "depth", "seasons", "visual", "storylines", "bio", "vegas")
+PLAYER_TABS = ("log", "usage", "depth", "seasons", "visual", "storylines", "vegas", "bio")
 PAGE_VIEW = {tab: tab for tab in PLAYER_TABS}
 CARD_TAB = {tab: tab for tab in PLAYER_TABS}
 
@@ -391,8 +393,9 @@ def open_player(player: str, view: str = "stats") -> ScreenResult:
 
     ``view``: "stats" (this season's game log, the default: "show me his stats"),
     "depth" (his depth chart: "who's behind him", "is he the starter"), "seasons"
-    (every season and his career line), "visuals" (charts: "show me a visual", "his
-    trend"), "storylines" (news: "what's going on with him", "any updates"), "bio"
+    (every season and his career line), "usage" (share of his team's carries, targets
+    and snaps: "how involved is he", "is he the lead back"), "visuals" (charts: "show
+    me a visual", "his trend"), "storylines" (news: "what's going on with him", "any updates"), "bio"
     (height, weight, age, college, draft) or "vegas" (odds, props, the game line).
     Accepts a name or a gsis id; an ambiguous name opens nothing and lists the
     matches. If the user is on, or asking about, a game, prefer open_player_card,
@@ -418,7 +421,7 @@ def open_player_card(player: str, tab: str = "stats", week: int = 0) -> ScreenRe
 
     Use it for "take me to the Jets game and show me AD Mitchell's stats": the
     user stays on the game with the card open. ``tab``: "stats" (game log), "depth"
-    (depth chart), "seasons" (every season), "visuals" (charts), "storylines" (news,
+    (depth chart), "seasons" (every season), "usage" (his share of the team's carries, targets and snaps), "visuals" (charts), "storylines" (news,
     "what's his situation"), "bio", or "vegas" (odds, props, the game line). ``week``
     0 is the current week. The game is found from the player's team, so there's no
     need to open the game first.
