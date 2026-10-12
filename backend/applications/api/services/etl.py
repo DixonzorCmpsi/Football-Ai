@@ -27,7 +27,7 @@ def python_for_scripts() -> str:
 _running_scripts: set = set()
 
 
-async def run_script(script: str) -> tuple[int, bytes, bytes]:
+async def run_script(script: str, *args: str) -> tuple[int, bytes, bytes]:
     """Run a pipeline script and wait for it, without blocking the event loop.
 
     Not asyncio.create_subprocess_exec: on Windows, uvicorn's reload mode runs a
@@ -45,7 +45,7 @@ async def run_script(script: str) -> tuple[int, bytes, bytes]:
 
     loop = asyncio.get_running_loop()
     done: asyncio.Future = loop.create_future()
-    process = subprocess.Popen([python_for_scripts(), script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen([python_for_scripts(), script, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     _running_scripts.add(process)
 
     def _wait():
@@ -277,5 +277,50 @@ def injury_refresh_wrapper():
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(run_injury_refresh_async())
+        finally:
+            loop.close()
+
+
+ODDS_STEP_NAME = "10b_bovada_api_props.py"
+
+
+async def run_odds_refresh_async() -> bool:
+    """Re-pull Bovada's board (game lines and player props) and reload it into memory.
+
+    Lines move all week and props are posted midweek, so the once-a-day ETL showed
+    stale numbers. This runs only the Bovada step of the ETL (which also loads the two
+    tables), then rebuilds the in-memory data. It skips a cycle while any other pipeline
+    script is running, so it never races the daily ETL over the same rows.
+    """
+    if _running_scripts:
+        logger.info("Odds refresh: another pipeline script is running; skipping this cycle.")
+        return False
+    logger.info("Odds refresh: pulling Bovada's board...")
+    try:
+        returncode, stdout, stderr = await run_script(ETL_SCRIPT_PATH, "--only-scripts", ODDS_STEP_NAME)
+        tail = (stdout or b"").decode(errors="replace")
+        if returncode != 0 or "[FAIL" in tail or "[warn" in tail:
+            logger.error("Odds refresh did not complete (code %s): %s", returncode, (tail + (stderr or b"").decode(errors="replace"))[-800:])
+            return False
+        await asyncio.to_thread(refresh_db_data)
+        refresh_app_state()
+        from datetime import datetime, timezone
+        from ..state import model_data as _md
+        _md["odds_updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        logger.info("Odds refresh complete.")
+        return True
+    except Exception:
+        logger.exception("Odds refresh raised")
+        return False
+
+
+def odds_refresh_wrapper():
+    """Sync entry point for APScheduler."""
+    try:
+        asyncio.run(run_odds_refresh_async())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_odds_refresh_async())
         finally:
             loop.close()

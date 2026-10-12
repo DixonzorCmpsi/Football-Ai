@@ -701,6 +701,13 @@ async def get_player_card(player_id: str, week: int):
     try:
         if "df_props" in model_data and not model_data["df_props"].is_empty():
             week_props = model_data["df_props"].filter(pl.col("week") == int(week))
+            # Bovada knows players by name only, and names repeat across the league (two Josh Allens,
+            # several Michael Carters). Keep only the props posted for this player's own game
+            # (game_id is season_week_away_home); a row with no game id could not be placed, so it stays.
+            prop_team = get_team_abbr(team) if team else None
+            if prop_team and prop_team != "FA" and "game_id" in week_props.columns:
+                gid = pl.col("game_id").cast(pl.Utf8).fill_null("")
+                week_props = week_props.filter((gid == "") | gid.str.contains(rf"_{prop_team}(_|$)"))
             p_norm = normalize_name(p_name)
             week_props = week_props.with_columns(
                 pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8).alias("norm_name")

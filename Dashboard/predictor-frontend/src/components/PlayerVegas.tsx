@@ -51,8 +51,19 @@ const PlayerVegas: React.FC<{ playerId: string }> = ({ playerId }) => {
     let cancelled = false;
     setPlayer(null);
     setError(null);
-    fetch(`${API_BASE_URL}/player/${playerId}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    const get = (week?: number) =>
+      fetch(`${API_BASE_URL}/player/${playerId}${week ? `?week=${week}` : ''}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+    // Lines are for games still to be played. Once this week's game is final, look at his next one;
+    // if he has none (a bye), keep showing the game just played.
+    get()
+      .then(async (d: PlayerData & { game_final?: boolean; week?: number }) => {
+        if (d.game_final && d.week) {
+          const next = await get(d.week + 1).catch(() => null);
+          if (next?.opponent) return next;
+        }
+        return d;
+      })
       .then((d) => !cancelled && setPlayer(d))
       .catch((e) => !cancelled && setError(String(e.message || e)));
     return () => { cancelled = true; };
@@ -108,7 +119,7 @@ const PlayerVegas: React.FC<{ playerId: string }> = ({ playerId }) => {
     <div className="p-4 sm:p-6 space-y-5" data-testid="player-modal-vegas">
       <div>
         <h3 className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">
-          Game line · {player.team} vs {player.opponent || '?'}
+          Game line · {player.team} vs {player.opponent || '?'}{(player as PlayerData & { week?: number }).week ? ` · Week ${(player as PlayerData & { week?: number }).week}` : ''}
         </h3>
         {player.overunder == null && player.spread == null ? (
           <p className="text-sm text-slate-500">No line posted for this game yet.</p>
@@ -138,16 +149,16 @@ const PlayerVegas: React.FC<{ playerId: string }> = ({ playerId }) => {
             Key markets · {player.position}
           </h3>
           <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-            <table className="w-full text-sm whitespace-nowrap" data-testid="vegas-key-markets">
+            <table className="w-full text-[13px] whitespace-nowrap" data-testid="vegas-key-markets">
               <thead className="text-[10px] uppercase bg-slate-50 dark:bg-slate-900 text-slate-500 font-bold">
                 <tr>
-                  <th className="px-3 py-2 text-left">Market</th>
-                  <th className="px-3 py-2 text-right">Line</th>
-                  <th className="px-3 py-2 text-right">Over / Yes</th>
-                  {hasUnders && <th className="px-3 py-2 text-right">Under</th>}
-                  <th className="px-3 py-2 text-right" title="His average per game this season (for Anytime TD, the share of games he scored)">Season</th>
-                  <th className="px-3 py-2 text-right">Last 4</th>
-                  <th className="px-3 py-2 text-right" title="Games this season he went over the line">Over line</th>
+                  <th className="px-2 py-2 text-left">Market</th>
+                  <th className="px-2 py-2 text-right">Line</th>
+                  <th className="px-2 py-2 text-right">Over / Yes</th>
+                  {hasUnders && <th className="px-2 py-2 text-right">Under</th>}
+                  <th className="px-2 py-2 text-right" title="His average per game this season (for Anytime TD, the share of games he scored)">Season</th>
+                  <th className="px-2 py-2 text-right">Last 4</th>
+                  <th className="px-2 py-2 text-right" title="Games this season he went over the line">Over line</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -157,17 +168,17 @@ const PlayerVegas: React.FC<{ playerId: string }> = ({ playerId }) => {
                   const diff = r.line != null && r.season != null ? r.season - r.line : null;
                   return (
                     <tr key={r.def.label} data-testid="vegas-key-market">
-                      <td className="px-3 py-2 font-bold">{r.def.label}</td>
-                      <td className="px-3 py-2 text-right font-mono">{r.line ?? '–'}</td>
-                      <td className="px-3 py-2 text-right font-mono">
+                      <td className="px-2 py-2 font-bold">{r.def.label}</td>
+                      <td className="px-2 py-2 text-right font-mono">{r.line ?? '–'}</td>
+                      <td className="px-2 py-2 text-right font-mono">
                         {price ? <>{formatOdds(price.odds)} <span className="text-slate-400">· {price.prob ?? '-'}%</span></> : <span className="text-slate-400">not posted</span>}
                       </td>
                       {hasUnders && (
-                        <td className="px-3 py-2 text-right font-mono">
+                        <td className="px-2 py-2 text-right font-mono">
                           {m?.under ? <>{formatOdds(m.under.odds)} <span className="text-slate-400">· {m.under.prob ?? '-'}%</span></> : '–'}
                         </td>
                       )}
-                      <td className="px-3 py-2 text-right font-mono">
+                      <td className="px-2 py-2 text-right font-mono">
                         {r.def.scorer ? (r.season == null ? '–' : `${Math.round(r.season * 100)}%`) : oneDecimal(r.season)}
                         {diff != null && (
                           <span className={`ml-1.5 text-[10px] font-black ${diff >= 0 ? 'text-emerald-500' : 'text-amber-500'}`}>
@@ -175,8 +186,8 @@ const PlayerVegas: React.FC<{ playerId: string }> = ({ playerId }) => {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono">{r.def.scorer ? '–' : oneDecimal(r.last4)}</td>
-                      <td className="px-3 py-2 text-right font-mono">{r.hit != null ? `${r.hit}/${r.games}` : '–'}</td>
+                      <td className="px-2 py-2 text-right font-mono">{r.def.scorer ? '–' : oneDecimal(r.last4)}</td>
+                      <td className="px-2 py-2 text-right font-mono">{r.hit != null ? `${r.hit}/${r.games}` : '–'}</td>
                     </tr>
                   );
                 })}

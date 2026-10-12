@@ -146,3 +146,62 @@ def test_fuzzy_match_still_handles_name_variants():
 def test_fuzzy_match_handles_empty_inputs():
     assert _safe_prop_name_match("", ["Kyle Pitts"]) is None
     assert _safe_prop_name_match("Kyle Pitts", []) is None
+
+
+# --- the 2026 outage: Bovada answers `{}` to coupon requests that carry filter parameters --------
+
+def test_the_board_url_has_no_filter_parameters():
+    import bovada_api_client as b
+    assert "marketFilterId" not in b.NFL_COUPON and "preMatchOnly" not in b.NFL_COUPON
+
+
+def test_only_games_not_yet_started_are_taken(monkeypatch):
+    import bovada_api_client as b
+    board = [{"events": [
+        {"link": "/a", "live": False, "type": "GAMEEVENT"},
+        {"link": "/b", "live": True, "type": "GAMEEVENT"},
+        {"link": "/c", "live": False, "type": "SPECIAL"},
+    ]}]
+    monkeypatch.setattr(b, "_get", lambda *_a, **_k: board)
+    assert [e["link"] for e in b.fetch_nfl_events()] == ["/a"]
+    monkeypatch.setattr(b, "_get", lambda *_a, **_k: {})
+    assert b.fetch_nfl_events() == []
+
+
+def test_has_markets():
+    import bovada_api_client as b
+    assert b.has_markets({"displayGroups": [{"markets": [{"description": "x"}]}]})
+    assert not b.has_markets({"displayGroups": [{"markets": []}]})
+    assert not b.has_markets({})
+
+
+def test_team_defences_are_not_players():
+    ev = _event([{
+        "description": "Anytime Touchdown Scorer",
+        "period": {"description": "Game"},
+        "outcomes": [
+            {"description": "Josh Allen (BUF)", "price": {"american": "+120"}},
+            {"description": "Buffalo Bills Def/ST", "price": {"american": "+900"}},
+            {"description": "Los Angeles Rams", "price": {"american": "+1500"}},
+        ],
+    }])
+    rows = parse_event_player_props(ev, 2026, 6, "2026_06_BUF_LA")
+    assert [r["player_name"] for r in rows] == ["Josh Allen"]
+
+
+def test_a_rematch_resolves_to_the_game_nearest_its_date():
+    import importlib.util
+    from datetime import date
+
+    import polars as pl
+
+    spec = importlib.util.spec_from_file_location(
+        "bovada_props_script", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rag_data", "10b_bovada_api_props.py"))
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    schedule = pl.DataFrame({
+        "week": [3, 14], "home_team": ["DEN", "DEN"], "away_team": ["LV", "LV"],
+        "gameday": ["2026-09-27", "2026-12-06"],
+    })
+    assert script.week_and_game_id(schedule, "DEN", "LV", 2026, date(2026, 12, 6)) == (14, "2026_14_LV_DEN")
+    assert script.week_and_game_id(schedule, "DEN", "LV", 2026, date(2026, 9, 27)) == (3, "2026_03_LV_DEN")

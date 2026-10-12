@@ -160,6 +160,139 @@ def check_running_app(base: str, auth: str | None, insecure: bool) -> None:
         fail("app: game lines", f"/schedule/{week} failed: {type(exc).__name__}")
 
 
+def _american_prob(odds) -> float | None:
+    """American odds -> implied probability in percent (the same arithmetic the scraper uses)."""
+    text_ = str(odds or "").strip().upper()
+    if text_ in ("EVEN", "EV"):
+        return 50.0
+    try:
+        v = int(text_.replace("+", ""))
+    except ValueError:
+        return None
+    if v == 0:
+        return None
+    return 100.0 * (100.0 / (v + 100.0) if v > 0 else abs(v) / (abs(v) + 100.0))
+
+
+def _norm_name(name: str) -> str:
+    return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+
+
+def check_odds(conn, insp, upcoming: int) -> None:
+    """Is the betting data users see real? Fresh, complete for the next games, and in
+    agreement with an independent source (the NFL schedule feed's own lines)."""
+    from datetime import datetime, timezone
+
+    # ---- game lines
+    if not has(insp, "bovada_game_lines"):
+        warn("odds: game lines", "no bovada_game_lines table; the app falls back to the schedule feed's lines")
+    else:
+        sched = conn.execute(text(
+            "SELECT game_id, home_team, away_team, spread_line, total_line FROM schedule WHERE week = :w"
+        ), {"w": upcoming}).mappings().all()
+        lines = {
+            (r["home_team"], r["away_team"]): r for r in conn.execute(text(
+                "SELECT home_team, away_team, home_spread, total_over, processed_at FROM bovada_game_lines WHERE week = :w"
+            ), {"w": upcoming}).mappings().all()
+        }
+        have = [g for g in sched if (g["home_team"], g["away_team"]) in lines]
+        stamps = [str(r["processed_at"]) for r in lines.values() if r["processed_at"]]
+        age_h = None
+        if stamps:
+            try:
+                newest = max(datetime.fromisoformat(x.replace("Z", "+00:00")) for x in stamps)
+                if newest.tzinfo is None:
+                    newest = newest.replace(tzinfo=timezone.utc)
+                age_h = (datetime.now(timezone.utc) - newest).total_seconds() / 3600
+            except ValueError:
+                pass
+        if not sched:
+            warn("odds: game lines", f"no schedule rows for week {upcoming} to compare with")
+        elif not have:
+            warn("odds: game lines", f"none of week {upcoming}'s {len(sched)} games has a Bovada line yet; the schedule feed's lines are shown instead")
+        else:
+            detail = f"{len(have)} of {len(sched)} week-{upcoming} games have a Bovada line"
+            if age_h is not None:
+                detail += f"; newest pull {age_h:.1f}h ago"
+            (warn if (age_h is not None and age_h > 36) else ok)("odds: game lines", detail + (" (stale: the odds refresh is not running)" if age_h and age_h > 36 else ""))
+
+            # Independent check: the schedule feed publishes its own spread and total.
+            flipped, off, checked = [], [], 0
+            for g in have:
+                b = lines[(g["home_team"], g["away_team"])]
+                try:
+                    bov_fav = -float(b["home_spread"])  # positive = home favoured, like the schedule's spread_line
+                    bov_total = float(b["total_over"])
+                    s_fav, s_total = float(g["spread_line"]), float(g["total_line"])
+                except (TypeError, ValueError):
+                    continue
+                checked += 1
+                tag = f"{g['away_team']}@{g['home_team']} (Bovada home {bov_fav:+.1f}/{bov_total:g}, schedule {s_fav:+.1f}/{s_total:g})"
+                if bov_fav * s_fav < 0 and abs(bov_fav - s_fav) >= 3:
+                    flipped.append(tag)
+                elif abs(bov_fav - s_fav) > 3 or abs(bov_total - s_total) > 3:
+                    off.append(tag)
+            if checked == 0:
+                warn("odds: lines vs schedule feed", "no game had comparable numbers")
+            elif flipped:
+                fail("odds: lines vs schedule feed", f"{len(flipped)} game(s) have the OPPOSITE favourite: " + "; ".join(flipped[:3]))
+            elif off:
+                warn("odds: lines vs schedule feed", f"{len(off)} of {checked} differ by more than 3 points: " + "; ".join(off[:3]))
+            else:
+                ok("odds: lines vs schedule feed", f"{checked} games agree on the favourite and are within 3 points of the schedule feed")
+
+    # ---- player props
+    if not has(insp, "bovada_player_props"):
+        warn("odds: player props", "no bovada_player_props table; run the Bovada step (10b)")
+        return
+    rows = conn.execute(text(
+        "SELECT player_name, position, prop_type, line, odds, side, implied_prob, game_id, scraped_at "
+        "FROM bovada_player_props WHERE week = :w"
+    ), {"w": upcoming}).mappings().all()
+    if not rows:
+        warn("odds: player props", f"none posted for week {upcoming} yet (Bovada usually lists them from Tuesday or Wednesday)")
+        return
+    games = {r["game_id"] for r in rows if r["game_id"]}
+    ok("odds: player props", f"{len(rows)} rows, {len({r['player_name'] for r in rows})} players, {len(games)} game(s) with props")
+
+    # Every row must be a real price: the implied probability must follow from the odds.
+    bad_prob = [r for r in rows if _american_prob(r["odds"]) is not None and r["implied_prob"] is not None
+                and abs(_american_prob(r["odds"]) - float(r["implied_prob"])) > 0.1]
+    (fail if bad_prob else ok)("odds: probabilities", f"{len(bad_prob)} rows whose implied probability does not follow from the odds" if bad_prob else "implied probability follows from the odds on every row")
+
+    dup = len(rows) - len({(r["player_name"], r["prop_type"], r["side"], r["line"], r["game_id"]) for r in rows})
+    (fail if dup else ok)("odds: duplicates", f"{dup} repeated rows" if dup else "none")
+
+    sides = {}
+    for r in rows:
+        if str(r["side"]).lower() in ("over", "under"):
+            sides.setdefault((r["player_name"], r["prop_type"], r["line"], r["game_id"]), set()).add(str(r["side"]).lower())
+    if sides:
+        paired = sum(1 for v in sides.values() if len(v) == 2)
+        (ok if paired / len(sides) >= 0.8 else warn)("odds: over/under pairs", f"{paired} of {len(sides)} lines have both an over and an under price")
+
+    # A prop only helps if it lands on the right player: names are matched against the roster.
+    prof = {_norm_name(r[0]) for r in conn.execute(text("SELECT player_name FROM player_profiles")).fetchall()}
+    names = {r["player_name"] for r in rows}
+    unmatched = sorted(n for n in names if _norm_name(n) not in prof)
+    share = 1 - len(unmatched) / len(names)
+    (fail if share < 0.7 else warn if unmatched else ok)(
+        "odds: players matched",
+        f"{len(names) - len(unmatched)} of {len(names)} names match a roster player" + (f"; unmatched: {', '.join(unmatched[:5])}" if unmatched else ""),
+    )
+
+    stamps = [str(r["scraped_at"]) for r in rows if r["scraped_at"]]
+    if stamps:
+        try:
+            newest = max(datetime.fromisoformat(x.replace("Z", "+00:00")) for x in stamps)
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            hours = (datetime.now(timezone.utc) - newest).total_seconds() / 3600
+            (warn if hours > 36 else ok)("odds: props freshness", f"newest pull {hours:.1f}h ago" + (" (stale: the odds refresh is not running)" if hours > 36 else ""))
+        except ValueError:
+            pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true", help="print machine-readable results")
@@ -249,15 +382,7 @@ def main() -> int:
         else:
             fail("player profiles", "table does not exist")
 
-        # --- odds: informational, game lines come from the schedule feed
-        if not has(insp, "bovada_player_props"):
-            warn("bovada props", "no props table yet: Bovada's board was empty on the last run, so there are no prop prices")
-        if has(insp, "bovada_player_props"):
-            wmax = scalar(conn, "SELECT max(week) FROM bovada_player_props")
-            if wmax is None or wmax < upcoming:
-                warn("bovada props", f"newest week {wmax}; week {upcoming} is next (prop prices are missing until the scrape is fixed)")
-            else:
-                ok("bovada props", f"through week {wmax}")
+        check_odds(conn, insp, upcoming)
 
     # --- previous seasons (CSV caches the app loads) and models
     for y in HISTORY_SEASONS:

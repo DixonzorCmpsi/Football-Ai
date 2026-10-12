@@ -36,7 +36,11 @@ import urllib.error
 from datetime import datetime, timezone
 
 BASE = "https://www.bovada.lv/services/sports/event/coupon/events/A/description"
-NFL_COUPON = BASE + "/football/nfl?marketFilterId=def&preMatchOnly=true&lang=en"
+# The plain URL. Bovada changed its API in 2026: a request carrying `marketFilterId` or
+# `preMatchOnly` now answers `{}`, which is how the board went "empty" and every prop vanished
+# from the app with no error. Without those parameters the response is the whole board, with the
+# full list of markets for each game inside it, so no per-game request is needed.
+NFL_COUPON = BASE + "/football/nfl?lang=en"
 
 HEADERS = {
     "User-Agent": (
@@ -171,6 +175,12 @@ def classify_market(description: str) -> tuple[str | None, str | None, str | Non
     return None, None, None
 
 
+def is_team_entry(name: str | None) -> bool:
+    """Bovada lists team defences in the player markets ("Buffalo Bills Def/ST"); they are not players."""
+    text = (name or "").strip()
+    return text in BOVADA_NAME_MAP or text.lower().endswith("def/st")
+
+
 def parse_event_player_props(event: dict, season: int, week: int | None,
                              game_id: str | None, scraped_at: str | None = None) -> list[dict]:
     """Flatten one Bovada event into player-prop rows.
@@ -192,7 +202,7 @@ def parse_event_player_props(event: dict, season: int, week: int | None,
 
             if kind == "ou":
                 name, team = split_player_and_team(player_text or "")
-                if not name:
+                if not name or is_team_entry(name):
                     continue
                 for outcome in market.get("outcomes") or []:
                     price = outcome.get("price") or {}
@@ -224,7 +234,7 @@ def parse_event_player_props(event: dict, season: int, week: int | None,
                 for outcome in market.get("outcomes") or []:
                     price = outcome.get("price") or {}
                     name, team = split_player_and_team(outcome.get("description") or "")
-                    if not name:
+                    if not name or is_team_entry(name):
                         continue
                     odds = price.get("american")
                     rows.append({
@@ -332,14 +342,21 @@ def _get(url: str, timeout: int = 40, retries: int = 3, backoff: float = 1.5):
 
 
 def fetch_nfl_events() -> list[dict]:
+    """Games that have not kicked off. In-play prices are a different wager and go stale in seconds."""
     data = _get(NFL_COUPON)
     if not data:
         return []
-    return data[0].get("events") or []
+    events = data[0].get("events") or []
+    return [e for e in events if not e.get("live") and e.get("type", "GAMEEVENT") == "GAMEEVENT"]
+
+
+def has_markets(event: dict) -> bool:
+    return any(g.get("markets") for g in event.get("displayGroups") or [])
 
 
 def fetch_event_full(link: str) -> dict | None:
-    data = _get(f"{BASE}{link}?marketFilterId=all&lang=en")
+    """One game's whole board. (`marketFilterId=all` now returns FEWER markets than no filter.)"""
+    data = _get(f"{BASE}{link}?lang=en")
     if not data:
         return None
     events = data[0].get("events") or []

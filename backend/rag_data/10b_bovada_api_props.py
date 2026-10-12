@@ -29,6 +29,7 @@ from bovada_api_client import (  # noqa: E402
     event_teams,
     fetch_event_full,
     fetch_nfl_events,
+    has_markets,
     parse_event_game_lines,
     parse_event_player_props,
 )
@@ -89,8 +90,12 @@ def load_schedule(season: int) -> pl.DataFrame:
     return pl.read_csv(path, ignore_errors=True)
 
 
-def week_and_game_id(schedule: pl.DataFrame, home: str, away: str, season: int):
-    """Resolve (week, game_id) from the schedule, matching either orientation."""
+def week_and_game_id(schedule: pl.DataFrame, home: str, away: str, season: int, when=None):
+    """Resolve (week, game_id) from the schedule, matching either orientation.
+
+    Division rivals meet twice a season, so the teams alone can match two rows; `when` (the
+    game's kickoff date) picks the one closest in time rather than always the first.
+    """
     if schedule.is_empty() or not home or not away:
         return None, None
     cols = set(schedule.columns)
@@ -103,6 +108,13 @@ def week_and_game_id(schedule: pl.DataFrame, home: str, away: str, season: int):
         hit = schedule.filter((pl.col(hc) == away) & (pl.col(ac) == home))
     if hit.is_empty():
         return None, None
+    if when is not None and hit.height > 1 and "gameday" in cols:
+        def gap(day):
+            try:
+                return abs((datetime.fromisoformat(str(day)[:10]).date() - when).days)
+            except ValueError:
+                return 10**6
+        hit = hit.with_columns(pl.col("gameday").map_elements(gap, return_dtype=pl.Int64).alias("_gap")).sort("_gap").drop("_gap")
     row = hit.row(0, named=True)
     week = int(row["week"])
     return week, f"{season}_{week:02d}_{row[ac]}_{row[hc]}"
@@ -155,15 +167,19 @@ def main() -> int:
         link = stub.get("link")
         if not link:
             continue
-        try:
-            event = fetch_event_full(link)
-        except Exception as exc:
-            print(f"  [{i}/{len(events)}] {link} -> FAILED: {exc}")
-            continue
+        # The board already carries each game's markets; only fetch the game again if it didn't.
+        event = stub if has_markets(stub) else None
+        if event is None:
+            try:
+                event = fetch_event_full(link)
+            except Exception as exc:
+                print(f"  [{i}/{len(events)}] {link} -> FAILED: {exc}")
+                continue
         if not event:
             continue
         home, away = event_teams(event)
-        week, game_id = week_and_game_id(schedule, home, away, season)
+        kickoff = datetime.fromtimestamp(stub["startTime"] / 1000, timezone.utc).date() if stub.get("startTime") else None
+        week, game_id = week_and_game_id(schedule, home, away, season, kickoff)
         if game_id is None:
             unmatched_games.append(f"{away}@{home}")
         rows = parse_event_player_props(event, season, week, game_id, scraped_at)

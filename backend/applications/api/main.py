@@ -16,7 +16,7 @@ from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, 
 from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
-from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, terminate_running_scripts, etl_ran_recently
+from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, odds_refresh_wrapper, terminate_running_scripts, etl_ran_recently
 from .services.storylines import storylines_wrapper
 from .routes import players, games, general, debug, tier_list, sleeper, agent, llm_proxy, compare, storyline_summary
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
@@ -130,6 +130,15 @@ async def lifespan(app: FastAPI):
                 injury_refresh_wrapper, 'interval', minutes=injury_minutes,
                 id='injury_refresh', max_instances=1, coalesce=True,
             )
+        # Bovada's lines move all week and its player props appear midweek, so the 06:00 pull
+        # alone showed numbers hours old (or none at all). One request every ODDS_REFRESH_MINUTES
+        # (0 disables).
+        odds_minutes = int(os.getenv('ODDS_REFRESH_MINUTES', '120'))
+        if odds_minutes > 0:
+            scheduler.add_job(
+                odds_refresh_wrapper, 'interval', minutes=odds_minutes,
+                id='odds_refresh', max_instances=1, coalesce=True,
+            )
         # Player storylines: ESPN's league feed is capped at 50 articles and only
         # covers the last several hours, so polling it a few times a day is what
         # accumulates real per-player history. Hourly, since it's one small
@@ -145,8 +154,9 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logger.info(
             "Scheduler active: ETL 06:00, rookie refresh 06:15, historical stats 06:20, "
-            "depth charts 06:25, app-state hourly, injuries every %s min, storylines every %s h.",
+            "depth charts 06:25, app-state hourly, injuries every %s min, odds every %s min, storylines every %s h.",
             injury_minutes if injury_minutes > 0 else "off",
+            odds_minutes if odds_minutes > 0 else "off",
             storyline_hours if storyline_hours > 0 else "off",
         )
         
