@@ -1,0 +1,17 @@
+# Builds both production images on Google Cloud Build and pushes them to Artifact Registry.
+# Run by deploy/gcp/deploy.sh:
+#   gcloud builds submit --config deploy/cloudbuild.yaml --substitutions _REGISTRY=...,_TAG=...
+steps:
+  - id: backend
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile.backend", "-t", "${_REGISTRY}/backend:${_TAG}", "-t", "${_REGISTRY}/backend:latest", "backend"]
+  - id: web
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile.web", "-t", "${_REGISTRY}/web:${_TAG}", "-t", "${_REGISTRY}/web:latest", "Dashboard/predictor-frontend"]
+images:
+  - "${_REGISTRY}/backend:${_TAG}"
+  - "${_REGISTRY}/backend:latest"
+  - "${_REGISTRY}/web:${_TAG}"
+  - "${_REGISTRY}/web:latest"
+options:
+  logging: CLOUD_LOGGING_ONLY

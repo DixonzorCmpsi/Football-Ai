@@ -1,0 +1,62 @@
+# Football-Ai edge with "Sign in with Google", allowing only the email in ALLOWED_EMAIL.
+# Selected with CADDYFILE=./Caddyfile.oauth in .env.prod (deploy/gcp/set-google-login.sh does it).
+#
+# Every request except the sign-in plumbing first asks oauth2-proxy "is this browser signed in
+# as an allowed Google account?". If not, it is sent to Google. The API goes through the same
+# check, so nothing is reachable without the sign-in.
+#
+# Environment: SITE_ADDRESS is the bare host (e.g. 34-24-8-123.sslip.io), which makes Caddy get
+# a real Let's Encrypt certificate; DEFAULT_SNI is the same host.
+{
+	admin off
+	default_sni {$DEFAULT_SNI}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+
+	# Sign-in, callback and sign-out are handled by oauth2-proxy itself.
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+
+	handle {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			header_up X-Forwarded-Uri {uri}
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/start?rd={scheme}://{host}{uri} 302
+			}
+		}
+
+		# /api/x -> backend /x. flush_interval -1: the assistant streams its answer.
+		handle_path /api/* {
+			reverse_proxy backend:8000 {
+				flush_interval -1
+				transport http {
+					response_header_timeout 10m
+				}
+			}
+		}
+
+		handle {
+			root * /srv
+			@assets path /assets/*
+			header @assets Cache-Control "public, max-age=31536000, immutable"
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}

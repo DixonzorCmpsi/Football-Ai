@@ -1,0 +1,18 @@
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env
+*.env
+tests
+bovada_data
+go-api
+agent/runtime/node_modules
+# Training scripts and plots stay out; the trained models are loaded at runtime.
+model_training/*
+!model_training/models
+model_training/models/evaluation_plots*
+# local data caches are rebuilt on the server, and must not leak this machine's snapshot into the image
+rag_data/*.csv
+rag_data/**/*.csv

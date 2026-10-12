@@ -1,0 +1,53 @@
+# Production backend image. Build context: ./backend
+#   docker build -f deploy/Dockerfile.backend -t football-ai-backend ./backend
+#
+# Differs from backend/Dockerfile (the development image) on purpose:
+#   * no Chrome/chromedriver and no --reload: the live path doesn't scrape with a browser,
+#     and reload is a development tool (it also respawns the scheduler);
+#   * Node.js plus the vendored agent runtime, because the in-app assistant runs
+#     `pi --mode rpc` as a subprocess and the development image has no node at all;
+#   * Python 3.12, the version the pins in requirements-prod.txt were tested on;
+#   * runs as an unprivileged user.
+
+# --- agent runtime dependencies (node_modules for pi + the Football-Ai tool extension)
+FROM node:22-slim AS agent
+WORKDIR /agent
+COPY agent/runtime/package.json agent/runtime/package-lock.json ./
+RUN npm ci --omit=dev
+
+# --- app
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# curl for the container health check; libgomp is xgboost's OpenMP runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node, copied from the official image rather than a distro package so it is the version
+# the agent runtime was built against.
+COPY --from=agent /usr/local/bin/node /usr/local/bin/node
+
+COPY requirements-prod.txt .
+RUN pip install -r requirements-prod.txt
+
+RUN useradd --system --create-home --uid 10001 app
+
+# The app writes caches (depth charts, historical stats, ETL CSVs) under rag_data and
+# model files beside the code, so the unprivileged user owns the tree. --chown here, not
+# a later `chown -R`, which would copy the whole tree into a second layer.
+COPY --chown=app:app . .
+COPY --from=agent --chown=app:app /agent/node_modules ./agent/runtime/node_modules
+USER app
+
+EXPOSE 8000
+
+# One worker, deliberately: the app holds its data frames in memory and runs its own
+# scheduler (ETL, injuries, storylines); a second worker would load a second copy and
+# run every job twice. --proxy-headers because Caddy terminates TLS in front.
+CMD ["python", "-m", "uvicorn", "applications.server:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
