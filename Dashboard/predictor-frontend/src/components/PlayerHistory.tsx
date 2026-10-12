@@ -1,11 +1,12 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper, ListOrdered, ArrowLeft, User, BarChart3, TrendingUp } from 'lucide-react';
+import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper, ListOrdered, ArrowLeft, User, BarChart3, TrendingUp, Gauge } from 'lucide-react';
 import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 import { pointColor } from './PlayerPerformanceCharts';
 import PlayerStorylines from './PlayerStorylines';
 import PlayerDepthChart from './PlayerDepthChart';
 import PlayerBio from './PlayerBio';
+import PlayerUsage from './PlayerUsage';
 import PlayerVegas from './PlayerVegas';
 import PlayerRankChips from './PlayerRankChips';
 import VisualsPanel from './VisualsPanel';
@@ -15,16 +16,17 @@ import type { PlayerTab } from '../lib/appUrl';
 import { SeasonStatsTable, GameLogTable } from './PlayerStatTables';
 import { sizedPlayerImage } from '../utils/playerImage';
 
-// Flow: this season's game log, where he sits on the team, every season, then
-// visuals and news. Bio and the betting market close it out.
+// Flow: this season's game log, how much of the offense runs through him, where he
+// sits on the team, every season, then visuals and news. The betting market, then Bio, close it out.
 const TABS = [
   ['log', 'Game Log', Table2],
+  ['usage', 'Usage', Gauge],
   ['depth', 'Depth Chart', ListOrdered],
   ['seasons', 'Season Stats', BarChart3],
   ['visual', 'Visual', LineChart],
   ['storylines', 'Storylines', Newspaper],
-  ['bio', 'Bio', User],
   ['vegas', 'Vegas Data', TrendingUp],
+  ['bio', 'Bio', User],
 ] as const;
 
 interface Props {
@@ -104,7 +106,7 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
           view: 'PLAYER',
           title: `${cardData.name}'s player page, ${tabLabel} tab`,
           facts: [
-            ...(viewMode === 'log' || viewMode === 'visual' ? (selectedSeason ? [`season ${selectedSeason}`] : []) : []),
+            ...(viewMode === 'log' || viewMode === 'usage' || viewMode === 'visual' ? (selectedSeason ? [`season ${selectedSeason}`] : []) : []),
             ...(playerId !== rootId && rootCard?.name ? [`opened from ${rootCard.name}'s depth chart`] : []),
           ],
           entities: [
@@ -234,7 +236,7 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
 
       {/* ONE ROW: view tabs on the left, season picker on the right.
           The tabs always render (a player with no game logs still needs Storylines).
-          The season picker only applies to Game Log and Visual, so it hides elsewhere. */}
+          The season picker only applies to Game Log, Usage and Visual, so it hides elsewhere. */}
       <div className="flex items-center gap-3 mb-3">
         <div role="tablist" className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/60 p-1 rounded-lg border border-slate-200 dark:border-slate-700 min-w-0 overflow-x-auto scrollbar-none">
           {TABS.map(([mode, label, Icon]) => (
@@ -255,7 +257,7 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
           ))}
         </div>
 
-        {(viewMode === 'log' || viewMode === 'visual') && seasons.length > 0 && currentSeason && (
+        {(viewMode === 'log' || viewMode === 'usage' || viewMode === 'visual') && seasons.length > 0 && currentSeason && (
           <div className="ml-auto shrink-0 flex items-center gap-1" title="Use the left and right arrow keys to change season">
             <button
               onClick={() => canPrev && setSelectedSeason(seasons[idx + 1].season)}
@@ -305,6 +307,15 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
           />
         ) : viewMode === 'vegas' ? (
           <PlayerVegas playerId={playerId} />
+        ) : viewMode === 'usage' ? (
+          <PlayerUsage
+            playerId={playerId}
+            season={selectedSeason}
+            teamColor={teamColor}
+            onSelectPlayer={setPlayerId}
+            extraIds={extraCompareIds}
+            onRemove={onToggleCompare}
+          />
         ) : viewMode === 'depth' ? (
           <PlayerDepthChart
             team={cardData?.team}

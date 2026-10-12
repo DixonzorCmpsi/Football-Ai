@@ -115,3 +115,47 @@ class TestBio:
     def test_missing_player_gives_nulls_not_guesses(self):
         bio = players.get_player_bio("00-404")
         assert bio["college"] is None and bio["birth_date"] is None and bio["height_in"] is None
+
+
+class TestUsage:
+    def _stats(self):
+        base = dict(season=2026, season_type="REG", team="LAC", opponent_team="DEN")
+        rows = []
+        for week in (1, 2):
+            rows += [
+                dict(player_id="rb1", player_display_name="A Back", position="RB", week=week, rush_attempts=15, targets=3, receptions=2, rushing_yards=70, **base),
+                dict(player_id="rb2", player_display_name="B Back", position="RB", week=week, rush_attempts=5, targets=1, receptions=1, rushing_yards=20, **base),
+                dict(player_id="qb1", player_display_name="C Quarter", position="QB", week=week, attempts=30, rush_attempts=0, **base),
+                dict(player_id="wr1", player_display_name="D Wide", position="WR", week=week, targets=6, receptions=4, receiving_yards=60, **base),
+            ]
+        return pl.DataFrame(rows)
+
+    def test_shares_are_of_the_team_total_and_rank_teammates(self, monkeypatch):
+        monkeypatch.setitem(model_data, "df_player_stats", self._stats())
+        out = players.get_player_usage("rb1")
+        assert out["team"] == "LAC" and out["season"] == 2026 and out["seasons"] == [2026]
+        week1 = out["games"][0]
+        # 15 of the team's 20 carries; 3 of its 10 targets (3 + 1 + 6)
+        assert (week1["carries"], week1["team_carries"], week1["carry_share"]) == (15, 20, 75.0)
+        assert (week1["targets"], week1["team_targets"], week1["target_share"]) == (3, 10, 30.0)
+        assert out["summary"]["carry_share"] == 75.0
+        assert out["summary"]["carries_per_game"] == 15.0
+        assert [m["name"] for m in out["teammates"]] == ["A Back", "B Back"]
+        assert out["teammates"][0]["rank"] == 1
+
+    def test_quarterback_pass_attempt_share_and_unknown_player(self, monkeypatch):
+        monkeypatch.setitem(model_data, "df_player_stats", self._stats())
+        assert players.get_player_usage("qb1")["summary"]["pass_att_share"] == 100.0
+        assert players.get_player_usage("nobody")["games"] == []
+
+
+class TestStorylines:
+    def test_a_failed_lookup_is_an_empty_list_not_a_500(self, monkeypatch):
+        from applications.api.services import storylines
+
+        def boom(*_a, **_k):
+            raise RuntimeError("store not loaded")
+
+        monkeypatch.setattr(storylines, "get_player_storylines", boom)
+        out = players.get_storylines("00-1")
+        assert out["storylines"] == [] and out["count"] == 0 and out["degraded"] is True

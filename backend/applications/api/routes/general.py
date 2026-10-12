@@ -32,6 +32,7 @@ async def health_check():
         # Freshness of the two fastest-moving feeds, so the UI can show how
         # stale the injury picture is rather than implying it is live.
         "injuries_updated_at": model_data.get("injuries_updated_at"),
+        "odds_updated_at": model_data.get("odds_updated_at"),
         "storylines_updated_at": model_data.get("storylines_updated_at"),
         "data_loaded_at": model_data.get("data_loaded_at"),
     }
