@@ -1,0 +1,40 @@
+# What the running app and its ETL scripts actually import, pinned to the versions
+# the app is developed and tested against (Python 3.12). requirements.txt is the
+# wider development set (training, scraping, notebooks); production does not need it,
+# and torch/transformers/Chrome alone would triple the image.
+#
+# Not here on purpose: selenium/undetected-chromedriver (the Chrome Bovada crawler was
+# replaced by the JSON step 10b), sentence-transformers (imported lazily by one
+# optional tier-list feature), torch, matplotlib.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sse-starlette==3.4.11
+httpx==0.28.1
+pydantic==2.13.5
+python-dotenv==1.2.3
+python-multipart==0.0.32
+slowapi==0.1.10
+
+polars==1.44.2
+pyarrow==25.0.1
+connectorx==0.4.5
+pandas==3.0.5
+numpy==2.5.3
+scikit-learn==1.9.1
+# CPU-only build of the same library (`import xgboost`): the standard wheel drags in
+# NVIDIA's multi-GPU runtime (~350 MB) that a server without a GPU never uses.
+xgboost-cpu==3.4.1
+joblib==1.6.0
+nflreadpy==0.1.5
+rapidfuzz==3.14.6
+thefuzz==0.22.1
+
+sqlalchemy==2.0.52
+psycopg2-binary==2.9.13
+apscheduler==3.11.3
+
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.3
+tqdm
+google-cloud-secret-manager==2.30.0

@@ -1,0 +1,50 @@
+# Football-Ai edge: HTTPS, the login, the static app, and /api -> backend.
+#
+# Environment (from .env.prod):
+#   SITE_ADDRESS   https://203.0.113.10   while there is only an IP
+#                  detalk.example         once a domain points here (Caddy then gets a real certificate)
+#   TLS_MODE       internal               self-signed, for the IP phase (the browser warns once)
+#                  you@example.com        the ACME contact, once there is a real domain
+#   BASIC_AUTH_USER / BASIC_AUTH_HASH     the login; the hash is `caddy hash-password` output
+{
+	admin off
+}
+
+{$SITE_ADDRESS} {
+	tls {$TLS_MODE}
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		-Server
+		# Strict-Transport-Security is added once the site has a real certificate. Sent
+		# alongside a self-signed one it would stop the browser offering "continue anyway".
+	}
+
+	# While the app is private, nothing is served without the login.
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# /api/x -> backend /x, the same mapping the old nginx config and the Vite dev proxy use.
+	# flush_interval -1: the assistant streams its answer (server-sent events); buffering
+	# would hold it until the end.
+	handle_path /api/* {
+		reverse_proxy backend:8000 {
+			flush_interval -1
+			transport http {
+				response_header_timeout 10m
+			}
+		}
+	}
+
+	handle {
+		root * /srv
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		try_files {path} /index.html
+		file_server
+	}
+}
