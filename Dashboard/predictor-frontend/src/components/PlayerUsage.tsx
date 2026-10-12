@@ -44,6 +44,7 @@ interface Mate {
   player_id: string;
   name: string;
   position: string;
+  games: number;
   carries: number;
   targets: number;
   pass_att: number;
