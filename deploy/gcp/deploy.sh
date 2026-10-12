@@ -43,7 +43,7 @@ rm -f "$ARCHIVE"
 say "Unpacking and preparing .env.prod"
 LOGIN_FILE="${HOME}/.football-ai-login"
 # `sudo bash -s` reads this script from stdin. It prints the new login only on the first run.
-OUT="$(vm_ssh "sudo bash -s" <<REMOTE
+OUT="$(vm_script <<REMOTE
 set -euo pipefail
 rm -rf ${REMOTE_ROOT}/app.new && mkdir -p ${REMOTE_ROOT}/app.new
 tar -xzf /tmp/football-ai.tar.gz -C ${REMOTE_ROOT}/app.new

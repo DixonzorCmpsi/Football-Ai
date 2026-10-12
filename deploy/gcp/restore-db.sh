@@ -20,7 +20,7 @@ vm_scp "$DUMP" /tmp/restore.sql.gz
 rm -f "$DUMP"
 
 say "Restoring on the server (the API is stopped while this runs)"
-vm_ssh "sudo bash -s" <<REMOTE
+vm_script <<REMOTE
 set -euo pipefail
 cd ${REMOTE_ROOT}/app
 ${COMPOSE} stop backend web
