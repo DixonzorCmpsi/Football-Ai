@@ -210,6 +210,7 @@ def sync_injuries_to_db(csv_path: str | None = None, uri: str | None = None) -> 
         .select(["player_id", "player_name", "injury_status", "week"])
         .with_columns(pl.col("week").cast(pl.Int64))
         .unique(subset=["player_id", "week"], keep="last", maintain_order=True)
+        .sort(["week", "player_id"])
     )
     if df.is_empty():
         return 0
@@ -223,6 +224,9 @@ def sync_injuries_to_db(csv_path: str | None = None, uri: str | None = None) -> 
                 "(player_id TEXT, player_name TEXT, injury_status TEXT, week BIGINT)"
             )
             cur.execute(f"DELETE FROM {table} WHERE week = ANY(%s)", (weeks,))
+            # Nothing may sit beyond the newest week in the refreshed file: a stray future week (an old
+            # bad tag) outranks the real current week for anyone who picks "the latest".
+            cur.execute(f"DELETE FROM {table} WHERE week > %s", (max(weeks),))
             execute_values(
                 cur,
                 f"INSERT INTO {table} (player_id, player_name, injury_status, week) VALUES %s",
