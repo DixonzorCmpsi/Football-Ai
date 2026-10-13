@@ -372,11 +372,15 @@ def new_final_scores_upstream(season: int | None = None) -> list[str]:
 
 async def run_new_results_etl_async() -> bool:
     """Run the ETL if (and only if) the feed has results we have not loaded yet."""
+    logger.info("New-results check: starting.")
     if _running_scripts:
+        logger.info("New-results check: skipped, a pipeline script is running.")
         return False
     # Results can appear before the player stats do; do not run the whole pipeline more than once
     # every few hours while we wait for the rest to be published.
-    if etl_ran_recently(hours=float(os.getenv("NEW_RESULTS_MIN_GAP_HOURS", "3"))):
+    gap = float(os.getenv("NEW_RESULTS_MIN_GAP_HOURS", "3"))
+    if etl_ran_recently(hours=gap):
+        logger.info("New-results check: skipped, the ETL finished within the last %g h.", gap)
         return False
     try:
         new = await asyncio.to_thread(new_final_scores_upstream)
