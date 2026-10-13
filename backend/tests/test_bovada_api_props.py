@@ -205,3 +205,21 @@ def test_a_rematch_resolves_to_the_game_nearest_its_date():
     })
     assert script.week_and_game_id(schedule, "DEN", "LV", 2026, date(2026, 12, 6)) == (14, "2026_14_LV_DEN")
     assert script.week_and_game_id(schedule, "DEN", "LV", 2026, date(2026, 9, 27)) == (3, "2026_03_LV_DEN")
+
+
+def test_the_schedule_comes_from_the_database_when_the_csv_is_gone(monkeypatch, tmp_path):
+    """A deploy replaces the container, taking the CSVs with it; the odds step must not need them."""
+    import importlib.util
+
+    import polars as pl
+
+    spec = importlib.util.spec_from_file_location(
+        "bovada_props_script2", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rag_data", "10b_bovada_api_props.py"))
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    monkeypatch.setattr(script, "SCHEDULE_CSV", str(tmp_path / "missing_{season}.csv"))
+    seen = []
+    monkeypatch.setattr(script, "read_db_table", lambda sql: seen.append(sql) or pl.DataFrame({"week": [6], "home_team": ["DEN"], "away_team": ["SEA"], "gameday": ["2026-10-15"]}))
+    schedule = script.load_schedule(2026)
+    assert "FROM schedule" in seen[0] and "season = 2026" in seen[0]
+    assert script.week_and_game_id(schedule, "DEN", "SEA", 2026) == (6, "2026_06_SEA_DEN")
