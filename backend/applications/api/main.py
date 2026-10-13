@@ -16,7 +16,7 @@ from .config import logger, MODELS_CONFIG, META_MODEL_PATH, META_FEATURES_PATH, 
 from .state import model_data
 from .rate_limit import limiter
 from .services.data_loader import refresh_db_data, refresh_app_state, load_historical_stats, load_depth_charts
-from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, odds_refresh_wrapper, terminate_running_scripts, etl_ran_recently
+from .services.etl import etl_trigger_wrapper, run_daily_etl_async, injury_refresh_wrapper, odds_refresh_wrapper, new_results_wrapper, terminate_running_scripts, etl_ran_recently
 from .services.storylines import storylines_wrapper
 from .routes import players, games, general, debug, tier_list, sleeper, agent, llm_proxy, compare, storyline_summary
 from .routes.tier_list import load_persisted_rookies_into_profile, run_rookie_refresh
@@ -129,6 +129,8 @@ async def lifespan(app: FastAPI):
             scheduler.add_job(
                 injury_refresh_wrapper, 'interval', minutes=injury_minutes,
                 id='injury_refresh', max_instances=1, coalesce=True,
+                # First pull right after startup, so the freshness stamp is real from the start.
+                next_run_time=datetime.now() + timedelta(seconds=90),
             )
         # Bovada's lines move all week and its player props appear midweek, so the 06:00 pull
         # alone showed numbers hours old (or none at all). One request every ODDS_REFRESH_MINUTES
@@ -138,6 +140,17 @@ async def lifespan(app: FastAPI):
             scheduler.add_job(
                 odds_refresh_wrapper, 'interval', minutes=odds_minutes,
                 id='odds_refresh', max_instances=1, coalesce=True,
+                next_run_time=datetime.now() + timedelta(minutes=4),
+            )
+        # Game results are published upstream at no fixed hour, so the 06:00 run can miss them.
+        # Hourly, check whether the feed has final scores we lack and refresh only then.
+        # NEW_RESULTS_CHECK_MINUTES (0 disables).
+        results_minutes = int(os.getenv('NEW_RESULTS_CHECK_MINUTES', '60'))
+        if results_minutes > 0:
+            scheduler.add_job(
+                new_results_wrapper, 'interval', minutes=results_minutes,
+                id='new_results_etl', max_instances=1, coalesce=True,
+                next_run_time=datetime.now() + timedelta(minutes=7),
             )
         # Player storylines: ESPN's league feed is capped at 50 articles and only
         # covers the last several hours, so polling it a few times a day is what

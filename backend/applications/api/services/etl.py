@@ -2,8 +2,8 @@ import asyncio
 import sys
 import os
 import signal
-from datetime import datetime
-from ..config import logger, ETL_SCRIPT_PATH
+from datetime import datetime, timezone
+from ..config import logger, ETL_SCRIPT_PATH, CACHE_DIR
 from .data_loader import refresh_app_state, refresh_db_data, load_depth_charts, load_historical_stats
 
 def python_for_scripts() -> str:
@@ -83,7 +83,17 @@ def terminate_running_scripts() -> int:
 
 # A successful full ETL is stamped here, so a restart (or every dev auto-reload)
 # doesn't rerun a multi-minute scrape of data that is hours old at most.
-ETL_STAMP = os.path.join(os.path.dirname(ETL_SCRIPT_PATH), ".etl_last_success")
+# In the persistent cache directory, so "when did the data last refresh" survives a deploy.
+ETL_STAMP = os.path.join(CACHE_DIR, ".etl_last_success")
+
+
+def etl_last_success_at() -> str | None:
+    """When the last full ETL finished, as an ISO UTC time, or None if it never has."""
+    try:
+        mtime = os.path.getmtime(ETL_STAMP)
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def etl_ran_recently(hours: float | None = None) -> bool:
@@ -322,5 +332,68 @@ def odds_refresh_wrapper():
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(run_odds_refresh_async())
+        finally:
+            loop.close()
+
+
+# --- Refresh when there is something new ----------------------------------
+# Game results are published upstream some hours after the final whistle, at no fixed time, so one
+# run at 06:00 can land before them (Monday night's game, for example) and then nothing picks them
+# up for a day. This checks, cheaply, whether the schedule feed has final scores our database lacks,
+# and only then runs the ETL.
+
+def new_final_scores_upstream(season: int | None = None) -> list[str]:
+    """Game ids the NFL schedule feed has final scores for that our database does not."""
+    import nflreadpy as nfl
+    import polars as pl
+    import psycopg2
+    from ..config import CURRENT_SEASON, DB_CONNECTION_STRING
+
+    season = int(season or CURRENT_SEASON)
+    feed = nfl.load_schedules(seasons=season)
+    upstream = set(
+        feed.filter(pl.col("home_score").is_not_null() & pl.col("away_score").is_not_null())["game_id"].to_list()
+    )
+    if not upstream or not DB_CONNECTION_STRING:
+        return []
+    conn = psycopg2.connect(DB_CONNECTION_STRING)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT game_id FROM schedule WHERE season = %s AND home_score IS NOT NULL", (season,))
+            ours = {row[0] for row in cur.fetchall()}
+    finally:
+        conn.close()
+    return sorted(upstream - ours)
+
+
+async def run_new_results_etl_async() -> bool:
+    """Run the ETL if (and only if) the feed has results we have not loaded yet."""
+    if _running_scripts:
+        return False
+    # Results can appear before the player stats do; do not run the whole pipeline more than once
+    # every few hours while we wait for the rest to be published.
+    if etl_ran_recently(hours=float(os.getenv("NEW_RESULTS_MIN_GAP_HOURS", "3"))):
+        return False
+    try:
+        new = await asyncio.to_thread(new_final_scores_upstream)
+    except Exception:
+        logger.exception("New-results check failed")
+        return False
+    if not new:
+        logger.info("New-results check: nothing new upstream.")
+        return False
+    logger.info("New-results check: %d final game(s) not loaded yet (%s); running the ETL.", len(new), ", ".join(new[:4]))
+    await run_daily_etl_async(restart_after=False)
+    return True
+
+
+def new_results_wrapper():
+    """Sync entry point for APScheduler."""
+    try:
+        asyncio.run(run_new_results_etl_async())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_new_results_etl_async())
         finally:
             loop.close()

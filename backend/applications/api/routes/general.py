@@ -10,6 +10,7 @@ from ..state import model_data
 from ..config import DB_CONNECTION_STRING, ETL_SCRIPT_PATH, WATCHLIST_FILE, RAG_DIR, logger
 from ..rate_limit import limiter
 from ..services.data_loader import refresh_app_state, refresh_db_data
+from ..services.etl import etl_last_success_at
 from ..services.prediction import get_player_card
 from ..db import read_db, driver_status
 
@@ -33,6 +34,7 @@ async def health_check():
         # stale the injury picture is rather than implying it is live.
         "injuries_updated_at": model_data.get("injuries_updated_at"),
         "odds_updated_at": model_data.get("odds_updated_at"),
+        "etl_last_success": etl_last_success_at(),
         "storylines_updated_at": model_data.get("storylines_updated_at"),
         "data_loaded_at": model_data.get("data_loaded_at"),
     }
