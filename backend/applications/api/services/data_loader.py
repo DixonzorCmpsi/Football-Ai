@@ -385,6 +385,24 @@ def fill_lines_from_schedule(lines: pl.DataFrame | None, schedule: pl.DataFrame)
     return pl.concat([kept, fallback], how="diagonal_relaxed")
 
 
+def _week_from_schedule(sched) -> int | None:
+    """The active week from the loaded schedule: the first week with a game still to be played."""
+    try:
+        if sched is None or sched.is_empty() or "gameday" not in sched.columns or "week" not in sched.columns:
+            return None
+        if "season" in sched.columns:
+            sched = sched.filter(pl.col("season").cast(pl.Int64, strict=False) == int(CURRENT_SEASON))
+        dated = sched.with_columns(
+            pl.col("gameday").cast(pl.Utf8).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias("_d")
+        ).drop_nulls(subset=["_d"])
+        if dated.is_empty():
+            return None
+        upcoming = dated.filter(pl.col("_d") >= datetime.now().date())
+        return int((upcoming if not upcoming.is_empty() else dated).sort("_d")["week"][0])
+    except Exception:
+        return None
+
+
 def refresh_db_data():
     logger.info("Loading dataframes from DB/CVS sources...")
     invalidate_derived_caches()
@@ -457,6 +475,10 @@ def refresh_db_data():
                     df.select(pl.col("week")).drop_nulls().unique().to_series().to_list()
                 )
                 target_wk = model_data.get("current_nfl_week")
+                if target_wk is None:
+                    # First load at startup: refresh_app_state has not run yet, so ask the schedule
+                    # directly. (It used to fall through to max(week) and logged "week 18".)
+                    target_wk = _week_from_schedule(model_data.get("df_schedule"))
                 if target_wk is None or target_wk not in available:
                     fallback = df.select(pl.col("week").max()).item()
                     logger.warning(

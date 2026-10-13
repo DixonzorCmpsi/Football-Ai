@@ -201,10 +201,20 @@ def main():
         current_data = current_data.with_columns(pl.col("sleeper_status").fill_null("Active").alias("injury_status"))
 
         # 3. TAG WITH CURRENT WEEK
-        try:
-            target_week = nfl.get_current_week()
-            if target_week == 0: target_week = 18 # Offseason fallback
-        except: target_week = 18
+        # The schedule decides, as in the app. The provider's week returns 0 between phases, and the old
+        # fallback of 18 wrote a bogus future week into the table. With no way to know the week, write
+        # nothing rather than guess.
+        from season_week import active_week, read_schedule
+
+        target_week = active_week(read_schedule(SEASON))
+        if target_week is None:
+            try:
+                target_week = int(nfl.get_current_week()) or None
+            except Exception:
+                target_week = None
+        if target_week is None:
+            print("   ❌ Cannot tell which week this is (no schedule, no provider week); not writing a snapshot.")
+            sys.exit(1)
 
         print(f"   📅 Tagging snapshot as: Week {target_week}")
         current_data = current_data.with_columns(pl.lit(target_week).alias("week"))
@@ -224,7 +234,9 @@ def main():
                 # Check if we already have data for this week
                 # If so, DELETE IT (replace it with the fresh fetch)
                 # This allows you to re-run the script 5 times on Tuesday without creating 5 duplicates
-                history_df = history_df.filter(pl.col("week") != target_week)
+                # Also drop anything beyond this week: a future week can only be a stray from an
+                # earlier bad tag, and would mask the real current-week statuses.
+                history_df = history_df.filter(pl.col("week") < target_week)
 
                 # Stack History + New Data
                 final_df = pl.concat([history_df, current_data])
@@ -233,7 +245,8 @@ def main():
             except Exception as e:
                 print(f"   ⚠️ Could not read history ({e}). Overwriting.")
 
-        # 5. Save
+        # 5. Save, oldest week first
+        final_df = final_df.sort(["week", "player_id"])
         final_df.write_csv(OUTPUT_FILE)
         print(f"   💾 Saved to {OUTPUT_FILE}")
 
