@@ -110,7 +110,10 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Could not schedule startup rookie refresh: {e}")
 
         # 3. Setup Scheduler
-        scheduler = BackgroundScheduler()
+        # APScheduler skips a job that starts more than `misfire_grace_time` late, and the default is ONE
+        # second. On this small, swapping server jobs routinely start later than that, so the 06:00 refresh
+        # (and every other job) could be silently dropped until its next slot. A late run beats no run.
+        scheduler = BackgroundScheduler(job_defaults={"misfire_grace_time": 3600, "coalesce": True})
         # Set for 6 AM
         scheduler.add_job(etl_trigger_wrapper, 'cron', hour=6, minute=0)
         scheduler.add_job(refresh_app_state, 'interval', hours=1)

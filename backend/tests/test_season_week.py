@@ -51,3 +51,13 @@ def test_the_app_finds_the_week_at_startup_before_its_own_state_exists():
     sched = pl.DataFrame(future, schema=["week", "gameday", "home_score", "season"], orient="row")
     assert _week_from_schedule(sched) == 6
     assert _week_from_schedule(None) is None
+
+
+def test_scheduled_jobs_tolerate_a_slow_start():
+    """APScheduler's default grace is 1 s: on the small server a late job was silently skipped."""
+    import inspect
+
+    from applications.api import main
+
+    source = inspect.getsource(main)
+    assert "misfire_grace_time" in source and "BackgroundScheduler(job_defaults" in source
