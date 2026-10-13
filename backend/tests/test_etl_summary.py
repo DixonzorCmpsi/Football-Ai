@@ -53,3 +53,44 @@ def test_an_unavailable_optional_source_only_degrades(etl, capsys):
 
 def test_a_step_that_never_ran_is_a_failure(etl):
     assert etl.summarize(STEPS) == 1
+
+
+class TestRefreshWhenNew:
+    """The 06:00 run can land before results are published, so a cheap hourly check decides."""
+
+    def _run(self, monkeypatch, new, ran_recently=False, scripts_running=False):
+        import asyncio
+
+        from applications.api.services import etl
+
+        calls = []
+
+        async def fake_etl(restart_after=True):
+            calls.append(restart_after)
+
+        monkeypatch.setattr(etl, "new_final_scores_upstream", lambda *_a, **_k: new)
+        monkeypatch.setattr(etl, "etl_ran_recently", lambda hours=None: ran_recently)
+        monkeypatch.setattr(etl, "run_daily_etl_async", fake_etl)
+        monkeypatch.setattr(etl, "_running_scripts", {object()} if scripts_running else set())
+        return asyncio.run(etl.run_new_results_etl_async()), calls
+
+    def test_runs_the_etl_only_when_there_are_unloaded_results(self, monkeypatch):
+        assert self._run(monkeypatch, ["2026_05_BUF_LA"]) == (True, [False])
+        assert self._run(monkeypatch, []) == (False, [])
+
+    def test_does_not_rerun_soon_after_a_run_or_while_a_script_is_running(self, monkeypatch):
+        assert self._run(monkeypatch, ["g"], ran_recently=True) == (False, [])
+        assert self._run(monkeypatch, ["g"], scripts_running=True) == (False, [])
+
+    def test_a_failed_check_is_not_an_etl_run(self, monkeypatch):
+        import asyncio
+
+        from applications.api.services import etl
+
+        def boom(*_a, **_k):
+            raise RuntimeError("feed down")
+
+        monkeypatch.setattr(etl, "new_final_scores_upstream", boom)
+        monkeypatch.setattr(etl, "etl_ran_recently", lambda hours=None: False)
+        monkeypatch.setattr(etl, "_running_scripts", set())
+        assert asyncio.run(etl.run_new_results_etl_async()) is False

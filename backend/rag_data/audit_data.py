@@ -35,6 +35,8 @@ import polars as pl
 from sqlalchemy import create_engine, inspect, text
 
 HERE = Path(__file__).resolve().parent
+# Where the app keeps its prior-season caches (a volume in production, rag_data locally).
+CACHE = Path(os.getenv("CACHE_DIR") or HERE)
 BACKEND = HERE.parent
 
 
@@ -391,7 +393,7 @@ def main() -> int:
 
     # --- previous seasons (CSV caches the app loads) and models
     for y in HISTORY_SEASONS:
-        p = HERE / f"weekly_player_stats_{y}.csv"
+        p = CACHE / f"weekly_player_stats_{y}.csv"
         if not p.exists():
             warn(f"history {y}", "no cached stats file; the app fetches it on demand from nflreadpy")
             continue
