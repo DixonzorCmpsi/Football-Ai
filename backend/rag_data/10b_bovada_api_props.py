@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Pull Bovada game lines and every player prop from their JSON board.
+"""Pull game lines and every player prop from a sportsbook's JSON board.
+
+Sources, tried in order (--source or ODDS_SOURCE=fanduel|bovada|auto):
+  fanduel  reachable from cloud servers, so it is first
+  bovada   answers an empty board to datacenter addresses, but works from a home connection
+The first one that returns games is used; both produce the same rows.
 
 Replaces the Chrome/Selenium text-scrape path (10_bovada_crawler + 11_bovada_scraper
 + 12_process_bovada) for both. Those steps only ever saw the default market tab,
@@ -24,6 +29,7 @@ import polars as pl
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import fanduel_api_client as fanduel  # noqa: E402
 from bovada_api_client import (  # noqa: E402
     GAME_LINE_COLUMNS,
     event_teams,
@@ -137,32 +143,12 @@ def build_position_lookup(season: int) -> dict:
     return lookup
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--season", type=int, default=SEASON)
-    ap.add_argument("--limit", type=int, default=0, help="only process N events")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
-    season = args.season
-    print(f"Bovada API props | season {season}")
-
+def collect_bovada(schedule, season, scraped_at, limit=0):
     events = fetch_nfl_events()
-    print(f"  events on NFL board: {len(events)}")
-    if not events:
-        print("  nothing to do")
-        return 1
-
-    schedule = load_schedule(season)
-    positions = build_position_lookup(season)
-    scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-    all_rows = []
-    line_rows = []
-    unmatched_games = []
-    if args.limit:
-        events = events[: args.limit]
-
+    print(f"  bovada: events on NFL board: {len(events)}")
+    all_rows, line_rows, unmatched_games = [], [], []
+    if limit:
+        events = events[:limit]
     for i, stub in enumerate(events, 1):
         link = stub.get("link")
         if not link:
@@ -190,6 +176,63 @@ def main() -> int:
         total = lines.get("total_over") if lines else None
         print(f"  [{i}/{len(events)}] {away}@{home} wk={week} -> {len(rows)} prop rows, total {total}")
         time.sleep(0.35)  # be a considerate client
+    return line_rows, all_rows, unmatched_games
+
+
+def collect_fanduel(schedule, season, scraped_at, limit=0):
+    events = fanduel.fetch_nfl_events()
+    print(f"  fanduel: upcoming games on the board: {len(events)}")
+    all_rows, line_rows, unmatched_games = [], [], []
+    if limit:
+        events = events[:limit]
+    for i, ev in enumerate(events, 1):
+        home, away = fanduel.split_event_name(ev["name"])
+        week, game_id = week_and_game_id(schedule, home, away, season, ev["kickoff"].date())
+        if game_id is None:
+            unmatched_games.append(f"{away}@{home}")
+        markets = fanduel.fetch_event_markets(ev["id"])
+        rows = fanduel.parse_player_props(markets, season, week, game_id, scraped_at)
+        all_rows.extend(rows)
+        lines = fanduel.parse_game_lines(markets, ev["name"], season, week, game_id, scraped_at) if game_id else None
+        if lines:
+            line_rows.append(lines)
+        total = lines.get("total_over") if lines else None
+        print(f"  [{i}/{len(events)}] {away}@{home} wk={week} -> {len(rows)} prop rows, total {total}")
+    return line_rows, all_rows, unmatched_games
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--season", type=int, default=SEASON)
+    ap.add_argument("--limit", type=int, default=0, help="only process N events")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--source", choices=["auto", "fanduel", "bovada"], default=os.getenv("ODDS_SOURCE", "auto"))
+    args = ap.parse_args()
+
+    season = args.season
+    print(f"Odds board | season {season}")
+
+    schedule = load_schedule(season)
+    positions = build_position_lookup(season)
+    scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    order = ["fanduel", "bovada"] if args.source == "auto" else [args.source]
+    line_rows, all_rows, unmatched_games, used = [], [], [], None
+    for source in order:
+        try:
+            collect = collect_fanduel if source == "fanduel" else collect_bovada
+            line_rows, all_rows, unmatched_games = collect(schedule, season, scraped_at, args.limit)
+        except Exception as exc:
+            print(f"  {source}: FAILED ({exc})")
+            continue
+        if line_rows or all_rows:
+            used = source
+            break
+        print(f"  {source}: no games on the board")
+    if used is None:
+        print("  nothing to do: no source returned a board")
+        return 1
+    print(f"  source: {used}")
 
     lines_out = LINES_CSV.format(season=season)
     if line_rows:
