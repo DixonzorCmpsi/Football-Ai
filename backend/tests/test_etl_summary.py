@@ -94,3 +94,20 @@ class TestRefreshWhenNew:
         monkeypatch.setattr(etl, "etl_ran_recently", lambda hours=None: False)
         monkeypatch.setattr(etl, "_running_scripts", set())
         assert asyncio.run(etl.run_new_results_etl_async()) is False
+
+
+def test_the_injury_refresh_stands_down_while_the_full_etl_runs(monkeypatch):
+    """Two writers on the injuries table left every player in it twice."""
+    import asyncio
+
+    from applications.api.services import etl
+
+    ran = []
+
+    async def fake_run(*_a, **_k):
+        ran.append(1)
+        return 0, b"", b""
+
+    monkeypatch.setattr(etl, "run_script", fake_run)
+    monkeypatch.setattr(etl, "_running_scripts", {object()})
+    assert asyncio.run(etl.run_injury_refresh_async()) is False and ran == []
