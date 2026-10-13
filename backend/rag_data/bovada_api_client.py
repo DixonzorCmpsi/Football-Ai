@@ -176,9 +176,9 @@ def classify_market(description: str) -> tuple[str | None, str | None, str | Non
 
 
 def is_team_entry(name: str | None) -> bool:
-    """Bovada lists team defences in the player markets ("Buffalo Bills Def/ST"); they are not players."""
+    """Sportsbooks list team defences in the player markets ("Buffalo Bills Def/ST", "Denver Broncos D/ST"); they are not players."""
     text = (name or "").strip()
-    return text in BOVADA_NAME_MAP or text.lower().endswith("def/st")
+    return text in BOVADA_NAME_MAP or text.lower().endswith(("def/st", "d/st"))
 
 
 def parse_event_player_props(event: dict, season: int, week: int | None,
