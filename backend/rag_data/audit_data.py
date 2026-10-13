@@ -175,7 +175,11 @@ def _american_prob(odds) -> float | None:
 
 
 def _norm_name(name: str) -> str:
-    return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    """Letters only, without a trailing generational suffix ("Brian Robinson Jr." is "Brian Robinson")."""
+    words = str(name or "").lower().replace(".", "").split()
+    if words and words[-1] in ("jr", "sr", "ii", "iii", "iv", "v"):
+        words = words[:-1]
+    return "".join(ch for ch in "".join(words) if ch.isalnum())
 
 
 def check_odds(conn, insp, upcoming: int) -> None:
@@ -265,7 +269,8 @@ def check_odds(conn, insp, upcoming: int) -> None:
 
     sides = {}
     for r in rows:
-        if str(r["side"]).lower() in ("over", "under"):
+        # Alternate ladders only carry an over price, so they are not part of the pairing check.
+        if str(r["side"]).lower() in ("over", "under") and not str(r["prop_type"]).lower().startswith("alternate"):
             sides.setdefault((r["player_name"], r["prop_type"], r["line"], r["game_id"]), set()).add(str(r["side"]).lower())
     if sides:
         paired = sum(1 for v in sides.values() if len(v) == 2)

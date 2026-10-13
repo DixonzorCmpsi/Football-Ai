@@ -60,7 +60,9 @@ def test_player_over_under_and_scorer_markets():
             _runner("Troy Franklin Over", -114, 16.5, "OVER", True), _runner("Troy Franklin Under", -114, 16.5, "UNDER", True)]),
         "b": _market("PLAYER_X_RUSHING_+_RECEIVING_YARDS", [
             _runner("RJ Harvey Over", -114, 38.5, "OVER", True), _runner("RJ Harvey Under", -114, 38.5, "UNDER", True)]),
-        "c": _market("ANY_TIME_TOUCHDOWN_SCORER", [_runner("Jaxon Smith-Njigba", 105, player=True), _runner("Denver Broncos D/ST", 900, player=True)]),
+        "c": _market("ANY_TIME_TOUCHDOWN_SCORER", [
+            _runner("Jaxon Smith-Njigba", 105, player=True), _runner("Denver Broncos D/ST", 900, player=True),
+            _runner("Atlanta Defense", 800, player=True)]),
         # Quarter and drive markets are other wagers.
         "d": _market("PLAYER_X_1ST_QUARTER_RECEIVING_YARDS", [_runner("Troy Franklin Over", -110, 5.5, "OVER", True)]),
         "e": _market("HOME_DRIVE_X_RECEIVING_YDS_-_PLAYER_Y", [_runner("Troy Franklin Over", -110, 5.5, "OVER", True)]),
