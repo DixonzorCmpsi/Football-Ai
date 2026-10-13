@@ -89,11 +89,32 @@ def _text_scrape_damage(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(~(pl.col("total_over").is_null() & pl.col("home_spread").is_null()))
 
 
+def read_db_table(sql: str) -> pl.DataFrame:
+    """Rows from Postgres, or an empty frame when there is no database to ask.
+
+    The CSVs this script used to need live inside the server's container and are gone after every
+    deploy; the database is the copy that persists.
+    """
+    uri = os.getenv("DB_CONNECTION_STRING")
+    if not uri:
+        return pl.DataFrame()
+    try:
+        from sqlalchemy import create_engine, text
+
+        with create_engine(uri).connect() as conn:
+            result = conn.execute(text(sql))
+            rows = result.fetchall()
+            return pl.DataFrame(rows, schema=list(result.keys()), orient="row") if rows else pl.DataFrame()
+    except Exception as exc:
+        print(f"  could not read the database ({type(exc).__name__}: {str(exc)[:120]})")
+        return pl.DataFrame()
+
+
 def load_schedule(season: int) -> pl.DataFrame:
     path = SCHEDULE_CSV.format(season=season)
-    if not os.path.exists(path):
-        return pl.DataFrame()
-    return pl.read_csv(path, ignore_errors=True)
+    if os.path.exists(path):
+        return pl.read_csv(path, ignore_errors=True)
+    return read_db_table(f"SELECT week, home_team, away_team, gameday FROM schedule WHERE season = {int(season)}")
 
 
 def week_and_game_id(schedule: pl.DataFrame, home: str, away: str, season: int, when=None):
@@ -128,9 +149,12 @@ def week_and_game_id(schedule: pl.DataFrame, home: str, away: str, season: int, 
 
 def build_position_lookup(season: int) -> dict:
     path = PROFILES_CSV.format(season=season)
-    if not os.path.exists(path):
+    if os.path.exists(path):
+        df = pl.read_csv(path, ignore_errors=True)
+    else:
+        df = read_db_table("SELECT player_name, position FROM player_profiles")
+    if df.is_empty():
         return {}
-    df = pl.read_csv(path, ignore_errors=True)
     if "player_name" not in df.columns or "position" not in df.columns:
         return {}
     lookup = {}
@@ -168,6 +192,7 @@ def collect_bovada(schedule, season, scraped_at, limit=0):
         week, game_id = week_and_game_id(schedule, home, away, season, kickoff)
         if game_id is None:
             unmatched_games.append(f"{away}@{home}")
+            continue  # a prop with no game and week cannot be shown, and used to break the load
         rows = parse_event_player_props(event, season, week, game_id, scraped_at)
         all_rows.extend(rows)
         lines = parse_event_game_lines(event, season, week, game_id, scraped_at) if game_id else None
@@ -190,6 +215,7 @@ def collect_fanduel(schedule, season, scraped_at, limit=0):
         week, game_id = week_and_game_id(schedule, home, away, season, ev["kickoff"].date())
         if game_id is None:
             unmatched_games.append(f"{away}@{home}")
+            continue  # not on the schedule: its week is unknown, so it cannot be stored
         markets = fanduel.fetch_event_markets(ev["id"])
         rows = fanduel.parse_player_props(markets, season, week, game_id, scraped_at)
         all_rows.extend(rows)
@@ -213,6 +239,9 @@ def main() -> int:
     print(f"Odds board | season {season}")
 
     schedule = load_schedule(season)
+    if schedule.is_empty():
+        print("  no schedule to place games in (no schedule CSV and nothing readable from the database)")
+        return 1
     positions = build_position_lookup(season)
     scraped_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -233,6 +262,8 @@ def main() -> int:
         print("  nothing to do: no source returned a board")
         return 1
     print(f"  source: {used}")
+    if unmatched_games:
+        print(f"  WARNING not on the schedule, skipped: {unmatched_games}")
 
     lines_out = LINES_CSV.format(season=season)
     if line_rows:
