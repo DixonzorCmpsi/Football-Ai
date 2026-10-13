@@ -244,6 +244,11 @@ async def run_injury_refresh_async() -> bool:
 
     Returns True if the refresh completed and app state was reloaded.
     """
+    # The full ETL runs this same step and loads the same table; two writers at once left every
+    # player in the injuries table twice. The ETL's own injury step covers this cycle.
+    if _running_scripts:
+        logger.info("Injury refresh: another pipeline script is running; skipping this cycle.")
+        return False
     script = _injury_script_path()
     if not os.path.exists(script):
         logger.error(f"Injury refresh script not found at: {script}")
