@@ -42,6 +42,9 @@ RUN useradd --system --create-home --uid 10001 app
 # model files beside the code, so the unprivileged user owns the tree. --chown here, not
 # a later `chown -R`, which would copy the whole tree into a second layer.
 COPY --chown=app:app . .
+# The app's persistent files (stat caches, storylines, tier lists). A named volume mounted here
+# keeps this directory's ownership, so the unprivileged user can write to it.
+RUN mkdir -p /data/cache && chown app:app /data/cache
 COPY --from=agent --chown=app:app /agent/node_modules ./agent/runtime/node_modules
 USER app
 

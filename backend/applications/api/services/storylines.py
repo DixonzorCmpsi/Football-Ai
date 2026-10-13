@@ -35,13 +35,13 @@ from datetime import datetime, timezone
 
 import polars as pl
 
-from ..config import logger, RAG_DIR, TEAM_ABBR_MAP
+from ..config import logger, CACHE_DIR, TEAM_ABBR_MAP
 from ..state import model_data
 
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
 PLAYER_NEWS_URL = "https://site.web.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
 ESPN_SEARCH_URL = "https://site.web.api.espn.com/apis/common/v3/search"
-STORYLINES_CSV = os.path.join(RAG_DIR, "player_storylines.csv")
+STORYLINES_CSV = os.path.join(CACHE_DIR, "player_storylines.csv")
 
 # Keep the store bounded; well past what any UI shows, but enough for history.
 MAX_ROWS_PER_PLAYER = 40
