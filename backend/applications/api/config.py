@@ -18,9 +18,14 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 # PROJECT_ROOT is backend/ (up 2 levels from api/)
 PROJECT_ROOT = os.path.abspath(os.path.join(current_dir, '..', '..'))
 RAG_DIR = os.path.join(PROJECT_ROOT, 'rag_data')
+# Files the app writes and wants to keep: the prior-season stat caches, depth charts, rookies,
+# storylines history, saved tier lists and the watchlist. In a container, RAG_DIR is wiped by every
+# deploy, so production points CACHE_DIR at a volume. Locally it is RAG_DIR, as before.
+CACHE_DIR = os.getenv('CACHE_DIR') or RAG_DIR
+os.makedirs(CACHE_DIR, exist_ok=True)
 MODEL_DIR = os.path.join(PROJECT_ROOT, 'model_training', 'models')
 ETL_SCRIPT_PATH = os.path.abspath(os.path.join(RAG_DIR, '05_etl_to_postgres.py'))
-WATCHLIST_FILE = os.path.join(RAG_DIR, 'watchlist.json')
+WATCHLIST_FILE = os.path.join(CACHE_DIR, 'watchlist.json')
 
 # --- 2. DYNAMIC SEASON LOGIC ---
 def get_current_season():

@@ -3,7 +3,7 @@ import os
 import time
 import nflreadpy as nfl
 from datetime import datetime
-from ..config import logger, DB_CONNECTION_STRING, RAG_DIR, CURRENT_SEASON
+from ..config import logger, DB_CONNECTION_STRING, RAG_DIR, CACHE_DIR, CURRENT_SEASON
 from ..state import model_data
 from .utils import enforce_types
 from ..db import read_db
@@ -597,7 +597,7 @@ _NFL_TO_OUR_COLS = {
 def _historical_stats_csv_path(season: int) -> str:
     import os
 
-    return os.path.join(RAG_DIR, f"weekly_player_stats_{season}.csv")
+    return os.path.join(CACHE_DIR, f"weekly_player_stats_{season}.csv")
 
 
 def _fetch_and_cache_historical_stats(season: int) -> pl.DataFrame:
@@ -640,7 +640,7 @@ def _fetch_and_cache_historical_stats(season: int) -> pl.DataFrame:
 def _depth_chart_csv_path(season: int) -> str:
     import os
 
-    return os.path.join(RAG_DIR, f"depth_charts_{season}.csv")
+    return os.path.join(CACHE_DIR, f"depth_charts_{season}.csv")
 
 
 _DEPTH_CHART_POS_ABBS = (
@@ -830,7 +830,7 @@ def load_historical_stats(seasons: tuple[int, ...] = tuple(CURRENT_SEASON - n fo
 def _historical_snaps_csv_path(season: int) -> str:
     import os
 
-    return os.path.join(RAG_DIR, f"weekly_snap_counts_{season}.csv")
+    return os.path.join(CACHE_DIR, f"weekly_snap_counts_{season}.csv")
 
 
 def _normalize_snap_schema(df: pl.DataFrame, season: int) -> pl.DataFrame:

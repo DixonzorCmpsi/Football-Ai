@@ -14,7 +14,7 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from ..config import CURRENT_SEASON, DB_CONNECTION_STRING, RAG_DIR, logger
+from ..config import CACHE_DIR, CURRENT_SEASON, DB_CONNECTION_STRING, RAG_DIR, logger
 from ..rate_limit import limiter
 from ..services.utils import calculate_fantasy_points, get_headshot_url, get_team_abbr, normalize_name
 from ..services.adp import get_adp_map, lookup_adp
@@ -26,13 +26,13 @@ _ROOKIE_MATCHER_CACHE: dict = {}
 
 router = APIRouter()
 
-TIER_LIST_FILE = os.path.join(RAG_DIR, "tier_lists.json")
+TIER_LIST_FILE = os.path.join(CACHE_DIR, "tier_lists.json")
 VALID_TIERS = ("UNRANKED", "S", "A", "B", "C", "D", "F")
 VALID_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
 def _rookies_csv_path(season: int) -> str:
-    return os.path.join(RAG_DIR, f"espn_rookies_{season}.csv")
+    return os.path.join(CACHE_DIR, f"espn_rookies_{season}.csv")
 
 
 # ---------------------------------------------------------------- pool endpoint
@@ -319,7 +319,7 @@ def _load_player_stats_for_season(season: int) -> pl.DataFrame:
     if not df.is_empty():
         return df
 
-    csv_path = os.path.join(RAG_DIR, f"weekly_player_stats_{season}.csv")
+    csv_path = os.path.join(CACHE_DIR, f"weekly_player_stats_{season}.csv")
     if os.path.exists(csv_path):
         try:
             df = pl.read_csv(csv_path, ignore_errors=True)
@@ -368,7 +368,7 @@ def _load_snap_counts_for_season(season: int) -> pl.DataFrame:
     if not df.is_empty():
         return df
 
-    csv_path = os.path.join(RAG_DIR, f"weekly_snap_counts_{season}.csv")
+    csv_path = os.path.join(CACHE_DIR, f"weekly_snap_counts_{season}.csv")
     if os.path.exists(csv_path):
         try:
             df = pl.read_csv(csv_path, ignore_errors=True)

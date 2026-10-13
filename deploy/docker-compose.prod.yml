@@ -56,6 +56,11 @@ services:
       # VM's service account; nothing sensitive lives in this file.
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
       FOOTBALL_AI_NODE: node
+      # Prior-season caches, storylines history and saved tier lists live on a volume, so a
+      # deploy no longer wipes them and the app does not re-download five seasons at every start.
+      CACHE_DIR: /data/cache
+    volumes:
+      - appdata:/data/cache
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health | grep -q '\"ready\":true'"]
       interval: 15s
@@ -123,5 +128,6 @@ configs:
 
 volumes:
   pgdata:
+  appdata:
   caddy_data:
   caddy_config:
