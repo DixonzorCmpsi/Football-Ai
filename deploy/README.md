@@ -63,6 +63,7 @@ printf '%s' 'sk-...' | gcloud secrets create openrouter-api-key --data-file=- --
 
 ## What is not done for you
 
+- **The VM can hang, and now repairs itself:** twice (Oct 13, Oct 16-19) the 1 GB machine's network stack died and the site stayed down until someone reset it. `vm-startup.sh` installs a watchdog (`/usr/local/bin/football-watchdog.sh`, every minute): if Google's metadata server or the local web container stops answering for 8 minutes in a row it reboots the VM (at most once per 30 minutes). Look at it with `journalctl -t football-watchdog`. The cause is memory (the VM swaps heavily); `MACHINE_TYPE=e2-small` is the real fix.
 - **Single VM, single disk:** a VM or zone outage means downtime until it is recreated; the nightly dump is the safety net.
 - **Daily data refresh** runs inside the API at 06:00 server time, as it does locally. It does not run at startup (`RUN_ETL_ON_STARTUP=false`): on the 1 GB VM a full refresh after every restart made the site crawl. A failed run is visible in the backend log, not in an alert.
 - **Bovada props** depend on a scraper that has been unreliable; game lines come from the NFL schedule feed.
