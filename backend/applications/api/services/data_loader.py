@@ -403,6 +403,27 @@ def _week_from_schedule(sched) -> int | None:
         return None
 
 
+def enrich_schedule_with_lines(schedule: pl.DataFrame) -> pl.DataFrame:
+    """Add total_line / spread_line from nflverse when the stored schedule lacks them.
+
+    Without those columns fill_lines_from_schedule() silently does nothing, and every
+    game Bovada has not listed shows "no line posted" even though the schedule's own
+    lines exist. Missing columns are joined on game_id; values already present stay.
+    """
+    if schedule is None or schedule.is_empty() or "game_id" not in schedule.columns:
+        return schedule
+    want = [c for c in ("total_line", "spread_line") if c not in schedule.columns]
+    if not want:
+        return schedule
+    try:
+        import nflreadpy as nfl
+        extra = nfl.load_schedules([int(CURRENT_SEASON)]).select(["game_id", *want])
+        return schedule.join(extra, on="game_id", how="left")
+    except Exception as e:
+        logger.warning("Schedule lines unavailable from nflverse: %s", e)
+        return schedule
+
+
 def refresh_db_data():
     logger.info("Loading dataframes from DB/CVS sources...")
     invalidate_derived_caches()
@@ -439,6 +460,7 @@ def refresh_db_data():
             except Exception as e:
                 logger.warning("Unable to load local season schedule %s: %s", schedule_path, e)
 
+    model_data["df_schedule"] = enrich_schedule_with_lines(model_data["df_schedule"])
     model_data["df_lines"] = fill_lines_from_schedule(model_data.get("df_lines"), model_data["df_schedule"])
 
     apply_current_roster_overrides()

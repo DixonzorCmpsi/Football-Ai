@@ -52,6 +52,7 @@ def _metrics(card: dict) -> dict:
         "recent_form": _num(breakdown.get("recent_form")),
         "model_adjustment": _num(breakdown.get("model_adjustment")),
         "implied_total": _num(card.get("implied_total")),
+        "game_total": _num(card.get("overunder")),
         "spread": _num(card.get("spread")),
         "prop_line": _num(card.get("prop_line")),
         "prop_label": MAIN_PROP.get(pos),

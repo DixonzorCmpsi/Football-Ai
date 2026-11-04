@@ -89,6 +89,18 @@ export interface HistoryEntry {
   receiving_tds?: number;
   fumbles?: number;
   completions?: number;
+  /** Over/under of that game. Null when no line was ever published. */
+  over_under?: number | null;
+}
+
+export interface NextGame {
+  season: number;
+  week: number;
+  team: string;
+  opponent: string;
+  date?: string | null;
+  is_home: boolean;
+  over_under: number | null;
 }
 
 export interface InjuryData {
@@ -461,6 +473,21 @@ export const usePlayerHistory = (playerId: string | null) => {
   
     return { history, loadingHistory: loading };
   };
+
+/** The player's next unplayed game, or null (bye-less season end, no schedule). */
+export const usePlayerNextGame = (playerId: string | null) => {
+  const [next, setNext] = useState<NextGame | null>(null);
+
+  useEffect(() => {
+    Promise.resolve().then(() => setNext(null));
+    if (!playerId) return;
+    axios.get(`${API_BASE_URL}/player/next-game/${playerId}`)
+      .then(res => setNext(res.data || null))
+      .catch(err => console.error("Next game error:", err));
+  }, [playerId]);
+
+  return next;
+};
 
 export const useBroadcastCard = (playerName: string | null, week?: number) => {
   const [cardData, setCardData] = useState<BroadcastCardData | null>(null);

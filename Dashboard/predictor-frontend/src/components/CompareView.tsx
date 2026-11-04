@@ -238,6 +238,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           { key: 'prediction', label: 'Proj', cap: 40 },
           { key: 'average_points', label: 'Avg', cap: 40 },
           { key: 'ROLLING_SNAPS', label: 'Snaps (last 4 games)', cap: 70 },
+          { key: 'game_total', label: 'Game O/U', cap: 60 },
           { key: 'implied_total', label: 'Implied Team Total', cap: 35 },
           { key: 'TOTAL_TDS', label: 'Total TDs', cap: 20 }
       ];
@@ -246,6 +247,7 @@ export default function CompareView({ week, playerIds, onRemove, onViewHistory, 
           switch (key) {
               case 'prediction': return p.prediction || 0;
               case 'average_points': return p.average_points || 0;
+              case 'game_total': return p.overunder || 0;
               case 'implied_total': {
                   if (p.implied_total) return p.implied_total;
                   // Fallback mirrors prediction.py: (total / 2) - (spread / 2).

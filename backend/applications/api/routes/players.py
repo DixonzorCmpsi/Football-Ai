@@ -438,7 +438,33 @@ def refresh_storylines_now(player_id: str, limit: int = 10):
 
 
 _SCHEDULE_DATES: dict = {}
+_SCHEDULE_TOTALS: dict = {}
+_SCHEDULE_GAMES: dict = {}
 _PLAYERS_TABLE: dict = {}
+
+
+def _load_schedule(season: int) -> None:
+    """Cache dates, game totals and each team's games for `season` from nflreadpy."""
+    if season in _SCHEDULE_DATES:
+        return
+    dates: dict = {}
+    totals: dict = {}
+    games: dict = {}
+    try:
+        import nflreadpy as nfl
+        sched = nfl.load_schedules([season])
+        cols = ["week", "gameday", "home_team", "away_team", "total_line"]
+        for wk, day, home, away, total in sched.select(cols).iter_rows():
+            h, a = get_team_abbr(home), get_team_abbr(away)
+            for t, opp in ((h, a), (a, h)):
+                dates[(int(wk), t)] = str(day)
+                totals[(int(wk), t)] = float(total) if total is not None else None
+                games.setdefault(t, []).append((int(wk), opp, str(day), t == h))
+    except Exception as e:
+        logger.warning(f"Schedule dates unavailable for {season}: {e}")
+    _SCHEDULE_DATES[season] = dates
+    _SCHEDULE_TOTALS[season] = totals
+    _SCHEDULE_GAMES[season] = {t: sorted(g) for t, g in games.items()}
 
 
 def _game_date(season: int, week, team=None):
@@ -447,20 +473,80 @@ def _game_date(season: int, week, team=None):
     Keyed by team because a week's games span Thursday to Monday; the week's first
     kickoff is the wrong date for most players.
     """
-    if season not in _SCHEDULE_DATES:
-        dates: dict = {}
-        try:
-            import nflreadpy as nfl
-            sched = nfl.load_schedules([season])
-            for wk, day, home, away in sched.select(["week", "gameday", "home_team", "away_team"]).iter_rows():
-                for t in (home, away):
-                    dates[(int(wk), get_team_abbr(t))] = str(day)
-        except Exception as e:
-            logger.warning(f"Schedule dates unavailable for {season}: {e}")
-        _SCHEDULE_DATES[season] = dates
+    _load_schedule(season)
     try:
         return _SCHEDULE_DATES[season].get((int(week), get_team_abbr(team)))
     except (TypeError, ValueError):
+        return None
+
+
+def _game_total(season: int, week, team=None):
+    """Over/under of `team`'s game in (season, week), or None when no line exists.
+
+    The current season reads the app's own lines (df_lines: Bovada, backfilled from
+    the schedule) and nothing else, so the game log can never show a total the Vegas
+    tab says doesn't exist. Prior seasons have no live lines, so they use the
+    schedule's recorded total.
+    """
+    try:
+        wk, abbr = int(week), get_team_abbr(team)
+    except (TypeError, ValueError):
+        return None
+    if season == int(CURRENT_SEASON):
+        lines = model_data.get('df_lines', pl.DataFrame())
+        if lines.is_empty() or not {'week', 'home_team', 'away_team', 'total_over'}.issubset(lines.columns):
+            return None
+        for r in lines.filter(pl.col('week') == wk).iter_rows(named=True):
+            if abbr in (get_team_abbr(r['home_team']), get_team_abbr(r['away_team'])):
+                try:
+                    return float(r['total_over'])
+                except (TypeError, ValueError):
+                    return None
+        return None
+    _load_schedule(season)
+    return _SCHEDULE_TOTALS[season].get((wk, abbr))
+
+
+@router.get("/player/next-game/{player_id}")
+async def get_player_next_game(player_id: str):
+    """The player's next unplayed game of the current season, with its over/under.
+
+    Returned apart from /player/history so the game log can show an upcoming row
+    without it counting as a game played in totals, averages or the picks tracker.
+    """
+    try:
+        season = int(CURRENT_SEASON)
+        cur = model_data.get('df_player_stats', pl.DataFrame())
+        f = cur.filter(pl.col('player_id') == player_id) if not cur.is_empty() else cur
+        last_week, team = 0, None
+        if not f.is_empty():
+            last = f.sort('week').row(-1, named=True)
+            last_week, team = int(last.get('week') or 0), last.get('team')
+        # The profile's team wins over the last game's: a traded player's next game
+        # is with his new club.
+        profile = model_data.get('df_profile', pl.DataFrame())
+        if not profile.is_empty() and 'player_id' in profile.columns:
+            prow = profile.filter(pl.col('player_id') == player_id)
+            if not prow.is_empty():
+                r0 = prow.row(0, named=True)
+                team = r0.get('team') or r0.get('team_abbr') or team
+        if not team:
+            return None
+        abbr = get_team_abbr(team)
+        _load_schedule(season)
+        # Never earlier than the active week: stats can lag a few weeks behind (a fresh
+        # database, a stalled sync), and the log must not offer a played game as "upcoming".
+        floor = max(last_week + 1, int(model_data.get('current_nfl_week') or 0))
+        nxt = next((g for g in _SCHEDULE_GAMES[season].get(abbr, []) if g[0] >= floor), None)
+        if not nxt:
+            return None
+        wk, opp, day, is_home = nxt
+        return {
+            "season": season, "week": wk, "team": abbr, "opponent": opp, "date": day,
+            "is_home": is_home, "over_under": _game_total(season, wk, abbr),
+        }
+    except Exception as e:
+        logger.exception(f"Next-game endpoint failed for {player_id}: {e}")
         return None
 
 
@@ -779,6 +865,7 @@ async def get_player_history(player_id: str):
                 # Game-log columns (FantasyData-style): split TDs, fumbles, passing line.
                 "team": row.get('team'),
                 "date": _game_date(int(season), wk, row.get('team')),
+                "over_under": _game_total(int(season), wk, row.get('team')),
                 "season_type": row.get('season_type') or "REG",
                 "rushing_tds": int(row.get('rush_touchdown') or 0),
                 "receiving_tds": int(row.get('receiving_touchdown') or 0),

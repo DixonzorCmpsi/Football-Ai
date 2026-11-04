@@ -45,7 +45,13 @@ async def run_script(script: str, *args: str) -> tuple[int, bytes, bytes]:
 
     loop = asyncio.get_running_loop()
     done: asyncio.Future = loop.create_future()
-    process = subprocess.Popen([python_for_scripts(), script, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # The scripts print emoji. Piped on Windows, Python falls back to the cp1252 console
+    # codec and dies on the first one, so the injury refresh never fetched anything on a
+    # dev machine while it worked on Linux. Force UTF-8 for every script.
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    process = subprocess.Popen(
+        [python_for_scripts(), script, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+    )
     _running_scripts.add(process)
 
     def _wait():
