@@ -97,10 +97,14 @@ export interface NextGame {
   season: number;
   week: number;
   team: string;
-  opponent: string;
+  opponent: string | null;
   date?: string | null;
   is_home: boolean;
   over_under: number | null;
+  /** True when the team has no game in this week. */
+  bye?: boolean;
+  /** The week of the team's next game after a bye. */
+  next_week?: number;
 }
 
 export interface InjuryData {

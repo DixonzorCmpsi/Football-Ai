@@ -236,18 +236,20 @@ export function GameLogTable({
               <td className={`${td} text-left font-bold text-blue-600 dark:text-blue-400`}>Week {upcoming.week}</td>
               <td className={td}>{fmtDate(upcoming.date)}</td>
               <td className={td}>{upcoming.team}</td>
-              <td className={td}>{upcoming.is_home ? '' : '@'}{upcoming.opponent}</td>
+              <td className={`${td} ${upcoming.bye ? 'font-black not-italic' : ''}`}>
+                {upcoming.bye ? 'BYE' : `${upcoming.is_home ? '' : '@'}${upcoming.opponent}`}
+              </td>
               <td
                 className={`${td} font-bold not-italic`}
                 data-testid="game-log-ou"
-                title={typeof upcoming.over_under === 'number' ? undefined : 'No line posted for this game yet'}
+                title={upcoming.bye ? 'Bye week: no game' : typeof upcoming.over_under === 'number' ? undefined : 'No line posted for this game yet'}
               >
-                {fmtOU(upcoming.over_under) || 'No line'}
+                {upcoming.bye ? '—' : fmtOU(upcoming.over_under) || 'No line'}
               </td>
               <td className={`${td} ${FPTS_BG}`}>—</td>
               <td />
               <td />
-              <td colSpan={passing ? 15 : 10} className={`${td} text-slate-400 dark:text-slate-500`}>Upcoming</td>
+              <td colSpan={passing ? 15 : 10} className={`${td} text-slate-400 dark:text-slate-500`}>{upcoming.bye ? `Bye week${upcoming.next_week ? ` · back in Week ${upcoming.next_week}` : ''}` : 'Upcoming'}</td>
             </tr>
           )}
         </tbody>

@@ -33,7 +33,7 @@ def test_current_season_without_a_line_is_none_not_a_guess(monkeypatch):
 
 
 def test_prior_season_total_uses_the_schedule(monkeypatch):
-    monkeypatch.setitem(players._SCHEDULE_DATES, 1999, {})
+    monkeypatch.setitem(players._SCHEDULE_DATES, 1999, {(3, "ATL"): "1999-09-20"})
     monkeypatch.setitem(players._SCHEDULE_TOTALS, 1999, {(3, "ATL"): 43.5})
     assert players._game_total(1999, 3, "ATL") == 43.5
     assert players._game_total(1999, 4, "ATL") is None
@@ -98,3 +98,60 @@ def test_player_with_snaps_and_no_stat_rows_at_all_gets_a_log(client, monkeypatc
                           "offense_snaps": [20], "offense_pct": [0.3]})
     rows = _history_for(client, monkeypatch, stats, snaps)
     assert [r["week"] for r in rows] == [4]
+
+
+def test_a_failed_schedule_fetch_is_not_cached(monkeypatch):
+    """One nflverse hiccup used to blank every game until the server restarted."""
+    import nflreadpy
+
+    calls = {"n": 0}
+
+    def flaky(seasons):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("network down")
+        return pl.DataFrame({"week": [3], "gameday": ["1998-09-20"], "home_team": ["ATL"], "away_team": ["CAR"],
+                             "total_line": [41.0]})
+
+    for cache in (players._SCHEDULE_DATES, players._SCHEDULE_TOTALS, players._SCHEDULE_GAMES, players._SCHEDULE_FAILED):
+        monkeypatch.setitem(cache, 1998, {}) if cache is not players._SCHEDULE_FAILED else cache.pop(1998, None)
+    monkeypatch.setattr(nflreadpy, "load_schedules", flaky)
+    monkeypatch.setattr(players, "_SCHEDULE_RETRY_SECONDS", 0)
+    assert players._game_total(1998, 3, "ATL") is None  # first fetch failed
+    assert players._game_total(1998, 3, "ATL") == 41.0  # the failure was not remembered
+
+
+def test_current_season_schedule_comes_from_the_app_table(monkeypatch):
+    sched = pl.DataFrame({"week": [9], "home_team": ["KC"], "away_team": ["NYJ"], "gameday": ["2026-11-08"]})
+    monkeypatch.setitem(model_data, "df_schedule", sched)
+    monkeypatch.setitem(model_data, "data_loaded_at", "t-bye-test")
+    season = int(CURRENT_SEASON)
+    assert players._game_opponent(season, 9, "NYJ") == "KC"
+    assert players._game_date(season, 9, "NYJ") == "2026-11-08"
+
+
+def _next_game(monkeypatch, schedule_rows, current_week, last_stat_week):
+    import asyncio
+
+    monkeypatch.setitem(model_data, "df_schedule", pl.DataFrame(
+        schedule_rows, schema={"week": pl.Int64, "home_team": pl.Utf8, "away_team": pl.Utf8, "gameday": pl.Utf8}))
+    monkeypatch.setitem(model_data, "data_loaded_at", f"t-{current_week}-{len(schedule_rows)}")
+    monkeypatch.setitem(model_data, "current_nfl_week", current_week)
+    monkeypatch.setitem(model_data, "df_lines", pl.DataFrame())
+    monkeypatch.setitem(model_data, "df_player_stats", pl.DataFrame(
+        {"player_id": ["P2"], "season": [int(CURRENT_SEASON)], "week": [last_stat_week], "team": ["ATL"]}))
+    monkeypatch.setitem(model_data, "df_profile", pl.DataFrame({"player_id": ["P2"], "team_abbr": ["ATL"]}))
+    return asyncio.run(players.get_player_next_game("P2"))
+
+
+def test_next_game_is_a_bye_when_the_team_does_not_play_the_active_week(monkeypatch):
+    sched = [(8, "ATL", "TB", "2026-11-01"), (10, "ATL", "CAR", "2026-11-15")]
+    out = _next_game(monkeypatch, sched, current_week=9, last_stat_week=8)
+    assert out["bye"] is True and out["week"] == 9 and out["next_week"] == 10
+    assert out["opponent"] is None and out["over_under"] is None
+
+
+def test_next_game_is_the_active_weeks_game_even_when_stats_lag(monkeypatch):
+    sched = [(6, "ATL", "CHI", "2026-10-18"), (9, "ATL", "CIN", "2026-11-08")]
+    out = _next_game(monkeypatch, sched, current_week=9, last_stat_week=5)
+    assert out["bye"] is False and out["week"] == 9 and out["opponent"] == "CIN"
