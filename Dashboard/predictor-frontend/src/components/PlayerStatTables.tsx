@@ -1,4 +1,4 @@
-import type { HistoryEntry } from '../hooks/useNflData';
+import type { HistoryEntry, NextGame } from '../hooks/useNflData';
 import { weekLabel } from '../utils/playerSeasons';
 
 // FantasyData-style tables: grouped Rushing / Receiving / Fumbles headers, with a
@@ -55,12 +55,11 @@ const th = 'px-2 py-2 text-center text-[11px] font-black uppercase tracking-wide
 const group = 'px-2 py-1.5 text-center text-[11px] font-black uppercase tracking-wide text-slate-600 dark:text-slate-300 bg-sky-50 dark:bg-slate-800';
 const td = 'px-2 py-2 text-center tabular-nums text-slate-700 dark:text-slate-200';
 
-function Head({ passing, first }: { passing: boolean; first: React.ReactNode }) {
+function Head({ passing, first, lead }: { passing: boolean; first: React.ReactNode; lead: number }) {
   return (
     <thead>
       <tr>
-        <th colSpan={passing ? 4 : 3} className="" />
-        <th />
+        <th colSpan={lead} className="" />
         {passing && <th colSpan={5} className={group}>Passing</th>}
         <th colSpan={4} className={group}>Rushing</th>
         <th colSpan={4} className={group}>Receiving</th>
@@ -139,6 +138,7 @@ export function SeasonStatsTable({
       <table className="w-full text-sm whitespace-nowrap">
         <Head
           passing={passing}
+          lead={5}
           first={['SEASON', 'TEAM', 'GP', 'FPTS/G', 'FPTS'].map((h) => <th key={h} className={th}>{h}</th>)}
         />
         <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60">
@@ -181,21 +181,28 @@ export function GameLogTable({
   rows,
   pointColor,
   avgPoints,
+  upcoming,
 }: {
   rows: HistoryEntry[];
   pointColor: (points: number, avg: number) => string;
   avgPoints: number;
+  /** Next unplayed game: shown as a stat-less row and kept out of every total. */
+  upcoming?: NextGame | null;
 }) {
   const passing = threw(rows);
   const total = rows.reduce((acc, g) => add(acc, g), blank());
   const gp = Math.max(rows.length, 1);
   const perGame = (Object.keys(total) as (keyof Line)[]).reduce((acc, k) => ({ ...acc, [k]: total[k] / gp }), blank());
+  const totals = rows.map((g) => g.over_under).filter((v): v is number => typeof v === 'number');
+  const avgTotal = totals.length ? (totals.reduce((a, b) => a + b, 0) / totals.length).toFixed(1) : '';
+  const fmtOU = (v?: number | null) => (typeof v === 'number' ? v.toFixed(1) : '');
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm whitespace-nowrap">
         <Head
           passing={passing}
-          first={['', 'DATE', 'TEAM', 'OPP', 'FPTS'].map((h, i) => <th key={i} className={th}>{h}</th>)}
+          lead={6}
+          first={['', 'DATE', 'TEAM', 'OPP', 'O/U', 'FPTS'].map((h, i) => <th key={i} className={th}>{h}</th>)}
         />
         <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60">
           {rows.map((g) => {
@@ -207,6 +214,9 @@ export function GameLogTable({
                 <td className={td}>{fmtDate(g.date)}</td>
                 <td className={td}>{g.team}</td>
                 <td className={td}>{g.opponent}</td>
+                <td className={td} data-testid="game-log-ou" title={typeof g.over_under === 'number' ? undefined : 'No over/under was recorded for this game'}>
+                  {fmtOU(g.over_under) || '—'}
+                </td>
                 <td className={`${td} ${FPTS_BG} font-bold`} style={{ color: pointColor(g.points || 0, avgPoints) }}>
                   {(g.points || 0).toFixed(1)}
                 </td>
@@ -214,6 +224,23 @@ export function GameLogTable({
               </tr>
             );
           })}
+          {upcoming && (
+            <tr className="bg-blue-50/60 dark:bg-blue-900/20 italic" data-testid="game-log-upcoming">
+              <td className={`${td} text-left font-bold text-blue-600 dark:text-blue-400`}>Week {upcoming.week}</td>
+              <td className={td}>{fmtDate(upcoming.date)}</td>
+              <td className={td}>{upcoming.team}</td>
+              <td className={td}>{upcoming.is_home ? '' : '@'}{upcoming.opponent}</td>
+              <td
+                className={`${td} font-bold not-italic`}
+                data-testid="game-log-ou"
+                title={typeof upcoming.over_under === 'number' ? undefined : 'No line posted for this game yet'}
+              >
+                {fmtOU(upcoming.over_under) || 'No line'}
+              </td>
+              <td className={`${td} ${FPTS_BG}`}>—</td>
+              <td colSpan={passing ? 15 : 10} className={`${td} text-slate-400 dark:text-slate-500`}>Upcoming</td>
+            </tr>
+          )}
         </tbody>
         <tfoot>
           <tr className="bg-slate-100 dark:bg-slate-900/60 font-black border-t-2 border-slate-200 dark:border-slate-700">
@@ -221,6 +248,7 @@ export function GameLogTable({
             <td />
             <td />
             <td className={td}>{rows.length} G</td>
+            <td />
             <td className={`${td} ${FPTS_BG}`}>{total.fpts.toFixed(1)}</td>
             <Cells l={total} passing={passing} />
           </tr>
@@ -229,6 +257,7 @@ export function GameLogTable({
             <td />
             <td />
             <td />
+            <td className={td} title="Average game total">{avgTotal}</td>
             <td className={`${td} ${FPTS_BG}`}>{perGame.fpts.toFixed(1)}</td>
             <Cells l={perGame} passing={passing} decimals />
           </tr>

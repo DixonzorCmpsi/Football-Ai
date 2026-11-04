@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import { Check, Plus, ChevronLeft, ChevronRight, Table2, LineChart, Newspaper, ListOrdered, ArrowLeft, User, BarChart3, TrendingUp, Gauge } from 'lucide-react';
-import { usePlayerHistory, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
+import { usePlayerHistory, usePlayerNextGame, usePlayerProfileById, type HistoryEntry } from '../hooks/useNflData';
 import { getTeamColor } from '../utils/nflColors';
 import { pointColor } from './PlayerPerformanceCharts';
 import PlayerStorylines from './PlayerStorylines';
@@ -45,6 +45,7 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
   const [playerId, setPlayerId] = useState(rootId);
   useEffect(() => setPlayerId(rootId), [rootId]);
   const { history, loadingHistory } = usePlayerHistory(playerId);
+  const nextGame = usePlayerNextGame(playerId);
   const { cardData } = usePlayerProfileById(playerId);
   const { cardData: rootCard } = usePlayerProfileById(rootId);
 
@@ -344,7 +345,12 @@ export default function PlayerHistory({ playerId: rootId, compareList, onToggleC
         ) : viewMode === 'visual' ? (
           <VisualsPanel main={mainSeries} extraIds={extraCompareIds} onRemove={onToggleCompare} />
         ) : (
-          <GameLogTable rows={rows} pointColor={pointColor} avgPoints={avgPointsNum} />
+          <GameLogTable
+            rows={rows}
+            pointColor={pointColor}
+            avgPoints={avgPointsNum}
+            upcoming={nextGame && nextGame.season === currentSeason?.season ? nextGame : null}
+          />
         )}
       </div>
     </div>

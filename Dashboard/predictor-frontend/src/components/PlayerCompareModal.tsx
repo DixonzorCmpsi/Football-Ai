@@ -22,6 +22,7 @@ type Metrics = {
   recent_form: number | null;
   model_adjustment: number | null;
   implied_total: number | null;
+  game_total: number | null;
   prop_line: number | null;
   prop_label: string | null;
   anytime_td_prob: number | null;
@@ -57,6 +58,7 @@ const ROWS: { key: keyof Metrics; label: string; fmt: (v: number) => string; hin
   { key: 'season_avg', label: 'Season avg', fmt: (v) => v.toFixed(1), hint: 'Every game this season, zeros included; last season early on' },
   { key: 'recent_form', label: 'Recent form', fmt: (v) => v.toFixed(1), hint: 'Last four games with points' },
   { key: 'model_adjustment', label: 'Model adj.', fmt: (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`, hint: "The model's read on this week's setup" },
+  { key: 'game_total', label: 'Game O/U', fmt: (v) => v.toFixed(1), hint: 'Vegas total points in this week’s game' },
   { key: 'implied_total', label: 'Team implied pts', fmt: (v) => v.toFixed(1) },
   { key: 'prop_line', label: 'Market yards line', fmt: (v) => v.toFixed(1) },
   { key: 'anytime_td_prob', label: 'Anytime TD', fmt: (v) => `${v.toFixed(0)}%` },
