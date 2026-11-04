@@ -480,6 +480,19 @@ def _game_date(season: int, week, team=None):
         return None
 
 
+def _game_opponent(season: int, week, team=None):
+    """`team`'s opponent in (season, week) from the nflreadpy schedule, or None."""
+    _load_schedule(season)
+    try:
+        wk = int(week)
+    except (TypeError, ValueError):
+        return None
+    for g_week, opp, _day, _home in _SCHEDULE_GAMES[season].get(get_team_abbr(team), []):
+        if g_week == wk:
+            return opp
+    return None
+
+
 def _game_total(season: int, week, team=None):
     """Over/under of `team`'s game in (season, week), or None when no line exists.
 
@@ -781,12 +794,15 @@ async def get_player_history(player_id: str):
             if not f.is_empty():
                 frames.append(f)
 
-        if not frames:
-            return []
-        df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
-        # One row per game. A re-appended load once left the same week in the table
-        # several times, which tripled a game in the log and inflated season totals.
-        df = df.unique(subset=['season', 'week'], keep='first', maintain_order=True)
+        # No stat rows is not "no games": a player can take snaps all year without
+        # recording a stat. The snap lookup below decides whether there is anything.
+        if frames:
+            df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
+            # One row per game. A re-appended load once left the same week in the table
+            # several times, which tripled a game in the log and inflated season totals.
+            df = df.unique(subset=['season', 'week'], keep='first', maintain_order=True)
+        else:
+            df = pl.DataFrame(schema={'season': pl.Int64, 'week': pl.Int64})
 
         history = []
 
@@ -820,7 +836,35 @@ async def get_player_history(player_id: str):
             if player_snap_rows.is_empty() and pfr_id and 'pfr_id' in combined_snaps.columns:
                 player_snap_rows = combined_snaps.filter(pl.col('pfr_id') == pfr_id)
 
-        for row in df.iter_rows(named=True):
+        rows = list(df.iter_rows(named=True))
+
+        # A player can play without recording a stat (a WR who is never targeted), so the
+        # game has snap counts but no row in the stats table and used to vanish from his
+        # log. Add a zero line for every game he took offensive snaps in.
+        if not player_snap_rows.is_empty() and {'season', 'week', 'offense_snaps'}.issubset(player_snap_rows.columns):
+            have = {(int(r.get('season') or CURRENT_SEASON), int(r['week'])) for r in rows if r.get('week') is not None}
+            season_team = {int(r.get('season') or CURRENT_SEASON): r.get('team') for r in rows if r.get('team')}
+            profile_team = None
+            if not profile.is_empty() and 'player_id' in profile.columns:
+                pm = profile.filter(pl.col('player_id') == player_id)
+                if not pm.is_empty():
+                    r0 = pm.row(0, named=True)
+                    profile_team = r0.get('team_abbr') or r0.get('team')
+            for s0 in player_snap_rows.iter_rows(named=True):
+                if s0.get('week') is None or not (s0.get('offense_snaps') or 0) > 0:
+                    continue
+                s_season, s_week = int(s0.get('season') or CURRENT_SEASON), int(s0['week'])
+                if (s_season, s_week) in have:
+                    continue
+                have.add((s_season, s_week))
+                team = season_team.get(s_season) or profile_team
+                rows.append({
+                    'season': s_season, 'week': s_week, 'team': team,
+                    'opponent_team': _game_opponent(s_season, s_week, team),
+                })
+            rows.sort(key=lambda r: (int(r.get('season') or CURRENT_SEASON), int(r.get('week') or 0)), reverse=True)
+
+        for row in rows:
             wk = row.get('week')
             season = row.get('season') or CURRENT_SEASON
 

@@ -59,3 +59,42 @@ def test_schedule_that_already_has_lines_is_left_alone(monkeypatch):
     monkeypatch.setattr(nflreadpy, "load_schedules", boom)
     sched = pl.DataFrame({"game_id": ["g1"], "total_line": [40.0], "spread_line": [1.0]})
     assert enrich_schedule_with_lines(sched).equals(sched)
+
+
+def _history_for(client, monkeypatch, stats, snaps):
+    monkeypatch.setitem(model_data, "df_player_stats", stats)
+    monkeypatch.setitem(model_data, "df_player_stats_history", pl.DataFrame())
+    monkeypatch.setitem(model_data, "df_snap_counts", snaps)
+    monkeypatch.setitem(model_data, "df_snap_counts_history", pl.DataFrame())
+    monkeypatch.setitem(
+        model_data, "df_profile",
+        pl.DataFrame({"player_id": ["P1"], "player_name": ["Test WR"], "team_abbr": ["NYJ"], "pfr_id": ["TestWr00"]}),
+    )
+    monkeypatch.setattr(players, "_game_opponent", lambda season, week, team=None: "LV")
+    res = client.get("/player/history/P1")
+    assert res.status_code == 200
+    return res.json()
+
+
+def test_game_with_snaps_but_no_stat_row_still_shows_in_the_log(client, monkeypatch):
+    """A WR who plays and is never targeted has snaps but no row in the stats table."""
+    season = int(CURRENT_SEASON)
+    stats = pl.DataFrame({"player_id": ["P1"], "season": [season], "week": [1], "team": ["NYJ"],
+                          "opponent_team": ["TEN"], "receptions": [1], "targets": [1], "receiving_yards": [30]})
+    snaps = pl.DataFrame({"pfr_id": ["TestWr00"] * 3, "season": [season] * 3, "week": [1, 2, 3],
+                          "offense_snaps": [5, 50, 0], "offense_pct": [0.07, 0.78, 0.0]})
+    rows = _history_for(client, monkeypatch, stats, snaps)
+    by_week = {r["week"]: r for r in rows}
+    assert set(by_week) == {1, 2}  # week 3 had zero snaps: he did not play
+    assert by_week[2]["points"] == 0.0 and by_week[2]["snap_count"] == 50
+    assert by_week[2]["team"] == "NYJ" and by_week[2]["opponent"] == "LV"
+    assert by_week[1]["receptions"] == 1  # the real stat row is untouched
+
+
+def test_player_with_snaps_and_no_stat_rows_at_all_gets_a_log(client, monkeypatch):
+    season = int(CURRENT_SEASON)
+    stats = pl.DataFrame(schema={"player_id": pl.Utf8, "season": pl.Int64, "week": pl.Int64})
+    snaps = pl.DataFrame({"pfr_id": ["TestWr00"], "season": [season], "week": [4],
+                          "offense_snaps": [20], "offense_pct": [0.3]})
+    rows = _history_for(client, monkeypatch, stats, snaps)
+    assert [r["week"] for r in rows] == [4]
