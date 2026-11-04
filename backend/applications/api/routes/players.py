@@ -440,31 +440,66 @@ def refresh_storylines_now(player_id: str, limit: int = 10):
 _SCHEDULE_DATES: dict = {}
 _SCHEDULE_TOTALS: dict = {}
 _SCHEDULE_GAMES: dict = {}
+_SCHEDULE_STAMP: dict = {}
+_SCHEDULE_FAILED: dict = {}
 _PLAYERS_TABLE: dict = {}
+_SCHEDULE_RETRY_SECONDS = 60
+
+
+def _store_schedule(season: int, games) -> None:
+    """Cache dates, game totals and each team's games from (week, day, home, away, total) tuples."""
+    dates: dict = {}
+    totals: dict = {}
+    by_team: dict = {}
+    for wk, day, home, away, total in games:
+        if wk is None:
+            continue
+        h, a = get_team_abbr(home), get_team_abbr(away)
+        for t, opp in ((h, a), (a, h)):
+            dates[(int(wk), t)] = str(day) if day is not None else None
+            totals[(int(wk), t)] = float(total) if total is not None else None
+            by_team.setdefault(t, []).append((int(wk), opp, str(day) if day is not None else None, t == h))
+    _SCHEDULE_DATES[season] = dates
+    _SCHEDULE_TOTALS[season] = totals
+    _SCHEDULE_GAMES[season] = {t: sorted(g, key=lambda x: x[0]) for t, g in by_team.items()}
 
 
 def _load_schedule(season: int) -> None:
-    """Cache dates, game totals and each team's games for `season` from nflreadpy."""
-    if season in _SCHEDULE_DATES:
+    """Make sure `season`'s schedule is cached, and never cache a failure.
+
+    The current season comes from the app's own schedule table (what the rest of the app
+    trusts) and is rebuilt whenever the data reloads. Other seasons come from nflverse. A
+    failed fetch used to be cached as an empty schedule, which blanked every upcoming game
+    until the server restarted; now it is retried after a short pause.
+    """
+    for cache in (_SCHEDULE_DATES, _SCHEDULE_TOTALS, _SCHEDULE_GAMES):
+        cache.setdefault(season, {})
+    if season == int(CURRENT_SEASON):
+        sched = model_data.get('df_schedule', pl.DataFrame())
+        if not sched.is_empty() and {'week', 'home_team', 'away_team'}.issubset(sched.columns):
+            # A reload replaces the frame, so its identity plus the load time says "changed".
+            stamp = (model_data.get('data_loaded_at'), id(sched))
+            if _SCHEDULE_STAMP.get(season) != stamp or not _SCHEDULE_DATES[season]:
+                day_col = 'gameday' if 'gameday' in sched.columns else None
+                _store_schedule(season, (
+                    (r['week'], r.get(day_col) if day_col else None, r['home_team'], r['away_team'], None)
+                    for r in sched.iter_rows(named=True)
+                ))
+                _SCHEDULE_STAMP[season] = stamp
+            return
+    if _SCHEDULE_DATES[season]:
         return
-    dates: dict = {}
-    totals: dict = {}
-    games: dict = {}
+    import time
+    if time.monotonic() - _SCHEDULE_FAILED.get(season, -1e9) < _SCHEDULE_RETRY_SECONDS:
+        return
     try:
         import nflreadpy as nfl
         sched = nfl.load_schedules([season])
         cols = ["week", "gameday", "home_team", "away_team", "total_line"]
-        for wk, day, home, away, total in sched.select(cols).iter_rows():
-            h, a = get_team_abbr(home), get_team_abbr(away)
-            for t, opp in ((h, a), (a, h)):
-                dates[(int(wk), t)] = str(day)
-                totals[(int(wk), t)] = float(total) if total is not None else None
-                games.setdefault(t, []).append((int(wk), opp, str(day), t == h))
+        _store_schedule(season, sched.select(cols).iter_rows())
     except Exception as e:
-        logger.warning(f"Schedule dates unavailable for {season}: {e}")
-    _SCHEDULE_DATES[season] = dates
-    _SCHEDULE_TOTALS[season] = totals
-    _SCHEDULE_GAMES[season] = {t: sorted(g) for t, g in games.items()}
+        _SCHEDULE_FAILED[season] = time.monotonic()
+        logger.warning(f"Schedule unavailable for {season}: {e}")
 
 
 def _game_date(season: int, week, team=None):
@@ -478,6 +513,19 @@ def _game_date(season: int, week, team=None):
         return _SCHEDULE_DATES[season].get((int(week), get_team_abbr(team)))
     except (TypeError, ValueError):
         return None
+
+
+def _game_opponent(season: int, week, team=None):
+    """`team`'s opponent in (season, week) from the nflreadpy schedule, or None."""
+    _load_schedule(season)
+    try:
+        wk = int(week)
+    except (TypeError, ValueError):
+        return None
+    for g_week, opp, _day, _home in _SCHEDULE_GAMES[season].get(get_team_abbr(team), []):
+        if g_week == wk:
+            return opp
+    return None
 
 
 def _game_total(season: int, week, team=None):
@@ -537,13 +585,24 @@ async def get_player_next_game(player_id: str):
         # Never earlier than the active week: stats can lag a few weeks behind (a fresh
         # database, a stalled sync), and the log must not offer a played game as "upcoming".
         floor = max(last_week + 1, int(model_data.get('current_nfl_week') or 0))
-        nxt = next((g for g in _SCHEDULE_GAMES[season].get(abbr, []) if g[0] >= floor), None)
+        games = _SCHEDULE_GAMES[season].get(abbr, [])
+        if not games:
+            # A silent null here once hid a poisoned schedule cache from everyone; say so.
+            logger.warning(f"Next game: no {season} schedule for team {abbr!r} (player {player_id})")
+        nxt = next((g for g in games if g[0] >= floor), None)
         if not nxt:
             return None
         wk, opp, day, is_home = nxt
+        if wk > floor:
+            # No game in the week the log is waiting on: a bye. Say so instead of skipping
+            # ahead, so the row for that week still exists.
+            return {
+                "season": season, "week": floor, "team": abbr, "opponent": None, "date": None,
+                "is_home": False, "over_under": None, "bye": True, "next_week": wk,
+            }
         return {
             "season": season, "week": wk, "team": abbr, "opponent": opp, "date": day,
-            "is_home": is_home, "over_under": _game_total(season, wk, abbr),
+            "is_home": is_home, "over_under": _game_total(season, wk, abbr), "bye": False,
         }
     except Exception as e:
         logger.exception(f"Next-game endpoint failed for {player_id}: {e}")
@@ -781,12 +840,15 @@ async def get_player_history(player_id: str):
             if not f.is_empty():
                 frames.append(f)
 
-        if not frames:
-            return []
-        df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
-        # One row per game. A re-appended load once left the same week in the table
-        # several times, which tripled a game in the log and inflated season totals.
-        df = df.unique(subset=['season', 'week'], keep='first', maintain_order=True)
+        # No stat rows is not "no games": a player can take snaps all year without
+        # recording a stat. The snap lookup below decides whether there is anything.
+        if frames:
+            df = pl.concat(frames, how='diagonal_relaxed').sort(['season', 'week'], descending=[True, True])
+            # One row per game. A re-appended load once left the same week in the table
+            # several times, which tripled a game in the log and inflated season totals.
+            df = df.unique(subset=['season', 'week'], keep='first', maintain_order=True)
+        else:
+            df = pl.DataFrame(schema={'season': pl.Int64, 'week': pl.Int64})
 
         history = []
 
@@ -820,7 +882,35 @@ async def get_player_history(player_id: str):
             if player_snap_rows.is_empty() and pfr_id and 'pfr_id' in combined_snaps.columns:
                 player_snap_rows = combined_snaps.filter(pl.col('pfr_id') == pfr_id)
 
-        for row in df.iter_rows(named=True):
+        rows = list(df.iter_rows(named=True))
+
+        # A player can play without recording a stat (a WR who is never targeted), so the
+        # game has snap counts but no row in the stats table and used to vanish from his
+        # log. Add a zero line for every game he took offensive snaps in.
+        if not player_snap_rows.is_empty() and {'season', 'week', 'offense_snaps'}.issubset(player_snap_rows.columns):
+            have = {(int(r.get('season') or CURRENT_SEASON), int(r['week'])) for r in rows if r.get('week') is not None}
+            season_team = {int(r.get('season') or CURRENT_SEASON): r.get('team') for r in rows if r.get('team')}
+            profile_team = None
+            if not profile.is_empty() and 'player_id' in profile.columns:
+                pm = profile.filter(pl.col('player_id') == player_id)
+                if not pm.is_empty():
+                    r0 = pm.row(0, named=True)
+                    profile_team = r0.get('team_abbr') or r0.get('team')
+            for s0 in player_snap_rows.iter_rows(named=True):
+                if s0.get('week') is None or not (s0.get('offense_snaps') or 0) > 0:
+                    continue
+                s_season, s_week = int(s0.get('season') or CURRENT_SEASON), int(s0['week'])
+                if (s_season, s_week) in have:
+                    continue
+                have.add((s_season, s_week))
+                team = season_team.get(s_season) or profile_team
+                rows.append({
+                    'season': s_season, 'week': s_week, 'team': team,
+                    'opponent_team': _game_opponent(s_season, s_week, team),
+                })
+            rows.sort(key=lambda r: (int(r.get('season') or CURRENT_SEASON), int(r.get('week') or 0)), reverse=True)
+
+        for row in rows:
             wk = row.get('week')
             season = row.get('season') or CURRENT_SEASON
 

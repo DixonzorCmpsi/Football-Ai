@@ -86,6 +86,21 @@ if grep -q '^NEW_LOGIN' <<<"$OUT"; then
   echo "First deploy: the login was saved to ${LOGIN_FILE}"
 fi
 
+say "Freeing disk: removing images no container uses"
+# Every deploy leaves the previous version's images behind; on the 30 GB disk they filled it to 93%
+# and left no room for the next pull (the database shares that disk). Running images are kept, and
+# every tag stays in Artifact Registry, so a rollback just pulls it again.
+vm_script <<'REMOTE'
+set -euo pipefail
+docker image prune -a -f | tail -1
+avail="$(df --output=avail -BG / | tail -1 | tr -dc '0-9')"
+echo "free on /: ${avail} GB"
+if [ "${avail}" -lt 3 ]; then
+  echo "Under 3 GB free even after pruning: refusing to pull onto a nearly full disk." >&2
+  exit 1
+fi
+REMOTE
+
 say "Pulling the images and starting the stack"
 # /opt/football-ai is root-only (it holds .env.prod), so the whole command runs under sudo.
 vm_ssh "sudo bash -c 'cd ${REMOTE_ROOT}/app && export REGISTRY=${REGISTRY} TAG=${REV} && ${COMPOSE} pull && ${COMPOSE} up -d --no-build'"

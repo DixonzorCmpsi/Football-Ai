@@ -195,14 +195,19 @@ export function GameLogTable({
   const perGame = (Object.keys(total) as (keyof Line)[]).reduce((acc, k) => ({ ...acc, [k]: total[k] / gp }), blank());
   const totals = rows.map((g) => g.over_under).filter((v): v is number => typeof v === 'number');
   const avgTotal = totals.length ? (totals.reduce((a, b) => a + b, 0) / totals.length).toFixed(1) : '';
+  const snapRows = rows.filter((g) => (g.snap_count || 0) > 0);
+  const totalSnaps = rows.reduce((a, g) => a + (g.snap_count || 0), 0);
+  const avgSnaps = snapRows.length ? totalSnaps / snapRows.length : 0;
+  const avgSnapPct = snapRows.length ? (snapRows.reduce((a, g) => a + (g.snap_percentage || 0), 0) / snapRows.length) * 100 : 0;
+  const fmtPct = (v?: number | null) => ((v || 0) > 0 ? `${Math.round((v as number) * 100)}%` : '');
   const fmtOU = (v?: number | null) => (typeof v === 'number' ? v.toFixed(1) : '');
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm whitespace-nowrap">
         <Head
           passing={passing}
-          lead={6}
-          first={['', 'DATE', 'TEAM', 'OPP', 'O/U', 'FPTS'].map((h, i) => <th key={i} className={th}>{h}</th>)}
+          lead={8}
+          first={['', 'DATE', 'TEAM', 'OPP', 'O/U', 'FPTS', 'SNAPS', 'SNAP%'].map((h, i) => <th key={i} className={th}>{h}</th>)}
         />
         <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60">
           {rows.map((g) => {
@@ -220,6 +225,8 @@ export function GameLogTable({
                 <td className={`${td} ${FPTS_BG} font-bold`} style={{ color: pointColor(g.points || 0, avgPoints) }}>
                   {(g.points || 0).toFixed(1)}
                 </td>
+                <td className={td} data-testid="game-log-snaps">{(g.snap_count || 0) > 0 ? g.snap_count : ''}</td>
+                <td className={td}>{fmtPct(g.snap_percentage)}</td>
                 <Cells l={l} passing={passing} />
               </tr>
             );
@@ -229,16 +236,20 @@ export function GameLogTable({
               <td className={`${td} text-left font-bold text-blue-600 dark:text-blue-400`}>Week {upcoming.week}</td>
               <td className={td}>{fmtDate(upcoming.date)}</td>
               <td className={td}>{upcoming.team}</td>
-              <td className={td}>{upcoming.is_home ? '' : '@'}{upcoming.opponent}</td>
+              <td className={`${td} ${upcoming.bye ? 'font-black not-italic' : ''}`}>
+                {upcoming.bye ? 'BYE' : `${upcoming.is_home ? '' : '@'}${upcoming.opponent}`}
+              </td>
               <td
                 className={`${td} font-bold not-italic`}
                 data-testid="game-log-ou"
-                title={typeof upcoming.over_under === 'number' ? undefined : 'No line posted for this game yet'}
+                title={upcoming.bye ? 'Bye week: no game' : typeof upcoming.over_under === 'number' ? undefined : 'No line posted for this game yet'}
               >
-                {fmtOU(upcoming.over_under) || 'No line'}
+                {upcoming.bye ? '—' : fmtOU(upcoming.over_under) || 'No line'}
               </td>
               <td className={`${td} ${FPTS_BG}`}>—</td>
-              <td colSpan={passing ? 15 : 10} className={`${td} text-slate-400 dark:text-slate-500`}>Upcoming</td>
+              <td />
+              <td />
+              <td colSpan={passing ? 15 : 10} className={`${td} text-slate-400 dark:text-slate-500`}>{upcoming.bye ? `Bye week${upcoming.next_week ? ` · back in Week ${upcoming.next_week}` : ''}` : 'Upcoming'}</td>
             </tr>
           )}
         </tbody>
@@ -250,6 +261,8 @@ export function GameLogTable({
             <td className={td}>{rows.length} G</td>
             <td />
             <td className={`${td} ${FPTS_BG}`}>{total.fpts.toFixed(1)}</td>
+            <td className={td}>{totalSnaps || ''}</td>
+            <td />
             <Cells l={total} passing={passing} />
           </tr>
           <tr className="bg-slate-50 dark:bg-slate-900/40 font-bold">
@@ -259,6 +272,8 @@ export function GameLogTable({
             <td />
             <td className={td} title="Average game total">{avgTotal}</td>
             <td className={`${td} ${FPTS_BG}`}>{perGame.fpts.toFixed(1)}</td>
+            <td className={td} title="Average over games with snaps">{avgSnaps ? avgSnaps.toFixed(1) : ''}</td>
+            <td className={td}>{avgSnapPct ? `${Math.round(avgSnapPct)}%` : ''}</td>
             <Cells l={perGame} passing={passing} decimals />
           </tr>
         </tfoot>

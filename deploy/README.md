@@ -49,6 +49,7 @@ deploy/gcp/restore-db.sh     # optional: copy your local database up, so the sit
 |---|---|
 | Ship a new version | commit, then `deploy/gcp/deploy.sh` |
 | Look at logs | `gcloud compute ssh football-ai --tunnel-through-iap --command "sudo docker logs -f football-ai-backend-1"` |
+| Disk space | `deploy.sh` removes images no container uses before every pull and stops if under 3 GB would remain |
 | Roll back | `git checkout <old commit>` then `deploy/gcp/deploy.sh` (images are tagged by commit) |
 | Backups | nightly 03:30 UTC dump to `gs://<project>-backups/db/`, kept 30 days |
 | Restore a backup | download the `.sql.gz`, then the `psql` line in `restore-db.sh` |
