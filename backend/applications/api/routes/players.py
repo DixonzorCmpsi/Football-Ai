@@ -586,6 +586,9 @@ async def get_player_next_game(player_id: str):
         # database, a stalled sync), and the log must not offer a played game as "upcoming".
         floor = max(last_week + 1, int(model_data.get('current_nfl_week') or 0))
         games = _SCHEDULE_GAMES[season].get(abbr, [])
+        if not games:
+            # A silent null here once hid a poisoned schedule cache from everyone; say so.
+            logger.warning(f"Next game: no {season} schedule for team {abbr!r} (player {player_id})")
         nxt = next((g for g in games if g[0] >= floor), None)
         if not nxt:
             return None

@@ -155,3 +155,12 @@ def test_next_game_is_the_active_weeks_game_even_when_stats_lag(monkeypatch):
     sched = [(6, "ATL", "CHI", "2026-10-18"), (9, "ATL", "CIN", "2026-11-08")]
     out = _next_game(monkeypatch, sched, current_week=9, last_stat_week=5)
     assert out["bye"] is False and out["week"] == 9 and out["opponent"] == "CIN"
+
+
+def test_next_game_logs_when_a_team_has_no_schedule(monkeypatch, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="football-ai")
+    out = _next_game(monkeypatch, [(9, "KC", "NYJ", "2026-11-08")], current_week=9, last_stat_week=8)
+    assert out is None
+    assert any("no 2026 schedule for team 'ATL'" in r.getMessage() for r in caplog.records)
